@@ -8,6 +8,9 @@ import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.widget.ProgressBar
 import android.view.Gravity
 import android.view.WindowInsets
 import android.view.WindowManager
@@ -28,6 +31,15 @@ class OfflineMapsActivity:Activity() {
     private val pickPoi=4521
     private lateinit var status:TextView
     private lateinit var detail:TextView
+    private lateinit var downloadStatus:TextView
+    private lateinit var progressBar:ProgressBar
+    private val ui=Handler(Looper.getMainLooper())
+    private val tick=object:Runnable{
+        override fun run(){
+            if(::downloadStatus.isInitialized)renderDownloadStatus()
+            ui.postDelayed(this,900L)
+        }
+    }
 
     private fun dp(x:Int)=(resources.displayMetrics.density*x+.5f).toInt()
 
@@ -87,6 +99,74 @@ class OfflineMapsActivity:Activity() {
             "\nМесто хранения: память приложения"
     }
 
+    private fun downloadUkraine(action:String) {
+        val title=when(action) {
+            OfflineCountryDownloadService.START_MAP -> "Только карта Украины"
+            OfflineCountryDownloadService.START_POI -> "Только база адресов Украины"
+            else -> "Украина: карта и адреса"
+        }
+        val approx=when(action) {
+            OfflineCountryDownloadService.START_MAP -> "≈833 МБ"
+            OfflineCountryDownloadService.START_POI -> "≈167 МБ"
+            else -> "≈1 ГБ"
+        }
+        AlertDialog.Builder(this)
+            .setTitle(title)
+            .setMessage("Скачать $approx из каталога Mapsforge? "+
+                "Файлы сохранятся в памяти телефона, затем будут работать "+
+                "офлайн. Для загрузки желательно использовать Wi-Fi. "+
+                "Прерванное скачивание можно продолжить. "+
+                "Предыдущая карта сохранится до завершения скачивания. "+
+                "Автоматическая загрузка выполняется по твоему запросу, "+
+                "а не при каждом запуске.")
+            .setPositiveButton("Скачать"){_,_->
+                try {
+                    startForegroundService(Intent(this,
+                        OfflineCountryDownloadService::class.java)
+                        .setAction(action))
+                    renderDownloadStatus()
+                } catch (e:Exception) {
+                    Toast.makeText(this,"Не удалось начать загрузку: "+
+                        (e.localizedMessage?:"ошибка Android"),
+                        Toast.LENGTH_LONG).show()
+                }
+            }.setNegativeButton("Отмена",null).show()
+    }
+
+    private fun renderDownloadStatus() {
+        val state=OfflineCountryDownloadService.progress
+        val downloaded=state.downloaded/1048576L
+        val total=state.total/1048576L
+        val value=if(state.running)
+            state.title+" · "+state.overallLabel+
+            "\n"+downloaded+" / "+
+                (if(state.total>0L)"$total МБ" else "? МБ")+
+            (if(state.total>0L)
+                " ("+(state.downloaded*100L/state.total).coerceIn(0,100)+"%)"
+             else "")+
+            "\n"+state.message
+        else state.title+"\n"+state.message
+        downloadStatus.text=value
+        progressBar.isIndeterminate=state.running&&state.total<=0L
+        progressBar.max=100
+        progressBar.progress=if(state.total>0L)
+            (state.downloaded*100L/state.total).coerceIn(0,100).toInt() else 0
+        if(!state.running) {
+            val map=OfflineVectorStore.hasMap(this)
+            val pois=OfflineVectorStore.hasPois(this)
+            if(map || pois) {
+                detail.text="Векторная карта: "+
+                    (if(map)formatSize(OfflineVectorStore.mapFile(this).length())
+                     else "не загружена")+
+                    "\nАдреса POI: "+
+                    (if(pois)formatSize(OfflineVectorStore.poiFile(this).length())
+                     else "не загружены")+
+                    "\nПросмотренные участки: "+
+                    formatSize(OfflineMapStore.viewedSize(this))
+            }
+        }
+    }
+
     override fun onCreate(savedInstanceState:Bundle?) {
         super.onCreate(savedInstanceState)
         window.statusBarColor=bg
@@ -144,6 +224,52 @@ class OfflineMapsActivity:Activity() {
             }
         },LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT,dp(58)))
+        root.addView(TextView(this).apply {
+            text="СКАЧАТЬ С ИНТЕРНЕТА"
+            textSize=15f
+            typeface=Typeface.DEFAULT_BOLD
+            setTextColor(Color.rgb(137,190,250))
+            setPadding(0,dp(13),0,dp(10))
+        })
+        root.addView(button("Скачать всю Украину · карта + адреса (~1 ГБ)") {
+            downloadUkraine(OfflineCountryDownloadService.START_ALL)
+        },LinearLayout.LayoutParams(-1,dp(58)))
+        root.addView(button("Только карту Украины (~833 МБ)") {
+            downloadUkraine(OfflineCountryDownloadService.START_MAP)
+        },LinearLayout.LayoutParams(-1,dp(49)).apply{
+            topMargin=dp(7)
+        })
+        root.addView(button("Только базу адресов Украины (~167 МБ)") {
+            downloadUkraine(OfflineCountryDownloadService.START_POI)
+        },LinearLayout.LayoutParams(-1,dp(49)).apply{
+            topMargin=dp(7)
+        })
+        downloadStatus=TextView(this).apply {
+            textSize=14f
+            setTextColor(textColorPrimary)
+            setPadding(0,dp(12),0,dp(2))
+        }
+        root.addView(downloadStatus)
+        progressBar=ProgressBar(this,null,android.R.attr.progressBarStyleHorizontal)
+        root.addView(progressBar,LinearLayout.LayoutParams(-1,dp(8)).apply{
+            bottomMargin=dp(9)
+        })
+        root.addView(button("Остановить скачивание (можно продолжить)") {
+            if(OfflineCountryDownloadService.progress.running) {
+                startService(Intent(this,OfflineCountryDownloadService::class.java)
+                    .setAction(OfflineCountryDownloadService.CANCEL))
+            } else Toast.makeText(this,"Загрузка не запущена",
+                Toast.LENGTH_SHORT).show()
+        },LinearLayout.LayoutParams(-1,dp(43)))
+        root.addView(TextView(this).apply {
+            text="Карта Украины включает Киев и все области. "+
+                "Для небольшого комплекта Киева и области оставлен "+
+                "импорт ранее подготовленных файлов .map и .poi. "+
+                "Скачивание использует Mapsforge, не сервер тайлов OpenStreetMap."
+            textSize=12f
+            setTextColor(muted)
+            setPadding(0,dp(7),0,dp(12))
+        })
         root.addView(TextView(this).apply{
             text="ВЕКТОРНЫЕ КАРТЫ — светлая автомобильная тема"
             textSize=15f
@@ -212,7 +338,8 @@ class OfflineMapsActivity:Activity() {
                 "Загрузка целых областей с публичного сервера OpenStreetMap " +
                 "запрещена его правилами; для полноценной офлайн-области " +
                 "используй MBTiles от провайдера с разрешённой офлайн-загрузкой. " +
-                "Поиск адреса и перестроение маршрута пока требуют интернета."
+                "Поиск адресов работает без интернета после загрузки базы .poi; " +
+                "построение нового маршрута по-прежнему требует интернета."
             textSize=13f
             setTextColor(muted)
             setPadding(0,dp(19),0,dp(14))
@@ -220,6 +347,9 @@ class OfflineMapsActivity:Activity() {
         root.addView(button("Готово"){finish()},
             LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,dp(46)))
         updateStatus()
+        renderDownloadStatus()
+        if(intent?.getBooleanExtra("download_ukraine",false)==true)
+            downloadUkraine(OfflineCountryDownloadService.START_ALL)
     }
 
     @Suppress("DEPRECATION")
@@ -268,5 +398,12 @@ class OfflineMapsActivity:Activity() {
     override fun onResume() {
         super.onResume()
         updateStatus()
+        ui.removeCallbacks(tick)
+        ui.post(tick)
+    }
+
+    override fun onPause(){
+        ui.removeCallbacks(tick)
+        super.onPause()
     }
 }
