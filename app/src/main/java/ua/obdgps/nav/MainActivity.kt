@@ -32,6 +32,7 @@ class MainActivity : Activity() {
     private val handler = Handler(Looper.getMainLooper())
     private lateinit var root: LinearLayout
     private lateinit var status: TextView
+    private lateinit var sensorStatus: TextView
     private lateinit var gpsSpeedValue: TextView
     private lateinit var obdSpeedValue: TextView
     private var gpsSpeedKmh: Double? = null
@@ -284,19 +285,26 @@ class MainActivity : Activity() {
         override fun run() {
             AirAlerts.refreshIfDue()
             showAlertStatus()
-            gpsSpeedValue.text = if (isGpsEnabled() && !State.dr)
-                speedLabel(gpsSpeedKmh, gpsSpeedUpdatedElapsedMs) else "—"
-            obdSpeedValue.text = speedLabel(
-                State.speed?.toDouble(), State.speedUpdatedElapsedMs
-            )
-            val bluetooth = if (isBluetoothEnabled()) "вкл" else "выкл"
-            val gps = if (isGpsEnabled()) "вкл" else "выкл"
-            status.text = "Bluetooth: $bluetooth · GPS: $gps\n" +
-                "ELM: ${State.deviceName}\n" +
-                "Протокол: ${State.modeLabel}\n" +
-                "Статус: ${State.message}\n" +
-                "DR: ${if (State.dr) "включён" else "выключен"}" +
-                if (State.dr) "\nКоординаты: ${State.position}" else ""
+            val updatedByService=State.gpsSpeedUpdatedElapsedMs>0L
+            val speedValue=if(updatedByService)State.gpsSpeedKmh else gpsSpeedKmh
+            val speedTime=if(updatedByService)State.gpsSpeedUpdatedElapsedMs else gpsSpeedUpdatedElapsedMs
+            gpsSpeedValue.text = if(isGpsEnabled()) speedLabel(speedValue,speedTime) else "—"
+            obdSpeedValue.text = speedLabel(State.speed?.toDouble(),State.speedUpdatedElapsedMs)
+            val bluetooth=if(isBluetoothEnabled())"вкл" else "выкл"
+            val gps=if(isGpsEnabled())"вкл" else "выкл"
+            status.text="Режим: ${State.navigationMode} · Авто: ${if(State.autoEnabled)"вкл" else "выкл"}\n"+
+                "Bluetooth: $bluetooth · GPS: $gps\n"+
+                "ELM: ${State.deviceName}\n"+
+                "GPS: ${State.gpsText}\n"+
+                "Протокол: ${State.modeLabel}\n"+
+                "Статус: ${State.message}\n"+
+                if(State.dr) "Путь: ${State.position}\nРост погрешности: ~${State.driftMeters.toInt()} м" else ""
+            sensorStatus.text="Движение: ${State.motionText}\n"+
+                "Ускорение: ${State.accelerationText}\n"+
+                "Компас: ${State.compassStatus}\n"+
+                "Направление: ${State.directionText}\n"+
+                "Калибровка: ${State.calibrationText}\n"+
+                State.sensorAvailability
 
             if (picker != null) updateDevicePicker()
             handler.postDelayed(this,750)
@@ -321,6 +329,73 @@ class MainActivity : Activity() {
           Manifest.permission.ACCESS_COARSE_LOCATION,Manifest.permission.BLUETOOTH_SCAN,
           Manifest.permission.BLUETOOTH_CONNECT,Manifest.permission.POST_NOTIFICATIONS),12)
     }
+    private fun chooseBluetooth() {
+        if (!hasPermissions() || !isBluetoothEnabled()) {
+            checkBluetoothGps()
+        } else {
+            State.devices.clear()
+            send(NavService.SCAN)
+            showDevicePicker()
+        }
+    }
+
+    private fun showProtocolChoice() {
+        val items=arrayOf("OBD2 K-Line (рабочий)", "Mitsubishi MUT-II (эксперимент)")
+        AlertDialog.Builder(this).setTitle("Протокол OBD")
+            .setSingleChoiceItems(items,if(State.mutMode)1 else 0) { dlg,index ->
+                send(if(index==1) NavService.SET_MUT else NavService.SET_OBD)
+                dlg.dismiss()
+            }.setNegativeButton("Отмена",null).show()
+    }
+
+    private fun showDirectionChoice() {
+        // Standard PID 010D reports speed magnitude, not transmission gear.
+        AlertDialog.Builder(this).setTitle("Направление (ручной выбор)")
+            .setSingleChoiceItems(arrayOf("Вперёд","Назад"),if(State.reverseSelected)1 else 0) { dlg,i ->
+                send(if(i==1)NavService.REVERSE else NavService.FORWARD)
+                dlg.dismiss()
+            }.setNegativeButton("Отмена",null).show()
+    }
+
+    private fun showSettingsMenu() {
+        val items=arrayOf(
+            "Bluetooth: проверить и включить",
+            "Bluetooth: выбрать адаптер ELM327",
+            "OBD: выбрать протокол",
+            "Датчики: калибровка на стоящей машине (5 с)",
+            "Компас: согласовать с курсом GPS",
+            "Направление: вперёд / назад",
+            "Автоведение: включить / выключить",
+            "Фиктивные местоположения Android",
+            "Состояние датчиков"
+        )
+        AlertDialog.Builder(this).setTitle("Настройки").setItems(items) { _,index ->
+            when(index) {
+                0 -> checkBluetoothGps()
+                1 -> chooseBluetooth()
+                2 -> showProtocolChoice()
+                3 -> {
+                    send(NavService.CALIBRATE)
+                    Toast.makeText(this,"Калибровка начата, телефон не двигать 5 секунд",Toast.LENGTH_LONG).show()
+                }
+                4 -> send(NavService.ALIGN_COMPASS)
+                5 -> showDirectionChoice()
+                6 -> {
+                    val enable= !State.autoEnabled
+                    send(if(enable)NavService.AUTO_ON else NavService.AUTO_OFF)
+                }
+                7 -> {
+                    try { startActivity(Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS)) }
+                    catch (_: Exception) { startActivity(Intent(Settings.ACTION_SETTINGS)) }
+                }
+                8 -> AlertDialog.Builder(this).setTitle("Датчики")
+                    .setMessage(State.sensorAvailability+"\n"+State.motionText+"\n"+
+                        State.accelerationText+"\n"+State.compassStatus+"\n"+State.calibrationText)
+                    .setPositiveButton("Закрыть",null).show()
+            }
+        }.setNegativeButton("Закрыть",null).show()
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val scroll = ScrollView(this).apply {
@@ -346,38 +421,17 @@ class MainActivity : Activity() {
             setPadding(dip(4), dip(8), dip(4), dip(15))
         }
         root.addView(status)
-        addButton(root,"Проверить Bluetooth и GPS") { checkBluetoothGps() }
-        addButton(root,"Выбрать ELM327") {
-            if (!hasPermissions()) {
-                checkBluetoothGps()
-            } else if (!isBluetoothEnabled()) {
-                checkBluetoothGps()
-            } else {
-                State.devices.clear()
-                send(NavService.SCAN)
-                showDevicePicker()
-            }
+        sensorStatus=TextView(this).apply {
+            textSize=14f
+            setTextColor(Color.DKGRAY)
+            setPadding(dip(4),dip(7),dip(4),dip(15))
         }
-        addButton(root,"Протокол OBD2 / Mitsubishi MUT-II") {
-            val modes = arrayOf("OBD2 K-Line (рекомендуется)",
-                "MUT-II экспериментальный (скорость 0x2F)")
-            AlertDialog.Builder(this)
-                .setTitle("Протокол")
-                .setSingleChoiceItems(modes, if (State.mutMode) 1 else 0) { dlg, index ->
-                    send(if (index == 1) NavService.SET_MUT else NavService.SET_OBD)
-                    dlg.dismiss()
-                }
-                .setNegativeButton("Отмена", null)
-                .show()
-        }
-        addButton(root,"Фиктивное местоположение") {
-            try { startActivity(Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS)) }
-            catch (_: Exception) { startActivity(Intent(Settings.ACTION_SETTINGS)) }
-        }
-        addButton(root,"Включить Dead Reckoning") { send(NavService.START_DR) }
-        addButton(root,"Выключить Dead Reckoning") { send(NavService.STOP_DR) }
-        addButton(root,"Google Maps") { openGoogleMaps() }
-        addButton(root,"Остановить") { send(NavService.EXIT) }
+        root.addView(sensorStatus)
+        addButton(root,"Настройки") { showSettingsMenu() }
+        addButton(root,"Принудительно: вести по датчикам") { send(NavService.START_DR) }
+        addButton(root,"Вернуться к GPS") { send(NavService.STOP_DR) }
+        addButton(root,"Открыть Google Maps") { openGoogleMaps() }
+        addButton(root,"Остановить мониторинг") { send(NavService.EXIT) }
     }
     private fun openGoogleMaps() {
         val mapsPackage = "com.google.android.apps.maps"
@@ -419,6 +473,7 @@ class MainActivity : Activity() {
     override fun onResume() {
         super.onResume()
         monitorGpsSpeed()
+        if(hasPermissions()) send(NavService.MONITOR)
         handler.removeCallbacks(refresh)
         handler.post(refresh)
     }
