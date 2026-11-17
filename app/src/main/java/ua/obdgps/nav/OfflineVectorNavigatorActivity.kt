@@ -175,8 +175,12 @@ class OfflineVectorNavigatorActivity:Activity() {
             mapView.setMapViewCenterY(0.68f)
             val files=OfflineRegionPacks.mapFiles(this)
             val store:MapDataStore=if(files.size==1)MapFile(files.first())
-            else MultiMapDataStore(MultiMapDataStore.DataPolicy.RETURN_FIRST).apply {
-                files.forEach {addMapDataStore(MapFile(it),false,false)}
+            else MultiMapDataStore(MultiMapDataStore.DataPolicy.DEDUPLICATE).apply {
+                files.forEachIndexed { index,file->
+                    val detail=MapFile(file)
+                    detail.setPriority(files.size-index)
+                    addMapDataStore(detail,false,false)
+                }
             }
             vectorMap=store
             val tileCache=AndroidUtil.createTileCache(this,"offline-vector",
