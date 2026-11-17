@@ -261,15 +261,13 @@ class MotionSensors(
         return signedAccelerationFiltered < 0.0
     }
 
-    fun alignNow(course: Double): String {
-        if(!compassReliable) return "Компас недоступен или есть магнитные помехи"
-        carOffset=wrapSigned(course-trueNorth)
-        prefs.edit().putFloat("carOffset",carOffset!!.toFloat()).apply()
-        return "Компас согласован с GPS"
+    fun alignNow(course:Double):String {
+        // A single GPS bearing cannot safely calibrate a mounted phone.
+        return resetVehicleAlignment()
     }
 
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {
-        if(sensor?.type==Sensor.TYPE_MAGNETIC_FIELD || sensor?.type==Sensor.TYPE_ROTATION_VECTOR)
+        if(sensor?.type==Sensor.TYPE_MAGNETIC_FIELD)
             magneticAccuracy=accuracy
     }
 
