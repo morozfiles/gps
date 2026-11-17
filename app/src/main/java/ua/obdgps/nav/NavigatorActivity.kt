@@ -98,12 +98,12 @@ class NavigatorActivity : Activity() {
         val root=LinearLayout(this).apply {
             orientation=LinearLayout.VERTICAL
             setBackgroundColor(pageBackgroundColor)
-            setPadding(dp(12),dp(6),dp(12),dp(8))
+            setPadding(dp(8),dp(4),dp(8),dp(5))
             setOnApplyWindowInsetsListener{v,insets->
                 val bars=insets.getInsets(WindowInsets.Type.systemBars() or
                     WindowInsets.Type.displayCutout())
-                v.setPadding(bars.left+dp(12),bars.top+dp(6),
-                    bars.right+dp(12),bars.bottom+dp(8))
+                v.setPadding(bars.left+dp(8),bars.top+dp(4),
+                    bars.right+dp(8),bars.bottom+dp(5))
                 insets
             }
         }
@@ -112,19 +112,22 @@ class NavigatorActivity : Activity() {
             orientation=LinearLayout.HORIZONTAL
             gravity=Gravity.CENTER_VERTICAL
         }
-        title.addView(label("Навигатор · OBD GPS",20f).apply {
+        title.addView(label("Навигатор · OBD GPS",18f).apply {
             typeface=Typeface.DEFAULT_BOLD
         },LinearLayout.LayoutParams(0,LinearLayout.LayoutParams.WRAP_CONTENT,1f))
         title.addView(styledButton("Назад"){finish()},
-            LinearLayout.LayoutParams(dp(80),dp(42)))
+            LinearLayout.LayoutParams(dp(76),dp(38)))
         root.addView(title)
 
         source=label("Источники координат: ожидание",12f,secondary)
-        source.setPadding(dp(2),dp(3),dp(2),dp(5))
+        source.setPadding(dp(2),dp(1),dp(2),dp(2))
+        source.maxLines=1
+        source.ellipsize=android.text.TextUtils.TruncateAt.END
         root.addView(source)
 
         pickStatus=label("Коснись карты, чтобы выбрать пункт назначения",13f,secondary)
-        pickStatus.setPadding(dp(2),dp(2),dp(2),dp(3))
+        pickStatus.setPadding(dp(2),dp(1),dp(2),dp(2))
+        pickStatus.maxLines=2
         root.addView(pickStatus)
 
         root.addView(row(
@@ -159,14 +162,32 @@ class NavigatorActivity : Activity() {
         root.addView(mapContainer,LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT,0,1f))
 
-        summary=label("Маршрут ещё не построен",14f,textColor)
-        summary.setPadding(dp(3),dp(5),dp(3),dp(2))
-        root.addView(summary)
-        instruction=label("Выбери цель и нажми «Маршрут»",17f,textColor).apply {
-            typeface=Typeface.DEFAULT_BOLD
-            maxLines=3
+        // Status overlays the bottom of the map instead of taking up a
+        // separate full-height block. This leaves more vertical room for roads.
+        val mapStatus=LinearLayout(this).apply {
+            orientation=LinearLayout.VERTICAL
+            setPadding(dp(10),dp(7),dp(10),dp(8))
+            background=GradientDrawable().apply {
+                setColor(Color.argb(228,27,31,38))
+                cornerRadius=dp(11).toFloat()
+            }
         }
-        root.addView(instruction)
+        summary=label("Маршрут ещё не построен",13f,secondary).apply {
+            maxLines=2
+        }
+        mapStatus.addView(summary)
+        instruction=label("Выбери цель и нажми «Маршрут»",16f,textColor).apply {
+            typeface=Typeface.DEFAULT_BOLD
+            maxLines=2
+            ellipsize=android.text.TextUtils.TruncateAt.END
+        }
+        mapStatus.addView(instruction)
+        mapContainer.addView(mapStatus,FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.MATCH_PARENT,
+            FrameLayout.LayoutParams.WRAP_CONTENT,
+            Gravity.BOTTOM).apply {
+                setMargins(dp(5),0,dp(5),dp(5))
+            })
 
         root.addView(row(
             styledButton("Маршрут"){buildRoute(false)},
