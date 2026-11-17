@@ -672,6 +672,11 @@ class NavService: Service(), LocationListener {
         gpsQuarantined=true
         quarantineRecoveryCount=0
         quarantineRecoveryLast=0L
+        // A cached Fused fix might contain the same GNSS spoof. Discard it,
+        // and use only independently reported NETWORK_PROVIDER fixes.
+        if(State.networkFix?.source!="Wi-Fi/сеть")State.networkFix=null
+        if(previousNetworkFix?.source!="Wi-Fi/сеть")previousNetworkFix=null
+        networkCorrectionSamples=0
         lastGpsTeleport=now
         lastRejectedGps=now
         State.gpsText=reason
@@ -843,7 +848,9 @@ class NavService: Service(), LocationListener {
             State.sourceDescription="GPS · точность ~${currentGps.accuracy.toInt()} м"
             return
         }
-        val net=State.networkFix
+        val net=State.networkFix?.takeIf{
+            !gpsQuarantined || it.source=="Wi-Fi/сеть"
+        }
         if(net!=null && now-net.elapsedMs<12_000L) {
             State.navFix=net
             State.sourceDescription=net.source+" · ~${net.accuracy.toInt()} м"
@@ -970,7 +977,8 @@ class NavService: Service(), LocationListener {
         // Use the last *accepted* GNSS fix or a corroborated, fresh
         // network location. A rejected GPS teleport is never seeded.
         val network=State.networkFix?.takeIf {
-            now-it.elapsedMs<12_000L && it.accuracy<=85f
+            now-it.elapsedMs<12_000L && it.accuracy<=85f &&
+                (!gpsQuarantined || it.source=="Wi-Fi/сеть")
         }
         val gpsCurrent=gps?.takeIf {now-gpsTime<30_000L}
         val manual=if(force || (gpsCurrent==null && network==null &&
