@@ -369,14 +369,14 @@ internal class InertialTrackMapView(context:Context): View(context) {
     private fun screenOffsets(x:Double,y:Double):Pair<Double,Double> {
         val dx=x-anchorX()
         val dy=y-anchorY()
-        val angle=Math.toRadians(if(headingInitialized && headingUp && follow)
+        val angle=Math.toRadians(if(headingInitialized && headingUp)
             cameraHeading else 0.0)
         return Pair(cos(angle)*dx-sin(angle)*dy,
             sin(angle)*dx+cos(angle)*dy)
     }
 
     private fun dragMap(dx:Double,dy:Double) {
-        val radians=Math.toRadians(if(headingInitialized&&headingUp&&follow)
+        val radians=Math.toRadians(if(headingInitialized&&headingUp)
             cameraHeading else 0.0)
         val deltaX=cos(radians)*dx-sin(radians)*dy
         val deltaY=sin(radians)*dx+cos(radians)*dy
@@ -496,25 +496,58 @@ internal class InertialTrackMapView(context:Context): View(context) {
     override fun onDraw(canvas:Canvas) {
         super.onDraw(canvas)
         canvas.drawColor(Color.rgb(34,40,48))
-        for(x in 0..(width/80))canvas.drawLine(x*80f,0f,x*80f,height.toFloat(),gridPaint)
-        for(y in 0..(height/80))canvas.drawLine(0f,y*80f,width.toFloat(),y*80f,gridPaint)
         if(width<=0 || height<=0)return
+        advanceCamera()
+        val rotation=if(headingInitialized && headingUp)cameraHeading else 0.0
+
+        // Rotate map tiles, road route and track together, not the HUD.
+        canvas.save()
+        canvas.rotate((-rotation).toFloat(),anchorX().toFloat(),anchorY().toFloat())
+
+        // Cover the inverse-rotated screen bounds so corners never become blank.
+        val corners=listOf(
+            screenOffsets(0.0,0.0), screenOffsets(width.toDouble(),0.0),
+            screenOffsets(0.0,height.toDouble()),
+            screenOffsets(width.toDouble(),height.toDouble())
+        )
+        val minDX=corners.minOf {it.first}
+        val maxDX=corners.maxOf {it.first}
+        val minDY=corners.minOf {it.second}
+        val maxDY=corners.maxOf {it.second}
+
+        // Background grid follows the same heading as the street layer.
+        val gridLeft=floor((anchorX()+minDX)/80.0).toInt()-1
+        val gridRight=ceil((anchorX()+maxDX)/80.0).toInt()+1
+        val gridTop=floor((anchorY()+minDY)/80.0).toInt()-1
+        val gridBottom=ceil((anchorY()+maxDY)/80.0).toInt()+1
+        for(x in gridLeft..gridRight) {
+            val xPos=x*80f
+            canvas.drawLine(xPos,(anchorY()+minDY).toFloat(),xPos,
+                (anchorY()+maxDY).toFloat(),gridPaint)
+        }
+        for(y in gridTop..gridBottom) {
+            val yPos=y*80f
+            canvas.drawLine((anchorX()+minDX).toFloat(),yPos,
+                (anchorX()+maxDX).toFloat(),yPos,gridPaint)
+        }
+
         val n=1 shl zoom
-        val ox=worldX(centerLon)-width/2.0
-        val oy=worldY(centerLat)-height/2.0
-        val left=floor(ox/256.0).toInt()
-        val right=floor((ox+width)/256.0).toInt()
-        val top=floor(oy/256.0).toInt()
-        val bottom=floor((oy+height)/256.0).toInt()
+        val worldCenterX=worldX(centerLon)
+        val worldCenterY=worldY(centerLat)
+        val left=floor((worldCenterX+minDX)/256.0).toInt()
+        val right=floor((worldCenterX+maxDX)/256.0).toInt()
+        val top=floor((worldCenterY+minDY)/256.0).toInt()
+        val bottom=floor((worldCenterY+maxDY)/256.0).toInt()
         for(y in top..bottom) {
             if(y<0 || y>=n)continue
             for(rawX in left..right) {
                 val x=((rawX%n)+n)%n
-                val sx=(rawX*256.0-ox).toFloat()
-                val sy=(y*256.0-oy).toFloat()
-                val image=tileBitmap(zoom,x,y)
-                if(image!=null)
-                    canvas.drawBitmap(image,null,RectF(sx,sy,sx+256f,sy+256f),tilePaint)
+                val sx=(rawX*256.0-worldCenterX+anchorX()).toFloat()
+                val sy=(y*256.0-worldCenterY+anchorY()).toFloat()
+                val bitmap=tileBitmap(zoom,x,y)
+                if(bitmap!=null)
+                    canvas.drawBitmap(bitmap,null,RectF(sx,sy,sx+256f,sy+256f),
+                        tilePaint)
             }
         }
         if(navigation && routePoints.size>=2) {
@@ -566,7 +599,11 @@ internal class InertialTrackMapView(context:Context): View(context) {
                 // Large vehicle chevron, similar to familiar navigation arrows.
                 // North-up map: rotate clockwise by actual travel heading.
                 canvas.save()
-                canvas.rotate(course.toFloat(),x,y)
+                // While following, the vehicle arrow stays upright and the map
+                // rotates smoothly beneath it. When panned, use actual course.
+                val drawnCourse=if(follow && headingInitialized)
+                    rotation else course
+                canvas.rotate(drawnCourse.toFloat(),x,y)
                 val arrow=Path().apply {
                     moveTo(x,y-34f)
                     lineTo(x+18f,y+23f)
@@ -580,6 +617,7 @@ internal class InertialTrackMapView(context:Context): View(context) {
                 canvas.restore()
             }
         }
+        canvas.restore()
     }
 
     private fun tileBitmap(z:Int,x:Int,y:Int):Bitmap? {
@@ -685,13 +723,13 @@ internal class InertialTrackMapView(context:Context): View(context) {
                 if(abs(event.x-downX)>16f || abs(event.y-downY)>16f)
                     movedDuringTouch=true
                 if(movedDuringTouch && (abs(dx)>2f||abs(dy)>2f)) {
+                    val wasFollowing=follow
                     follow=false
-                    val world=256.0*(1 shl zoom)
-                    val nx=(worldX(centerLon)-dx+world)%world
-                    val ny=(worldY(centerLat)-dy).coerceIn(1.0,world-1.0)
-                    centerLon=nx/world*360.0-180.0
-                    centerLat=Math.toDegrees(atan(sinh(Math.PI*(1.0-2.0*ny/world))))
-                    invalidate()
+                    // screen rotation is frozen while panning; map movement
+                    // must be converted back to geographic axes.
+                    dragMap(dx.toDouble(),dy.toDouble())
+                    if(wasFollowing) manualZoomUntilMs=
+                        SystemClock.elapsedRealtime()+60_000L
                 }
                 touchX=event.x;touchY=event.y
                 return true
