@@ -180,86 +180,34 @@ class MainActivity : Activity() {
         action("Проверить ещё раз") { checkBluetoothGps() }
         dialog.show()
     }
-    private lateinit var alertDot: View
-    private lateinit var alertLabel: TextView
-    private val kyivClock = DateTimeFormatter.ofPattern("HH:mm").withZone(ZoneId.of("Europe/Kyiv"))
+    private lateinit var alertsView:AirAlertIndicatorsView
 
-    private fun dip(value: Int): Int = (value * resources.displayMetrics.density + 0.5f).toInt()
-
-    private fun paintAlertDot(color: Int) {
-        alertDot.background = GradientDrawable().apply {
-            shape = GradientDrawable.OVAL
-            setColor(color)
-            setStroke(dip(1), Color.DKGRAY)
-        }
-    }
+    private fun dip(value: Int): Int =
+        (value * resources.displayMetrics.density + 0.5f).toInt()
 
     private fun showAlertStatus() {
-        val alert = AirAlerts.snapshot()
-        val color = when (alert.level) {
-            AirAlerts.Level.CITY -> Color.rgb(217, 48, 37)
-            AirAlerts.Level.OBLAST -> Color.rgb(255, 194, 37)
-            AirAlerts.Level.CLEAR -> Color.rgb(27, 156, 70)
-            AirAlerts.Level.UNKNOWN -> Color.rgb(141, 150, 160)
-        }
-        paintAlertDot(color)
-        val timeLabel = if (alert.sourceUpdatedUtcMs > 0L)
-            " · ${kyivClock.format(Instant.ofEpochMilli(alert.sourceUpdatedUtcMs))}"
-        else ""
-        val location=alert.region.shortName
-        val caption = when (alert.level) {
-            AirAlerts.Level.CITY, AirAlerts.Level.OBLAST -> location+": тревога"
-            AirAlerts.Level.CLEAR -> location+": нет тревоги"
-            AirAlerts.Level.UNKNOWN -> location+": нет данных"
-        }
-        alertLabel.text = caption + timeLabel
-        alertDot.contentDescription = alert.explanation
+        alertsView.refresh()
     }
 
     private fun addAlertHeader() {
-        val top = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
+        val top=LinearLayout(this).apply {
+            orientation=LinearLayout.HORIZONTAL
+            gravity=Gravity.CENTER_VERTICAL
         }
         top.addView(TextView(this).apply {
-            text = "OBD GPS"
-            textSize = 24f
+            text="OBD GPS"
+            textSize=23f
             setTextColor(primaryText)
-            typeface = android.graphics.Typeface.DEFAULT_BOLD
-        }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
-
-        val indicator = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER_HORIZONTAL
-        }
-        alertDot = View(this).apply {
-            isClickable = true
-            setOnClickListener {
-                Toast.makeText(this@MainActivity,
-                    AirAlerts.snapshot().explanation + "\nTryvoha.online · неофициальные данные",
-                    Toast.LENGTH_LONG).show()
-            }
-        }
-        indicator.addView(alertDot, LinearLayout.LayoutParams(dip(22), dip(22)).apply {
-            gravity = Gravity.CENTER_HORIZONTAL
-        })
-        alertLabel = TextView(this).apply {
-            text = "Нет данных"
-            textSize = 10f
-            gravity = Gravity.CENTER
-            setTextColor(secondaryText)
-            maxLines = 2
-            ellipsize = TextUtils.TruncateAt.END
-        }
-        indicator.addView(alertLabel, LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
-        top.addView(indicator, LinearLayout.LayoutParams(dip(108),
-            LinearLayout.LayoutParams.WRAP_CONTENT).apply {
-            setMargins(0,0,dip(14),0)
-        })
+            typeface=android.graphics.Typeface.DEFAULT_BOLD
+        },LinearLayout.LayoutParams(
+            0,LinearLayout.LayoutParams.WRAP_CONTENT,1f))
+        alertsView=AirAlertIndicatorsView(this)
+        top.addView(alertsView,LinearLayout.LayoutParams(
+            dip(168),dip(53)))
         root.addView(top)
         showAlertStatus()
     }
+
     private var picker: AlertDialog? = null
     private var deviceAdapter: ArrayAdapter<String>? = null
     private var pickerKeys = listOf<String>()
@@ -474,23 +422,45 @@ class MainActivity : Activity() {
         dialog.show()
     }
 
-    private fun showAlertRegionPicker() {
-        val options=AirAlerts.regions
-        val checked=options.indexOfFirst {
-            it.slug==AirAlerts.currentRegion().slug
+    private fun showAlertOblastPicker() {
+        val options=AirAlerts.oblasts
+        val selected=options.indexOfFirst {
+            it.slug==AirAlerts.currentOblast().slug
         }.coerceAtLeast(0)
         AlertDialog.Builder(this)
-            .setTitle("Место воздушных тревог")
-            .setSingleChoiceItems(options.map{it.name}.toTypedArray(),checked){dialog,index->
-                AirAlerts.selectRegion(this,options[index].slug)
+            .setTitle("Область для тревог")
+            .setSingleChoiceItems(options.map{it.name}.toTypedArray(),selected){dialog,index->
+                AirAlerts.selectOblast(this,options[index].slug)
                 showAlertStatus()
-                Toast.makeText(this,
-                    "Регион тревог: "+options[index].name,
-                    Toast.LENGTH_SHORT).show()
                 dialog.dismiss()
             }
-            .setNegativeButton("Отмена",null)
-            .show()
+            .setNegativeButton("Отмена",null).show()
+    }
+
+    private fun showAlertCityPicker() {
+        // Tryvoha.online publishes Kyiv as a standalone city.
+        // Other cities do not have verified city-level records in this feed.
+        val options=AirAlerts.cities
+        val selected=options.indexOfFirst {
+            it.slug==AirAlerts.currentCity().slug
+        }.coerceAtLeast(0)
+        AlertDialog.Builder(this)
+            .setTitle("Город для тревог")
+            .setSingleChoiceItems(options.map{it.name}.toTypedArray(),selected){dialog,index->
+                AirAlerts.selectCity(this,options[index].slug)
+                showAlertStatus()
+                dialog.dismiss()
+            }
+            .setNeutralButton("Об источнике"){_,_->
+                AlertDialog.Builder(this)
+                    .setTitle("Тревоги городов")
+                    .setMessage("Tryvoha.online предоставляет отдельный статус " +
+                        "города Киева. Для остальных городов в этом источнике " +
+                        "есть статусы областей и районов, которые нельзя " +
+                        "приравнивать к тревоге именно в городе.")
+                    .setPositiveButton("Понятно",null).show()
+            }
+            .setNegativeButton("Отмена",null).show()
     }
 
     private fun showSettingsMenu() {
@@ -566,8 +536,11 @@ class MainActivity : Activity() {
         }
 
         section("ВОЗДУШНЫЕ ТРЕВОГИ")
-        item("Место тревог · "+AirAlerts.currentRegion().name) {
-            showAlertRegionPicker()
+        item("Область · "+AirAlerts.currentOblast().name) {
+            showAlertOblastPicker()
+        }
+        item("Город · "+AirAlerts.currentCity().name) {
+            showAlertCityPicker()
         }
 
         section("НАВИГАЦИЯ")
