@@ -62,6 +62,8 @@ class OfflineVectorNavigatorActivity:Activity() {
     private lateinit var arrow:View
     private lateinit var alerts:AirAlertIndicatorsView
     private var vectorMap:MapDataStore?=null
+    private var loadedMapSignature=""
+    private var loadedRegion=""
     private var routeLine:Polyline?=null
     private var route:RoutingEngine.Route?=null
     private var dest:RoutingEngine.Point?=null
@@ -174,6 +176,8 @@ class OfflineVectorNavigatorActivity:Activity() {
             mapView.getMapScaleBar().setVisible(false)
             mapView.setMapViewCenterY(0.68f)
             val files=OfflineRegionPacks.mapFiles(this)
+            loadedRegion=OfflineRegionPacks.selected(this)
+            loadedMapSignature=signature(files)
             val store:MapDataStore=if(files.size==1)MapFile(files.first())
             else MultiMapDataStore(MultiMapDataStore.DataPolicy.DEDUPLICATE).apply {
                 files.forEachIndexed { index,file->
@@ -542,9 +546,18 @@ class OfflineVectorNavigatorActivity:Activity() {
         }
     }
 
+    private fun signature(files:List<java.io.File>):String =
+        files.joinToString("|"){"${it.absolutePath}:${it.length()}:${it.lastModified()}"}
+
     override fun onResume(){
         super.onResume()
         if(::mapView.isInitialized){
+            val newFiles=OfflineRegionPacks.mapFiles(this)
+            if(loadedRegion!=OfflineRegionPacks.selected(this) ||
+                loadedMapSignature!=signature(newFiles)){
+                recreate()
+                return
+            }
             handler.removeCallbacks(refresh)
             handler.post(refresh)
         }
