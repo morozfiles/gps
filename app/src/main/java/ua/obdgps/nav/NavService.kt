@@ -63,7 +63,13 @@ class NavService: Service(), LocationListener {
     private var gpsRecoveryCount = 0
     private var gpsRecoveryLast = 0L
     private var lastRejectedGps = 0L
+    private var lastGpsTeleport = 0L
     private var lastAcceptedGps = 0L
+    private var lastTrustedHeading:Double?=null
+    private var lastTrustedHeadingMs=0L
+    private var previousNetworkFix:State.NavFix?=null
+    private var networkCorrectionSamples=0
+    private var lastNetworkCorrectionMs=0L
     private var manualMode = false
     private var reverse = false
     private var fusedStarting = false
