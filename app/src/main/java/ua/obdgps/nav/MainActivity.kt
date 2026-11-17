@@ -13,12 +13,105 @@ import android.os.Looper
 import android.provider.Settings
 import android.view.WindowInsets
 import android.graphics.Color
+import android.graphics.drawable.GradientDrawable
+import android.view.Gravity
+import android.view.View
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 import android.widget.*
 
 class MainActivity : Activity() {
     private val handler = Handler(Looper.getMainLooper())
     private lateinit var root: LinearLayout
     private lateinit var status: TextView
+    private lateinit var alertDot: View
+    private lateinit var alertLabel: TextView
+    private val kyivClock = DateTimeFormatter.ofPattern("HH:mm").withZone(ZoneId.of("Europe/Kyiv"))
+
+    private fun dip(value: Int): Int = (value * resources.displayMetrics.density + 0.5f).toInt()
+
+    private fun paintAlertDot(color: Int) {
+        alertDot.background = GradientDrawable().apply {
+            shape = GradientDrawable.OVAL
+            setColor(color)
+            setStroke(dip(1), Color.DKGRAY)
+        }
+    }
+
+    private fun showAlertStatus() {
+        val alert = AirAlerts.snapshot()
+        val color = when (alert.level) {
+            AirAlerts.Level.CITY -> Color.rgb(217, 48, 37)
+            AirAlerts.Level.OBLAST -> Color.rgb(255, 194, 37)
+            AirAlerts.Level.CLEAR -> Color.rgb(27, 156, 70)
+            AirAlerts.Level.UNKNOWN -> Color.rgb(141, 150, 160)
+        }
+        paintAlertDot(color)
+        val timeLabel = if (alert.sourceUpdatedUtcMs > 0L)
+            " · ${kyivClock.format(Instant.ofEpochMilli(alert.sourceUpdatedUtcMs))}"
+        else ""
+        val caption = when (alert.level) {
+            AirAlerts.Level.CITY -> "Киев: тревога"
+            AirAlerts.Level.OBLAST -> "Тревога: область"
+            AirAlerts.Level.CLEAR -> "Без тревог (по данным)"
+            AirAlerts.Level.UNKNOWN -> "Нет данных о тревогах"
+        }
+        alertLabel.text = caption + timeLabel
+        alertDot.contentDescription = alert.explanation
+    }
+
+    private fun addAlertHeader() {
+        val top = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.TOP
+        }
+        val heading = TextView(this).apply {
+            text = "OBD GPS Navigator — Space Star K-Line"
+            textSize = 21f
+            setTextColor(Color.BLACK)
+        }
+        top.addView(heading, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        val indicator = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.RIGHT
+            setPadding(dip(8), 0, 0, 0)
+        }
+        alertDot = View(this).apply {
+            isClickable = true
+            setOnClickListener {
+                Toast.makeText(this@MainActivity,
+                    AirAlerts.snapshot().explanation + "\nИсточник: Tryvoha.online (неофициально)",
+                    Toast.LENGTH_LONG).show()
+            }
+        }
+        indicator.addView(alertDot, LinearLayout.LayoutParams(dip(22), dip(22)).apply {
+            gravity = Gravity.RIGHT
+        })
+        alertLabel = TextView(this).apply {
+            text = "Проверка тревог..."
+            textSize = 11f
+            gravity = Gravity.RIGHT
+            setTextColor(Color.DKGRAY)
+            maxWidth = dip(148)
+        }
+        indicator.addView(alertLabel)
+        top.addView(indicator)
+        root.addView(top)
+        val attribution = TextView(this).apply {
+            text = "Тревоги: Tryvoha.online · неофициальные данные; проверяй сирены и официальные оповещения"
+            textSize = 11f
+            setTextColor(Color.DKGRAY)
+            setPadding(0, dip(4), 0, dip(10))
+            setOnClickListener {
+                try {
+                    startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://tryvoha.online/")))
+                } catch (_: Exception) {}
+            }
+        }
+        root.addView(attribution)
+        showAlertStatus()
+    }
     private var picker: AlertDialog? = null
     private var deviceAdapter: ArrayAdapter<String>? = null
     private var pickerKeys = listOf<String>()
@@ -57,6 +150,8 @@ class MainActivity : Activity() {
     }
     private val refresh = object: Runnable {
         override fun run() {
+            AirAlerts.refreshIfDue()
+            showAlertStatus()
             status.text = "Статус: ${State.message}\nELM327: ${State.deviceName}\nСкорость: ${State.speed ?: "—"} км/ч\nПротокол: ${State.modeLabel}\nDead Reckoning: ${State.dr}\nРасчёт: ${State.position}"
             if (picker != null) updateDevicePicker()
             handler.postDelayed(this,750)
@@ -98,7 +193,7 @@ class MainActivity : Activity() {
         }
         root = LinearLayout(this).apply { orientation=LinearLayout.VERTICAL; setPadding(30,30,30,40) }
         scroll.addView(root); setContentView(scroll)
-        root.addView(TextView(this).apply { text="OBD GPS Navigator — Space Star K-Line"; textSize=23f })
+        addAlertHeader()
         root.addView(TextView(this).apply { text="Mitsubishi Space Star 2003 1.6 АКПП · Vgate iCar Pro 2S BLE · ISO 9141 / KWP2000" })
         root.addView(TextView(this).apply { text="Закрепите телефон неподвижно. Не полагайтесь на расчёт как на единственный источник навигации." })
         status = TextView(this).apply { textSize=16f; setPadding(0,20,0,20) }; root.addView(status)
