@@ -37,13 +37,25 @@ class DeadReckoner {
         if (dt <= 0.0 || dt > 0.5) return
         pose = pose?.let { it.copy(bearing = (it.bearing - Math.toDegrees(rateRad * dt) + 720) % 360) }
     }
-    fun move(kmh: Int, dt: Double) {
+    fun correctPosition(lat: Double, lon: Double, blend: Double) {
+        val p=pose ?: return
+        val alpha=blend.coerceIn(0.0,0.25)
+        // Only for short distances, after plausibility checks in NavService.
+        pose=p.copy(lat=p.lat+(lat-p.lat)*alpha,lon=p.lon+(lon-p.lon)*alpha)
+    }
+    fun correctHeading(target: Double, maxChangeDegrees: Double) {
+        val p=pose ?: return
+        val difference=(((target-p.bearing+540)%360+360)%360)-180
+        if(abs(difference)>20) return
+        pose=p.copy(bearing=(p.bearing + difference.coerceIn(-maxChangeDegrees,maxChangeDegrees)+360)%360)
+    }
+    fun move(kmh: Int, dt: Double, reverse: Boolean = false) {
         if (dt <= 0 || dt > 1 || kmh !in 0..255) return
         val p = pose ?: return
         val dist = (kmh / 3.6) * dt / 6371000
         val a = Math.toRadians(p.lat)
         val b = Math.toRadians(p.lon)
-        val heading = Math.toRadians(p.bearing)
+        val heading = Math.toRadians((p.bearing + if(reverse) 180.0 else 0.0)%360.0)
         val nextLat = asin((sin(a) * cos(dist) + cos(a) * sin(dist) * cos(heading)).coerceIn(-1.0,1.0))
         val nextLon = b + atan2(sin(heading) * sin(dist) * cos(a), cos(dist)-sin(a)*sin(nextLat))
         pose = p.copy(lat = Math.toDegrees(nextLat), lon = (Math.toDegrees(nextLon) + 540) % 360 - 180)
