@@ -756,64 +756,83 @@ class NavService: Service(), LocationListener {
         }
     }
 
-    private fun startDr(force: Boolean) {
+    private fun startDr(force:Boolean) {
         if(State.dr) {
             if(force) {
                 manualMode=true
                 State.manualForced=true
                 State.navigationMode="Датчики (вручную)"
-                State.message="Принудительное ведение по датчикам активно"
             }
             return
         }
-        if(fusedStarting) return
         val now=SystemClock.elapsedRealtime()
         if(State.speed==null || now-speedTime>3500L) {
-            State.message="Ведение по датчикам: нет свежей скорости OBD"
+            State.message="Нет свежей скорости OBD: проверь адаптер"
             return
         }
-        if(now-gpsTime>90000L || gps==null) {
-            State.message="Нет опорной точки GPS за последние 90 секунд"
-            return
-        }
-        val fix=gps!!
-        val bearing=if(fix.hasBearing() && fix.hasSpeed() &&
-            fix.speed*3.6f>7f) fix.bearing.toDouble() else motion.compassBearing
-        if(bearing==null) {
-            State.message="Для начала проедь прямо с хорошим GPS, нужен курс"
-            return
-        }
-        val carBearing=(bearing+if(reverse) 180.0 else 0.0)%360.0
-        fusedStarting=true
-        State.message="Включаю инерциальное ведение через Fused Location..."
-        fused.start { ok, detail ->
-            if(!fusedStarting) return@start
-            fusedStarting=false
-            if(!ok) {
-                State.message=detail+"; выбери приложение Mock Location"
-                State.navigationMode="GPS"
-                return@start
+        // A user-selected position + heading is a legitimate DR seed when
+        // GNSS is blocked; otherwise use a fresh trusted GNSS fix.
+        val manual=if(force)State.manualStart else null
+        val fix=when {
+            manual!=null -> Location(LocationManager.GPS_PROVIDER).apply {
+                latitude=manual.lat;longitude=manual.lon
+                bearing=manual.bearing.toFloat()
+                accuracy=20f
+                speed=((correctedSpeed()?:0.0)/3.6).toFloat()
             }
-            dr.seed(fix.latitude,fix.longitude,carBearing)
-            State.clearInertialTrail()
-            lastDrStart=SystemClock.elapsedRealtime()
-            State.recordInertialPoint(fix.latitude,fix.longitude,carBearing,
-                correctedSpeed()?:0.0,lastDrStart)
-            tickTime=lastDrStart
-            lastMockSent=0L
-            gpsRecoveryCount=0
-            gpsRecoveryLast=0L
-            State.driftMeters=0.0
-            manualMode=force
-            State.manualForced=force
-            State.dr=true
-            State.navigationMode=if(force)"Датчики (вручную)" else "Датчики (авто)"
-            State.message=if(force) "Принудительное ведение по датчикам включено" else
-                "Тревога в Киеве, GPS недостоверен: переход на датчики"
-            fused.publish(fix.latitude,fix.longitude,bearing,correctedSpeed()?.toInt()?:0,15f)
+            gps!=null && now-gpsTime<90_000L -> gps!!
+            else -> null
+        }
+        if(fix==null) {
+            State.message="Нет исходной позиции: задай старт на карте или дождись GPS"
+            return
+        }
+        val course=when {
+            manual!=null -> manual.bearing
+            fix.hasBearing() && fix.hasSpeed() && fix.speed*3.6f>7f ->
+                fix.bearing.toDouble()
+            motion.compassBearing!=null -> motion.compassBearing!!
+            else -> Double.NaN
+        }
+        if(!course.isFinite()) {
+            State.message="Неизвестен курс: задай вручную старт и направление на карте"
+            return
+        }
+        // Manual bearing is a forward travel heading, not a transmission gear guess.
+        if(manual!=null) {
+            reverse=false
+            State.reverseSelected=false
+            State.directionConfirmed=true
+            State.directionText="Вперёд по заданному на карте курсу"
+        }
+        val carBearing=(course+if(reverse)180.0 else 0.0)%360.0
+        dr.seed(fix.latitude,fix.longitude,carBearing)
+        State.clearInertialTrail()
+        lastDrStart=now
+        State.recordInertialPoint(fix.latitude,fix.longitude,course,
+            correctedSpeed()?:0.0,now)
+        tickTime=now
+        lastMockSent=0L
+        gpsRecoveryCount=0
+        gpsRecoveryLast=0L
+        State.driftMeters=0.0
+        manualMode=force
+        State.manualForced=force
+        State.dr=true
+        State.navigationMode=if(force)"Датчики (вручную)" else "Датчики (авто)"
+        State.message=if(manual!=null)"DR: старт и курс взяты с карты" else
+            "Инерциальное ведение запущено"
+        // In-app navigation DOES NOT need Android mock-location permission.
+        // Google Maps injection is an optional extra, not a start prerequisite.
+        fused.start { ok,detail ->
+            if(!ok && State.dr) {
+                State.message="DR работает внутри приложения. Внешние карты: $detail"
+            } else if(ok && State.dr) {
+                fused.publish(fix.latitude,fix.longitude,course,
+                    correctedSpeed()?.toInt()?:0,20f)
+            } else if(ok)fused.stop()
         }
     }
-
     private fun stopDr() {
         if(State.dr || fusedStarting || fused.active) {
             fused.stop()
