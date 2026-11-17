@@ -14,6 +14,7 @@ import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
 import android.view.WindowInsets
+import android.view.WindowManager
 import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.LinearLayout
@@ -73,6 +74,7 @@ class InertialMapActivity : Activity() {
         window.statusBarColor=pageBackgroundColor
         window.navigationBarColor=pageBackgroundColor
         window.decorView.systemUiVisibility=0
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
         val column=LinearLayout(this).apply {
             orientation=LinearLayout.VERTICAL
@@ -323,8 +325,8 @@ internal class InertialTrackMapView(context:Context): View(context) {
             val path=Path()
             var first=true
             var lastX=0f;var lastY=0f
-            for(point in routePoints) {
-                val (x,y)=point(point.lat,point.lon)
+            for(routePoint in routePoints) {
+                val (x,y)=point(routePoint.lat,routePoint.lon)
                 if(first || abs(x-lastX)>width*.8f || abs(y-lastY)>height*.8f) {
                     path.moveTo(x,y);first=false
                 } else path.lineTo(x,y)
