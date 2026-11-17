@@ -115,6 +115,19 @@ object State {
     var message = "Ready"
     var speed: Int? = null
     var speedUpdatedElapsedMs: Long = 0L
+    // Main navigator uses only the currently selected trusted coordinate source.
+    // No fused mock readings are accepted as real position.
+    data class NavFix(
+        val lat:Double,val lon:Double,val bearing:Double?,
+        val accuracy:Float,val source:String,val elapsedMs:Long
+    )
+    var navFix:NavFix?=null
+    var networkFix:NavFix?=null
+    var sourceDescription="Нет координат"
+    var manualStart:NavigatorPrefs.ManualStart?=null
+    var navigationDestination:Pair<Double,Double>?=null
+    var activeRouting=false
+
     var gpsSpeedKmh: Double? = null
     var gpsSpeedUpdatedElapsedMs: Long = 0L
     var gpsText = "Нет достоверного GPS"
