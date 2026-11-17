@@ -1,0 +1,57 @@
+name: Build Kyiv Offline Mapsforge Map and Address Index
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/build-kyiv-offline.yml'
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Prepare Osmosis and Osmium
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq osmosis osmium-tool sqlite3
+          mkdir -p ~/.openstreetmap/osmosis/plugins
+          curl -fSL --retry 3 -o ~/.openstreetmap/osmosis/plugins/mapsforge-map-writer.jar \
+            https://repo.maven.apache.org/maven2/org/mapsforge/mapsforge-map-writer/0.25.0/mapsforge-map-writer-0.25.0-jar-with-dependencies.jar
+          curl -fSL --retry 3 -o ~/.openstreetmap/osmosis/plugins/mapsforge-poi-writer.jar \
+            https://repo.maven.apache.org/maven2/org/mapsforge/mapsforge-poi-writer/0.25.0/mapsforge-poi-writer-0.25.0-jar-with-dependencies.jar
+      - name: Download Kyiv city and Kyiv Oblast extracts
+        run: |
+          curl -fSL --retry 3 --retry-delay 5 -o oblast.pbf \
+            https://geo2day.com/europe/ukraine/kiev_oblast.pbf
+          curl -fSL --retry 3 --retry-delay 5 -o city.pbf \
+            https://geo2day.com/europe/ukraine/kiev.pbf
+          osmium fileinfo oblast.pbf
+          osmium fileinfo city.pbf
+          osmium merge oblast.pbf city.pbf -o kyiv-combined.pbf --overwrite
+          osmium fileinfo kyiv-combined.pbf
+      - name: Generate vector road map
+        env:
+          JAVACMD_OPTIONS: -Xmx5G
+        run: |
+          osmosis --rb file=kyiv-combined.pbf \
+            --mapfile-writer file=kyiv_oblast_city.map \
+            bbox=49.0,29.1,51.7,32.5 map-start-position=50.4501,30.5234 \
+            preferred-language=uk type=hd threads=4
+          ls -lh kyiv_oblast_city.map
+          test $(stat -c%s kyiv_oblast_city.map) -gt 1000000
+      - name: Generate offline address and place index
+        env:
+          JAVACMD_OPTIONS: -Xmx5G
+        run: |
+          osmosis --rb file=kyiv-combined.pbf \
+            --poi-writer file=kyiv_oblast_city.poi normalize=true all-tags=true
+          ls -lh kyiv_oblast_city.poi
+          sqlite3 kyiv_oblast_city.poi 'SELECT count(*) FROM poi_data;'
+          test $(stat -c%s kyiv_oblast_city.poi) -gt 100000
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Kyiv-Oblast-City-Offline-Mapsforge
+          path: |
+            kyiv_oblast_city.map
+            kyiv_oblast_city.poi
+          retention-days: 30
+          compression-level: 6
