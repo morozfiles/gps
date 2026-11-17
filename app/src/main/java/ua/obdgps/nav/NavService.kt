@@ -164,7 +164,7 @@ class NavService: Service(), LocationListener {
                 val location=gps
                 State.message=if(location!=null && SystemClock.elapsedRealtime()-gpsTime<10000 &&
                     location.hasBearing() && location.speed*3.6>=12f)
-                    motion.alignNow(location.bearing.toDouble()) else
+                    motion.alignNow((location.bearing.toDouble()+if(reverse)180.0 else 0.0)%360.0) else
                     "Для согласования компаса проедь прямо с хорошим GPS (более 12 км/ч)"
             }
             REVERSE -> { reverse=true;State.reverseSelected=true
@@ -553,7 +553,8 @@ class NavService: Service(), LocationListener {
                 State.navigationMode=if(manualMode) "Датчики (вручную)" else "Датчики (авто)"
                 if(fused.active && now-lastMockSent > 900L) {
                     lastMockSent=now
-                    fused.publish(pose.lat,pose.lon,pose.bearing,obdKmh,
+                    fused.publish(pose.lat,pose.lon,
+                        (pose.bearing+if(reverse)180.0 else 0.0)%360.0,obdKmh,
                         (15.0+State.driftMeters).coerceAtMost(250.0).toFloat())
                 }
             }
@@ -615,7 +616,7 @@ class NavService: Service(), LocationListener {
             State.navigationMode=if(force)"Датчики (вручную)" else "Датчики (авто)"
             State.message=if(force) "Принудительное ведение по датчикам включено" else
                 "Тревога в Киеве, GPS недостоверен: переход на датчики"
-            fused.publish(fix.latitude,fix.longitude,carBearing,State.speed?:0,15f)
+            fused.publish(fix.latitude,fix.longitude,bearing,State.speed?:0,15f)
         }
     }
 
@@ -699,8 +700,9 @@ class NavService: Service(), LocationListener {
         motion.setGeomagneticDeclination(location)
 
         val hasCourse=location.hasBearing() && kmh!=null && kmh>=12.0
-        if(hasCourse)motion.alignToGps(location.bearing.toDouble(),kmh!!,
-            abs(State.yawDegPerSec)<3.0)
+        if(hasCourse)motion.alignToGps(
+            (location.bearing.toDouble()+if(reverse)180.0 else 0.0)%360.0,
+            kmh!!,abs(State.yawDegPerSec)<3.0)
 
         if(State.dr) {
             // Require several consistent real fixes before trusting recovery.
