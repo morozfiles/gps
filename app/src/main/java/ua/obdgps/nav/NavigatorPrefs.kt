@@ -52,6 +52,27 @@ class NavigatorPrefs(context: Context) {
                 store.edit().putString("alertRegionSlug",value).apply()
         }
 
+    var alertOblastSlug:String
+        get() {
+            val old=store.getString("alertRegionSlug","kyivska")?:"kyivska"
+            val value=store.getString("alertOblastSlug",old) ?: old
+            return value.takeIf {slug->AirAlerts.oblasts.any{it.slug==slug}}
+                ?: "kyivska"
+        }
+        set(value) {
+            if(AirAlerts.oblasts.any{it.slug==value})
+                store.edit().putString("alertOblastSlug",value).apply()
+        }
+
+    var alertCitySlug:String
+        get()=store.getString("alertCitySlug","kyiv")?.takeIf {slug->
+            AirAlerts.cities.any{it.slug==slug}
+        } ?: "kyiv"
+        set(value) {
+            if(AirAlerts.cities.any{it.slug==value})
+                store.edit().putString("alertCitySlug",value).apply()
+        }
+
     data class RecentAddress(val label:String,val lat:Double,val lon:Double)
 
     fun recentAddresses():List<RecentAddress> {
