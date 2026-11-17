@@ -23,6 +23,7 @@
             <category android:name="android.intent.category.LAUNCHER"/>
           </intent-filter>
         </activity>
+        <activity android:name=".InertialMapActivity" android:exported="false"/>
         <service android:name=".NavService" android:exported="false"
             android:foregroundServiceType="location|connectedDevice"/>
     </application>
