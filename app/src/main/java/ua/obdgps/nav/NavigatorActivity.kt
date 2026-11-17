@@ -389,21 +389,56 @@ class NavigatorActivity : Activity() {
         }
     }
 
+    /** Direction of the road ahead from the nearest route segment. */
+    private fun upcomingCourse(route:RoutingEngine.Route,nearestIndex:Int):Double? {
+        val p=route.points
+        if(p.size<2)return null
+        val fromIndex=nearestIndex.coerceIn(0,p.lastIndex-1)
+        val from=p[fromIndex]
+        var toIndex=fromIndex+1
+        var traveled=0.0
+        while(toIndex<p.lastIndex && traveled<75.0 &&
+            toIndex-fromIndex<120) {
+            traveled+=RoutingEngine.meters(p[toIndex-1],p[toIndex])
+            if(traveled>=75.0)break
+            toIndex++
+        }
+        val end=p[toIndex]
+        val latitude=Math.toRadians((from.lat+end.lat)/2.0)
+        val east=(end.lon-from.lon)*cos(latitude)
+        val north=end.lat-from.lat
+        if(hypot(east,north)<1e-10)return null
+        return (Math.toDegrees(atan2(east,north))+360.0)%360.0
+    }
+
     private fun startGuidance() {
-        if(plan==null) {
+        val route=plan
+        if(route==null) {
             buildRoute(false)
             summary.text="Построй маршрут, затем начни ведение"
             return
         }
+        val fix=currentFix()
+        val userPoint=fix?.let{RoutingEngine.Point(it.lat,it.lon)}
+        val nearest=userPoint?.let{route.progress(it).nearestShapeIndex}?:0
+        val ahead=upcomingCourse(route,nearest)
+        val fallback=userPoint?:manualOrigin?:route.points.firstOrNull()
+        // Selecting the destination pans the map: a real Start press must
+        // restore car-following and face down the planned route immediately.
+        map.beginRouteGuidance(ahead,fallback)
         active=true
         State.activeRouting=true
         lastVoiceKey=""
+        pickStatus.text=if(fix==null)
+            "Маршрут впереди. Нет свежих координат — показан старт маршрута"
+        else "Ведение: слежение за автомобилем и направлением маршрута"
         speak("Ведение по маршруту начато")
     }
 
     private fun stopGuidance() {
         active=false
         State.activeRouting=false
+        map.stopRouteGuidance()
         routeGeneration++
         requestingRoute=false
         plan=null
@@ -428,6 +463,7 @@ class NavigatorActivity : Activity() {
                 lastVoiceKey="arrived"
                 active=false
                 State.activeRouting=false
+                map.stopRouteGuidance()
             }
             return
         }
@@ -476,13 +512,19 @@ class NavigatorActivity : Activity() {
             val fix=currentFix()
             val route=plan
             val speed=liveCarSpeed()
+            val routeProgress=if(route!=null && fix!=null)
+                route.progress(RoutingEngine.Point(fix.lat,fix.lon)) else null
+            val routeDirection=route?.let {
+                upcomingCourse(it,routeProgress?.nearestShapeIndex?:0)
+            }
             map.updateFromNavigation(fix,route?.points?:emptyList(),
-                selectedDestination,manualOrigin,speed)
+                selectedDestination,manualOrigin,speed,routeDirection,active)
             source.text=State.sourceDescription+" · "+
                 if(State.dr)"DR + OBD" else "обычное местоположение"
             if(route!=null) {
                 if(fix!=null) {
-                    val progress=route.progress(RoutingEngine.Point(fix.lat,fix.lon))
+                    val progress=routeProgress
+                        ?:route.progress(RoutingEngine.Point(fix.lat,fix.lon))
                     val distance=if(progress.remainingMeters>=1000)
                         String.format(Locale.getDefault(),"%.1f км",progress.remainingMeters/1000)
                     else progress.remainingMeters.roundToInt().toString()+" м"
