@@ -303,15 +303,82 @@ class MainActivity : Activity() {
         if (address != null) i.putExtra("address",address)
         try { startForegroundService(i) } catch (e: Exception) { State.message = e.message ?: "Ошибка запуска" }
     }
-    private fun hasPermissions() = arrayOf(
+    private var startupPermissionsChecked=false
+
+    private fun requiredPermissions()=arrayOf(
         Manifest.permission.ACCESS_FINE_LOCATION,
         Manifest.permission.BLUETOOTH_SCAN,
         Manifest.permission.BLUETOOTH_CONNECT
-    ).all { checkSelfPermission(it) == PackageManager.PERMISSION_GRANTED }
+    )
+    private fun hasPermissions()=requiredPermissions().all {
+        checkSelfPermission(it)==PackageManager.PERMISSION_GRANTED
+    }
+
+    private fun missingRuntimePermissions():Array<String> {
+        val missing=ArrayList<String>()
+        // Fine + coarse must be requested together on modern Android.
+        if(checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)!=
+            PackageManager.PERMISSION_GRANTED) {
+            missing.add(Manifest.permission.ACCESS_FINE_LOCATION)
+            missing.add(Manifest.permission.ACCESS_COARSE_LOCATION)
+        }
+        for(permission in arrayOf(Manifest.permission.BLUETOOTH_SCAN,
+            Manifest.permission.BLUETOOTH_CONNECT)) {
+            if(checkSelfPermission(permission)!=PackageManager.PERMISSION_GRANTED)
+                missing.add(permission)
+        }
+        // Notifications are optional and never block navigation. Ask once.
+        val prefs=getPreferences(MODE_PRIVATE)
+        if(!prefs.getBoolean("askedNotification",false) &&
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)!=
+                PackageManager.PERMISSION_GRANTED)
+            missing.add(Manifest.permission.POST_NOTIFICATIONS)
+        return missing.toTypedArray()
+    }
+
+    private fun permissionExplanation():String {
+        val missing=missingRuntimePermissions().toList()
+        val text=ArrayList<String>()
+        if(Manifest.permission.ACCESS_FINE_LOCATION in missing)
+            text.add("• Точная геолокация — GPS, Wi-Fi и сотовые источники координат")
+        if(Manifest.permission.BLUETOOTH_SCAN in missing)
+            text.add("• Поиск Bluetooth — обнаружение ELM327")
+        if(Manifest.permission.BLUETOOTH_CONNECT in missing)
+            text.add("• Подключение Bluetooth — скорость автомобиля по OBD")
+        if(Manifest.permission.POST_NOTIFICATIONS in missing)
+            text.add("• Уведомления — необязательное разрешение для сообщений приложения")
+        return text.joinToString("\n")
+    }
+
+    private fun showStartupPermissionsIfMissing() {
+        if(startupPermissionsChecked || isFinishing || isDestroyed)return
+        startupPermissionsChecked=true
+        if(missingRuntimePermissions().isEmpty())return
+        AlertDialog.Builder(this)
+            .setTitle("Разрешения OBD GPS Navigator")
+            .setMessage("Для корректной работы проверь разрешения:\n\n"+
+                permissionExplanation()+
+                "\n\nОфлайн-карту можно просматривать и без этих разрешений.")
+            .setPositiveButton("Выдать разрешения"){_,_->askPermissions()}
+            .setNegativeButton("Позже",null).show()
+    }
+
+    private fun openApplicationPermissions() {
+        try {
+            startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                Uri.parse("package:"+packageName)))
+        } catch (_:Exception) {
+            Toast.makeText(this,"Открой настройки разрешений приложения",
+                Toast.LENGTH_LONG).show()
+        }
+    }
+
     private fun askPermissions() {
-        requestPermissions(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION,
-          Manifest.permission.ACCESS_COARSE_LOCATION,Manifest.permission.BLUETOOTH_SCAN,
-          Manifest.permission.BLUETOOTH_CONNECT,Manifest.permission.POST_NOTIFICATIONS),12)
+        val missing=missingRuntimePermissions()
+        if(missing.isEmpty())return
+        getPreferences(MODE_PRIVATE).edit()
+            .putBoolean("askedNotification",true).apply()
+        requestPermissions(missing,12)
     }
     private fun chooseBluetooth() {
         if (!hasPermissions() || !isBluetoothEnabled()) {
@@ -605,6 +672,7 @@ class MainActivity : Activity() {
         }
         addButton(root,"Открыть Google Maps") { openGoogleMaps() }
         addButton(root,"Остановить мониторинг") { send(NavService.EXIT) }
+        handler.post {showStartupPermissionsIfMissing()}
     }
     private fun openGoogleMaps() {
         val mapsPackage = "com.google.android.apps.maps"
@@ -662,9 +730,21 @@ class MainActivity : Activity() {
         requestCode: Int, permissions: Array<out String>, grantResults: IntArray
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode == 12) {
+        if(requestCode==12) {
             monitorGpsSpeed()
-            handler.post { checkBluetoothGps() }
+            if(hasPermissions()) {
+                send(NavService.MONITOR)
+            } else {
+                AlertDialog.Builder(this)
+                    .setTitle("Не все разрешения выданы")
+                    .setMessage("Для OBD и инерциальной навигации нужны "+
+                        "точное местоположение и разрешения Bluetooth. "+
+                        "При запрете через Android их можно включить в настройках.")
+                    .setPositiveButton("Открыть настройки"){_,_->
+                        openApplicationPermissions()
+                    }
+                    .setNegativeButton("Позже",null).show()
+            }
         }
     }
 }
