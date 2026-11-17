@@ -28,10 +28,9 @@ class PlaceSearch(private val context:Context) {
         /** Russian/Ukrainian address search; digits permitted for house numbers. */
         fun isAllowedAddress(text:String):Boolean {
             if(text.length>180)return false
-            if(!text.any { Character.UnicodeScript.of(it.code)==
-                    Character.UnicodeScript.CYRILLIC })return false
+            if(!text.any { it in 'А'..'я' || it in "ЁёІіЇїЄєҐґ" })return false
             return text.all { ch ->
-                Character.UnicodeScript.of(ch.code)==Character.UnicodeScript.CYRILLIC ||
+                ch in 'А'..'я' || ch in "ЁёІіЇїЄєҐґ" ||
                 ch.isDigit() || ch.isWhitespace() ||
                 ch in " ,.-/№'’()"
             }
@@ -44,7 +43,7 @@ class PlaceSearch(private val context:Context) {
             }.getOrDefault(raw)
             val output=buildString {
                 for(ch in translated) {
-                    if(Character.UnicodeScript.of(ch.code)==Character.UnicodeScript.CYRILLIC ||
+                    if(ch in 'А'..'я' || ch in "ЁёІіЇїЄєҐґ" ||
                        ch.isDigit() || ch in " ,.-/№'’()")append(ch)
                     else if(ch.isLetter() || ch.isWhitespace())append(' ')
                 }
