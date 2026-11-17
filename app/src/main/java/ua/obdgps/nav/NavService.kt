@@ -40,19 +40,40 @@ class NavService: Service(), SensorEventListener, LocationListener {
     private var yawBias = 0.0
     private var mockOn = false
     private var connected = false
-    private var lastResponse = ""
-    private var elmReady = false
-    private val commands = listOf("ATZ","ATE0","ATL0","ATS0","ATH0","ATSP0")
+    private val responseBuffer = StringBuilder()
+    private val commands = listOf("ATZ", "ATE0", "ATL0", "ATS0", "ATH0", "ATAT1", "ATST96")
+    // Early Mitsubishi K-line. ELM327 handles 5-baud / fast initialization on the adapter.
+    private val protocols = listOf(
+        "3" to "ISO 9141-2",
+        "4" to "KWP2000 5-baud",
+        "5" to "KWP2000 fast",
+        "0" to "Auto OBD2"
+    )
     private var setupIndex = 0
+    private var protocolIndex = 0
+    private var configuredProtocol = -1
+    private var failedSpeedRequests = 0
     private var lastPoll = 0L
+    private var lastSentAt = 0L
+    private var pendingCommand: String? = null
+    private var uartReady = false
     private val loop = object: Runnable {
         override fun run() {
             val now = SystemClock.elapsedRealtime()
-            if(connected && tx != null && now - lastPoll >= 950) {
-                lastPoll = now
-                val command = if (!elmReady && setupIndex < commands.size) commands[setupIndex++] else "010D"
-                if (setupIndex >= commands.size) elmReady = true
-                write(command)
+            if (connected && uartReady && tx != null) {
+                // Never send another ELM command until the preceding prompt (>) arrives.
+                // Initializing ISO9141 / KWP can take several seconds.
+                if (pendingCommand != null && now - lastSentAt > 7000L) {
+                    processElmReply("TIMEOUT")
+                }
+                if (pendingCommand == null && now - lastPoll >= 900L) {
+                    val command = when {
+                        setupIndex < commands.size -> commands[setupIndex]
+                        configuredProtocol != protocolIndex -> "ATSP${protocols[protocolIndex].first}"
+                        else -> "010D"
+                    }
+                    write(command)
+                }
             }
             if(State.dr) {
                 val dt = ((now - tickTime)/1000.0).coerceIn(0.0,0.5)
@@ -127,34 +148,85 @@ class NavService: Service(), SensorEventListener, LocationListener {
         stopScan()
         try {
             gatt?.close()
-            tx=null; connected=false; elmReady=false; setupIndex=0
+            tx=null; connected=false; uartReady=false
+            setupIndex=0; protocolIndex=0; configuredProtocol=-1
+            failedSpeedRequests=0; pendingCommand=null; responseBuffer.clear()
+            State.speed=null
             State.deviceName=State.devices[address] ?: address
             gatt=bt.getRemoteDevice(address).connectGatt(this,false,object:BluetoothGattCallback(){
                 override fun onConnectionStateChange(g:BluetoothGatt,status:Int,newState:Int) {
-                    if (newState==BluetoothProfile.STATE_CONNECTED && status==BluetoothGatt.GATT_SUCCESS) {
-                        State.message="BLE соединён, определение сервиса"; connected=true; g.discoverServices()
-                    } else { State.message="BLE отключен: $status";connected=false }
+                    handler.post {
+                        if (gatt !== g) return@post
+                        if (newState==BluetoothProfile.STATE_CONNECTED && status==BluetoothGatt.GATT_SUCCESS) {
+                            State.message="BLE подключён, ищу сервис Vgate iCar Pro 2S"
+                            connected=true
+                            g.discoverServices()
+                        } else {
+                            State.message="BLE отключён: $status"
+                            connected=false; uartReady=false; pendingCommand=null
+                            State.speed=null
+                        }
+                    }
                 }
                 override fun onServicesDiscovered(g:BluetoothGatt,status:Int) {
-                    if(status!=0) {State.message="GATT error $status";return}
-                    val entries=g.services.flatMap { s->s.characteristics.map { s to it } }
-                    val pair=entries.firstNotNullOfOrNull { (service,write) ->
-                        if(write.properties and (BluetoothGattCharacteristic.PROPERTY_WRITE or BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE)==0) null
-                        else entries.firstOrNull { (s,read)-> s.uuid==service.uuid && read.properties and (BluetoothGattCharacteristic.PROPERTY_NOTIFY or BluetoothGattCharacteristic.PROPERTY_INDICATE)!=0 }
-                            ?.let { write to it.second }
+                    handler.post {
+                        if (gatt !== g) return@post
+                        if(status!=BluetoothGatt.GATT_SUCCESS) {
+                            State.message="Ошибка GATT $status";return@post
+                        }
+                        val entries=g.services.flatMap { srv->srv.characteristics.map { srv to it } }
+                        fun canWrite(c:BluetoothGattCharacteristic)=
+                            c.properties and (BluetoothGattCharacteristic.PROPERTY_WRITE or BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE)!=0
+                        fun canNotify(c:BluetoothGattCharacteristic)=
+                            c.properties and (BluetoothGattCharacteristic.PROPERTY_NOTIFY or BluetoothGattCharacteristic.PROPERTY_INDICATE)!=0
+                        // Confirmed on some iCar Pro 2S BLE 5.3 firmware variants.
+                        val vgateService=UUID.fromString("000018f0-0000-1000-8000-00805f9b34fb")
+                        val vgateTx=UUID.fromString("00002af1-0000-1000-8000-00805f9b34fb")
+                        val vgateRx=UUID.fromString("00002af0-0000-1000-8000-00805f9b34fb")
+                        val txKnown=entries.firstOrNull { (svc,c)->svc.uuid==vgateService && c.uuid==vgateTx && canWrite(c) }
+                        val rxKnown=entries.firstOrNull { (svc,c)->svc.uuid==vgateService && c.uuid==vgateRx && canNotify(c) }
+                        val known=if(txKnown!=null && rxKnown!=null) txKnown.second to rxKnown.second else null
+                        // Fallback for different Vgate/ELM327 BLE firmware versions.
+                        val fallback=entries.firstNotNullOfOrNull { (service,write) ->
+                            if(!canWrite(write)) null else entries.firstOrNull { (srv,read)->
+                                srv.uuid==service.uuid && canNotify(read)
+                            }?.let { write to it.second }
+                        }
+                        val pair=known ?: fallback
+                        if(pair==null) {State.message="BLE UART не найден (нет write+notify)";return@post}
+                        tx=pair.first
+                        val notify=pair.second
+                        State.message=if(known!=null) "Vgate BLE UART 18F0 найден" else "BLE UART найден, пробую K-Line"
+                        if(!g.setCharacteristicNotification(notify,true)) {
+                            State.message="Не удалось подписаться на BLE уведомления";return@post
+                        }
+                        val desc=notify.getDescriptor(UUID.fromString("00002902-0000-1000-8000-00805f9b34fb"))
+                        if(desc!=null) {
+                            val bytes=if(notify.properties and BluetoothGattCharacteristic.PROPERTY_NOTIFY!=0)
+                                BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE else
+                                BluetoothGattDescriptor.ENABLE_INDICATION_VALUE
+                            val result=g.writeDescriptor(desc,bytes)
+                            if(result!=BluetoothStatusCodes.SUCCESS) {
+                                State.message="Ошибка подписки BLE: $result"
+                            }
+                        } else {
+                            uartReady=true
+                            State.message="ELM327: инициализация K-Line"
+                        }
                     }
-                    if(pair==null) {State.message="BLE UART не найден";return}
-                    tx=pair.first
-                    val notify=pair.second
-                    g.setCharacteristicNotification(notify,true)
-                    val desc=notify.getDescriptor(UUID.fromString("00002902-0000-1000-8000-00805f9b34fb"))
-                    if(desc!=null) {
-                        val bytes=BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-                        g.writeDescriptor(desc,bytes)
-                    }
-                    State.message="BLE UART готов, ожидаем скорость"
                 }
-                override fun onCharacteristicChanged(g:BluetoothGatt,c:BluetoothGattCharacteristic,value:ByteArray) { feed(value) }
+                override fun onDescriptorWrite(g:BluetoothGatt,descriptor:BluetoothGattDescriptor,status:Int) {
+                    handler.post {
+                        if (gatt !== g) return@post
+                        if(status==BluetoothGatt.GATT_SUCCESS) {
+                            uartReady=true
+                            State.message="ELM327: инициализация K-Line"
+                        } else State.message="BLE notifications: ошибка $status"
+                    }
+                }
+                override fun onCharacteristicChanged(g:BluetoothGatt,c:BluetoothGattCharacteristic,value:ByteArray) {
+                    handler.post { if(gatt===g) feed(value) }
+                }
             }, BluetoothDevice.TRANSPORT_LE)
             State.message="Подключение к $address"
         } catch(e:Exception) { State.message="Connection error: ${e.message}" }
@@ -165,20 +237,66 @@ class NavService: Service(), SensorEventListener, LocationListener {
         try {
             val kind=if(c.properties and BluetoothGattCharacteristic.PROPERTY_WRITE !=0)
                 BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT else BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
-            g.writeCharacteristic(c,"$command\r".toByteArray(Charsets.US_ASCII),kind)
+            val result=g.writeCharacteristic(c,"$command\r".toByteArray(Charsets.US_ASCII),kind)
+            lastPoll=SystemClock.elapsedRealtime()
+            if (result==BluetoothStatusCodes.SUCCESS) {
+                pendingCommand=command
+                lastSentAt=lastPoll
+                responseBuffer.clear()
+                if(command.startsWith("ATSP"))
+                    State.message="K-Line: проверяю ${protocols[protocolIndex].second}"
+            } else State.message="Ошибка BLE write $result: $command"
         } catch(e:Exception) { State.message="Write: ${e.message}" }
     }
     private fun feed(bytes:ByteArray) {
-        val text=bytes.toString(Charsets.US_ASCII)
-        lastResponse += text
-        if(lastResponse.length>1000) lastResponse=lastResponse.takeLast(500)
-        val normalized=lastResponse.uppercase().replace(Regex("[^0-9A-F]"),"")
-        val match=Regex("410D([0-9A-F]{2})").find(normalized)
-        if(match!=null) {
-            val speed=match.groupValues[1].toIntOrNull(16)
-            if(speed!=null) {State.speed=speed; speedTime=SystemClock.elapsedRealtime();State.message="ELM327: $speed км/ч"}
-            lastResponse=""
-        } else if(text.contains('>')) lastResponse=""
+        responseBuffer.append(bytes.toString(Charsets.US_ASCII).replace("\u0000",""))
+        if(responseBuffer.length>4096) responseBuffer.clear()
+        val index=responseBuffer.indexOf(">")
+        if(index<0) return
+        val reply=responseBuffer.substring(0,index)
+        responseBuffer.delete(0,index+1)
+        processElmReply(reply)
+    }
+    private fun processElmReply(reply:String) {
+        val command=pendingCommand ?: return
+        pendingCommand=null
+        val upper=reply.uppercase()
+        if(command.startsWith("ATSP")) {
+            if(upper.contains("?") || upper.contains("ERROR") || upper.contains("TIMEOUT")) {
+                nextProtocol("ELM не принял $command")
+            } else configuredProtocol=protocolIndex
+            return
+        }
+        if(command.startsWith("AT")) {
+            // Continue setup after prompt; a specific command may be unsupported
+            // by a clone, but protocol probing will still determine compatibility.
+            setupIndex++
+            return
+        }
+        if(command=="010D") {
+            val kmh=Obd.parseSpeed(reply)
+            if(kmh!=null) {
+                State.speed=kmh
+                speedTime=SystemClock.elapsedRealtime()
+                failedSpeedRequests=0
+                State.message="${protocols[protocolIndex].second}: $kmh км/ч (PID 010D)"
+            } else {
+                failedSpeedRequests++
+                val detail=upper.replace("\r"," ").replace("\n"," ").trim().takeLast(54)
+                State.message="${protocols[protocolIndex].second}: нет скорости (\$failedSpeedRequests/3): $detail"
+                if(failedSpeedRequests>=3 && protocolIndex<protocols.lastIndex)
+                    nextProtocol("PID 010D не ответил")
+                // The last mode remains in auto; do not fake wheel speed.
+            }
+        }
+    }
+    private fun nextProtocol(reason:String) {
+        if(protocolIndex<protocols.lastIndex) {
+            protocolIndex++
+            configuredProtocol=-1
+            failedSpeedRequests=0
+            State.message="$reason; пробую ${protocols[protocolIndex].second}"
+        } else State.message="$reason; стандартный PID 010D недоступен"
     }
     private fun startDr() {
         val now=SystemClock.elapsedRealtime()
