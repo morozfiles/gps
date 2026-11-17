@@ -286,6 +286,15 @@ class NavigatorActivity : Activity() {
             Gravity.TOP or Gravity.LEFT).apply{
             setMargins(dp(7),dp(32),0,0)
         })
+        mapContainer.addView(mapControl("V") {
+            startActivity(Intent(this,OfflineVectorNavigatorActivity::class.java))
+        }.apply{
+            textSize=18f
+            contentDescription="Векторная офлайн-карта"
+        },FrameLayout.LayoutParams(dp(44),dp(44),
+            Gravity.TOP or Gravity.LEFT).apply{
+            setMargins(dp(7),dp(80),0,0)
+        })
         setContentView(root)
 
         NavigatorPrefs(this).manualStart?.let {
