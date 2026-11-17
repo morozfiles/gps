@@ -8,13 +8,15 @@ import kotlin.math.*
 /** Phone must be fixed relative to the vehicle. OBD distance + gravity-axis yaw rate. */
 class MotionSensors(
     context: Context,
-    private val onYaw: (Double, Double) -> Unit
+    private val onYaw: (Double, Double) -> Unit,
+    private val onPureAcceleration: (Double, Long) -> Unit = { _, _ -> }
 ) : SensorEventListener {
     private val sm = context.getSystemService(SensorManager::class.java)
     private val prefs = context.getSharedPreferences("motion", Context.MODE_PRIVATE)
     private val gravity = floatArrayOf(0f,0f,9.81f)
     private val rotationMatrix = FloatArray(9)
     private val orientation = FloatArray(3)
+    private var pureForwardAxis:DoubleArray?=null
     private var gravityReady = false
     private var rotationReady = false
     private var lastGyroNs = 0L
@@ -136,6 +138,26 @@ class MotionSensors(
         }
         State.calibrationText=if(prefs.contains("yawBias")) "Калибровка выполнена" else "Не откалибровано"
     }
+
+    /**
+     * Snapshot the phone's mounted orientation ONCE to determine its
+     * longitudinal axis in device coordinates. Never update this axis
+     * from the compass while the pure sensor-only track is running.
+     */
+    fun beginPureInertialAxis(initialVehicleBearing:Double):Boolean {
+        if(!rotationReady || !initialVehicleBearing.isFinite())return false
+        val heading=Math.toRadians(initialVehicleBearing)
+        val east=sin(heading)
+        val north=cos(heading)
+        pureForwardAxis=doubleArrayOf(
+            rotationMatrix[0]*east+rotationMatrix[3]*north,
+            rotationMatrix[1]*east+rotationMatrix[4]*north,
+            rotationMatrix[2]*east+rotationMatrix[5]*north
+        )
+        return true
+    }
+
+    fun endPureInertialAxis(){pureForwardAxis=null}
 
     fun stop() = sm.unregisterListener(this)
 
@@ -286,6 +308,13 @@ class MotionSensors(
                 gravityReady=true
             }
             Sensor.TYPE_LINEAR_ACCELERATION -> {
+                // The separate diagnostic track uses this frozen phone axis,
+                // not corrected OBD, GPS, magnetic heading or network fixes.
+                pureForwardAxis?.let{axis->
+                    val forward=(0..2).sumOf{i->
+                        axis[i]*event.values[i].toDouble()}
+                    onPureAcceleration(forward,event.timestamp)
+                }
                 val norm=sqrt((0..2).sumOf { i->event.values[i].toDouble().pow(2) })
                 if(calibrationStart!=0L) {accelSum+=norm;accelSamples++}
                 val corrected=(norm-accelBias).coerceAtLeast(0.0)
