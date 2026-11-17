@@ -237,7 +237,9 @@ internal class InertialTrackMapView(context:Context): View(context) {
     private val worker=Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable,"Visible-OSM-Tiles").apply{isDaemon=true}
     }
-    private val tileDir=File(context.cacheDir,"inertial-test-tiles").apply{mkdirs()}
+    // App-private persistent storage survives restarts and system cache clearing.
+    private val tileDir=File(context.filesDir,"offline-maps/viewed").apply{mkdirs()}
+    private var offlineGeneration=-1
     private val handler=Handler(Looper.getMainLooper())
     private var current:State.TrailPoint?=null
     private var markerBearing:Double?=null
@@ -689,28 +691,51 @@ internal class InertialTrackMapView(context:Context): View(context) {
     }
 
     private fun tileBitmap(z:Int,x:Int,y:Int):Bitmap? {
+        val version=OfflineMapStore.generation
+        if(version!=offlineGeneration) {
+            offlineGeneration=version
+            cache.evictAll()
+            failedUntil.clear()
+        }
         val key=z.toString()+"_"+x+"_"+y
         cache.get(key)?.let{return it}
-        val file=File(tileDir,key+".png")
-        if(file.exists() && file.length()>0) {
-            val img=BitmapFactory.decodeFile(file.absolutePath)
-            if(img!=null) {cache.put(key,img);return img}
-            file.delete()
-        }
         val now=SystemClock.elapsedRealtime()
         synchronized(loading) {
-            if(key in loading || loading.size>=22 || (failedUntil[key]?:0L)>now) return null
+            if(key in loading || loading.size>=24 || (failedUntil[key]?:0L)>now)
+                return null
             loading.add(key)
         }
         worker.execute {
             try {
-                downloadTile(z,x,y,file)
-                val img=BitmapFactory.decodeFile(file.absolutePath)
-                    ?: throw IllegalStateException("Tile decode failed")
-                cache.put(key,img)
-                handler.post {invalidate()}
+                val file=OfflineMapStore.visibleTileFile(context,key)
+                // First: selected raster MBTiles archive, for offline area coverage.
+                val raw=OfflineMapStore.readRasterTile(context,z,x,y)
+                var bitmap=raw?.let{BitmapFactory.decodeByteArray(it,0,it.size)}
+                if(bitmap==null && file.exists() && file.length()>0L) {
+                    // Raster tiles actually viewed previously, in persistent storage.
+                    bitmap=BitmapFactory.decodeFile(file.absolutePath)
+                    if(bitmap==null)file.delete()
+                }
+                if(bitmap==null) {
+                    // Never prefetch nearby tiles: request ONLY currently visible
+                    // tiles in onDraw. This respects OSM's no-bulk-download rule.
+                    downloadTile(z,x,y,file)
+                    bitmap=BitmapFactory.decodeFile(file.absolutePath)
+                } else if(raw==null && file.exists()) {
+                    // Keep ≥ 7-day cache lifetime; refresh older visited tiles
+                    // opportunistically while online, never block offline use.
+                    val sevenDays=7L*24L*60L*60L*1000L
+                    if(System.currentTimeMillis()-file.lastModified()>sevenDays)
+                        try { downloadTile(z,x,y,file) } catch (_:Exception) {}
+                }
+                if(bitmap!=null) {
+                    cache.put(key,bitmap)
+                    handler.post{invalidate()}
+                } else throw IllegalStateException("Map tile unavailable")
             } catch (_:Exception) {
-                synchronized(loading){failedUntil[key]=SystemClock.elapsedRealtime()+60_000L}
+                synchronized(loading){
+                    failedUntil[key]=SystemClock.elapsedRealtime()+45_000L
+                }
             } finally {
                 synchronized(loading){loading.remove(key)}
             }
@@ -720,38 +745,47 @@ internal class InertialTrackMapView(context:Context): View(context) {
 
     private fun downloadTile(z:Int,x:Int,y:Int,file:File) {
         val url="https://tile.openstreetmap.org/"+z+"/"+x+"/"+y+".png"
-        val connection=URL(url).openConnection() as HttpURLConnection
-        connection.connectTimeout=6000
-        connection.readTimeout=7000
-        connection.useCaches=true
-        connection.setRequestProperty("User-Agent",
-            "OBD-GPS-Navigator/0.8.0 Android diagnostic (+https://github.com/morozfiles)")
-        connection.setRequestProperty("Accept","image/png")
+        val conn=URL(url).openConnection() as HttpURLConnection
+        conn.connectTimeout=6000
+        conn.readTimeout=7500
+        conn.useCaches=true
+        conn.setRequestProperty("User-Agent",
+            "OBD-GPS-Navigator/0.9.8 (Android; https://github.com/morozfiles/gps)")
+        conn.setRequestProperty("Accept","image/png")
+        if(file.exists() && file.lastModified()>0L)
+            conn.ifModifiedSince=file.lastModified()
         try {
-            if(connection.responseCode!=200)throw IllegalStateException("Tile HTTP error")
-            if(!connection.contentType.orEmpty().startsWith("image/"))
+            if(conn.responseCode==HttpURLConnection.HTTP_NOT_MODIFIED) {
+                file.setLastModified(System.currentTimeMillis())
+                return
+            }
+            if(conn.responseCode!=200)
+                throw IllegalStateException("Tile HTTP "+conn.responseCode)
+            if(!conn.contentType.orEmpty().startsWith("image/"))
                 throw IllegalStateException("Not image")
             val tmp=File(tileDir,file.name+".part")
             try {
-                connection.inputStream.use { input ->
-                    tmp.outputStream().use { out ->
-                        val bytes=ByteArray(8192)
+                conn.inputStream.use{input->
+                    tmp.outputStream().use{out->
+                        val buffer=ByteArray(8192)
                         var total=0
-                        while(true) {
-                            val n=input.read(bytes)
-                            if(n<0)break
-                            total+=n
-                            if(total>2_000_000)throw IllegalStateException("Oversized tile")
-                            out.write(bytes,0,n)
+                        while(true){
+                            val bytes=input.read(buffer)
+                            if(bytes<0)break
+                            total+=bytes
+                            if(total>2_000_000)throw IllegalStateException("Tile too big")
+                            out.write(buffer,0,bytes)
                         }
                     }
                 }
+                if(BitmapFactory.decodeFile(tmp.absolutePath)==null)
+                    throw IllegalStateException("Corrupt tile")
                 if(!tmp.renameTo(file)) {
                     file.writeBytes(tmp.readBytes())
                     tmp.delete()
                 }
             } finally {tmp.delete()}
-        } finally {connection.disconnect()}
+        } finally {conn.disconnect()}
     }
 
     override fun onTouchEvent(event:MotionEvent):Boolean {
