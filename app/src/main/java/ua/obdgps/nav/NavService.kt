@@ -764,7 +764,7 @@ class NavService: Service(), LocationListener {
             State.gpsSpeedKmh==null || State.gpsSpeedKmh!!<1.5
 
         if(!State.dr && autoEnabled && !fusedStarting &&
-            AirAlerts.selectedCityHasAlert() &&
+            AirAlerts.autoNavigationAlertActive() &&
             freshObd && obdKmh>=7.0) {
             // City alert + independently confirmed OBD motion +
             // (GPS speed zero/missing OR rejected >1 km teleport).
