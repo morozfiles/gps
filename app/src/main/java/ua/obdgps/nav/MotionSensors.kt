@@ -139,6 +139,7 @@ class MotionSensors(
                 }
             }
             Sensor.TYPE_MAGNETIC_FIELD -> {
+                magneticAccuracy=event.accuracy
                 magneticStrength=sqrt((0..2).sumOf{i->event.values[i].toDouble().pow(2)})
             }
             Sensor.TYPE_ROTATION_VECTOR -> {
@@ -159,8 +160,13 @@ class MotionSensors(
                 yawSmoothed=.82*yawSmoothed+.18*(raw-yawBias)
                 val rightRate=-Math.toDegrees(yawSmoothed)
                 State.yawDegPerSec=rightRate
-                State.motionText=if((State.speed ?: 0)<3 || abs(rightRate)<4.0) "Прямо"
-                    else if(rightRate>0) "Поворот вправо" else "Поворот влево"
+                State.motionText=when {
+                    State.speed == null -> "Нет скорости OBD"
+                    State.speed == 0 -> "Стоим"
+                    abs(rightRate) < 4.0 -> "Едем прямо"
+                    rightRate > 0 -> "Поворот вправо"
+                    else -> "Поворот влево"
+                }
                 if(dt in 0.001..0.15)onYaw(raw-yawBias,dt)
             }
         }
