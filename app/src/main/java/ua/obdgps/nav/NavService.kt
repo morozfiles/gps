@@ -41,6 +41,7 @@ class NavService: Service(), LocationListener {
     private lateinit var lm: LocationManager
     private lateinit var motion: MotionSensors
     private lateinit var fused: FusedMockRelay
+    private lateinit var hybridLocator: HybridLocator
     private lateinit var settings: NavigatorPrefs
     private var gatt: BluetoothGatt? = null
     private var tx: BluetoothGattCharacteristic? = null
@@ -131,6 +132,7 @@ class NavService: Service(), LocationListener {
             }
             AirAlerts.refreshIfDue()
             updateNavigation(now)
+            publishActualNavigationPosition(now)
             tickTime=now
             handler.postDelayed(this,250)
         }
@@ -159,6 +161,9 @@ class NavService: Service(), LocationListener {
         State.directionConfirmed=false
         State.reverseSelected=false
         fused = FusedMockRelay(this)
+        hybridLocator = HybridLocator(this) { location,source ->
+            acceptNetworkLocation(location,source)
+        }
         motion = MotionSensors(this) { yaw, dt ->
             if (State.dr) dr.turn(yaw, dt)
         }
@@ -174,8 +179,12 @@ class NavService: Service(), LocationListener {
         val n = Notification.Builder(this,"nav").setContentTitle("OBD GPS Navigator").setContentText("GPS/OBD monitoring")
             .setSmallIcon(android.R.drawable.ic_menu_mylocation).setContentIntent(intent).build()
         startForeground(1,n,android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION or android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
-        if(checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)==PackageManager.PERMISSION_GRANTED)
-            try { lm.requestLocationUpdates(LocationManager.GPS_PROVIDER,1000,0f,this,Looper.getMainLooper()) } catch (_:Exception) {}
+        if(checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)==PackageManager.PERMISSION_GRANTED) {
+            try {
+                lm.requestLocationUpdates(LocationManager.GPS_PROVIDER,1000,0f,this,Looper.getMainLooper())
+            } catch (_:Exception) {}
+            hybridLocator.start()
+        }
         tickTime=SystemClock.elapsedRealtime()
         handler.post(loop)
     }
@@ -594,6 +603,77 @@ class NavService: Service(), LocationListener {
             State.message="$reason; пробую ${protocols[protocolIndex].second}"
         } else State.message="$reason; стандартный PID 010D недоступен"
     }
+    private fun acceptNetworkLocation(location:Location,provider:String) {
+        if(location.isMock || State.dr) return
+        if(!location.hasAccuracy() || location.accuracy>220f) return
+        val age=SystemClock.elapsedRealtimeNanos()-location.elapsedRealtimeNanos
+        if(age<0L || age>12_000_000_000L) return
+        if(location.latitude !in -85.0..85.0 ||
+            location.longitude !in -180.0..180.0)return
+        val now=SystemClock.elapsedRealtime()
+        val gpsRecent=gps!=null && now-gpsTime<8000L
+        if(gpsRecent) {
+            // Network is a backup: do not override accurate GNSS with
+            // typically less accurate cell/Wi-Fi estimates.
+            return
+        }
+        val anchor=gps
+        if(anchor!=null) {
+            // Spurious network-cell geolocation can be on another continent.
+            val d=anchor.distanceTo(location)
+            if(d>max(350.0,location.accuracy*4.0)) return
+        }
+        val manual=State.manualStart
+        if(manual!=null && anchor==null) {
+            val check=Location(LocationManager.NETWORK_PROVIDER).apply {
+                latitude=manual.lat;longitude=manual.lon
+            }
+            if(check.distanceTo(location)>max(350.0,location.accuracy*4.0))return
+        }
+        val fix=State.NavFix(location.latitude,location.longitude,
+            if(location.hasBearing())location.bearing.toDouble() else null,
+            location.accuracy,provider,now)
+        State.networkFix=fix
+        State.navFix=fix
+        State.sourceDescription="Сеть: $provider; точность ~${location.accuracy.toInt()} м"
+    }
+
+    private fun publishActualNavigationPosition(now:Long) {
+        if(State.dr) {
+            dr.pose?.let{ pose ->
+                State.navFix=State.NavFix(pose.lat,pose.lon,
+                    (pose.bearing+if(reverse)180.0 else 0.0)%360.0,
+                    (15+State.driftMeters).coerceAtMost(250.0).toFloat(),
+                    "OBD + инерциальные датчики",now)
+                State.sourceDescription="Инерциальный расчёт · без GPS"
+            }
+            return
+        }
+        val currentGps=gps
+        if(currentGps!=null && now-gpsTime<7500L) {
+            State.navFix=State.NavFix(currentGps.latitude,currentGps.longitude,
+                if(currentGps.hasBearing())currentGps.bearing.toDouble() else null,
+                currentGps.accuracy,"GPS",now)
+            State.sourceDescription="GPS · точность ~${currentGps.accuracy.toInt()} м"
+            return
+        }
+        val net=State.networkFix
+        if(net!=null && now-net.elapsedMs<12_000L) {
+            State.navFix=net
+            State.sourceDescription=net.source+" · ~${net.accuracy.toInt()} м"
+            return
+        }
+        val saved=State.manualStart
+        if(saved!=null && !State.dr) {
+            State.navFix=State.NavFix(saved.lat,saved.lon,saved.bearing,
+                30f,"Ручная точка",now)
+            State.sourceDescription="Ручная стартовая точка · GPS нет"
+            return
+        }
+        State.navFix=null
+        State.sourceDescription="Нет свежих GPS/Wi-Fi/сотовых данных"
+    }
+
     private fun correctedSpeed(): Double? = State.obdSpeedKmh()
 
     private fun applyDetectedDirection(reverseDetected: Boolean, method: String) {
@@ -851,6 +931,7 @@ class NavService: Service(), LocationListener {
         handler.removeCallbacks(loop);stopScan();stopDr()
         disconnectTransport()
         motion.stop()
+        hybridLocator.stop()
         try {lm.removeUpdates(this)} catch(_:Exception){}
         super.onDestroy()
     }
