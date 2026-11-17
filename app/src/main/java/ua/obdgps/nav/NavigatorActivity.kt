@@ -30,7 +30,7 @@ import kotlin.math.*
  * or inertial DeadReckoner. Never reads phone GPS directly.
  */
 class NavigatorActivity : Activity() {
-    private val background=Color.rgb(27,31,38)
+    private val pageBackgroundColor=Color.rgb(27,31,38)
     private val panelColor=Color.rgb(47,54,65)
     private val textColor=Color.rgb(238,242,248)
     private val secondary=Color.rgb(170,191,210)
@@ -90,14 +90,14 @@ class NavigatorActivity : Activity() {
 
     override fun onCreate(savedInstanceState:Bundle?) {
         super.onCreate(savedInstanceState)
-        window.statusBarColor=background
-        window.navigationBarColor=background
+        window.statusBarColor=pageBackgroundColor
+        window.navigationBarColor=pageBackgroundColor
         window.decorView.systemUiVisibility=0
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
         val root=LinearLayout(this).apply {
             orientation=LinearLayout.VERTICAL
-            setBackgroundColor(background)
+            setBackgroundColor(pageBackgroundColor)
             setPadding(dp(12),dp(6),dp(12),dp(8))
             setOnApplyWindowInsetsListener{v,insets->
                 val bars=insets.getInsets(WindowInsets.Type.systemBars() or
@@ -330,7 +330,7 @@ class NavigatorActivity : Activity() {
                 },
                 onFailure={e->
                     summary.text="Маршрут не получен: "+(e.localizedMessage?:"нет сети")
-                    if(plan!=null)summary.text+=". Прежний маршрут сохранён"
+                    if(plan!=null)summary.text=summary.text.toString()+". Прежний маршрут сохранён"
                 }
             )
         }
