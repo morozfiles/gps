@@ -681,6 +681,15 @@ class MainActivity : Activity() {
         addButton(root,"Открыть Google Maps") { openGoogleMaps() }
         addButton(root,"Остановить мониторинг") { send(NavService.EXIT) }
         handler.post {showStartupPermissionsIfMissing()}
+        // Only start automatic downloads when a verified pack host was configured.
+        // Already stored maps are left untouched; no internet needed to use them.
+        if(OfflineRegionPacks.needsDefaultPacks(this)) {
+            runCatching {
+                startForegroundService(Intent(this,
+                    OfflineRegionDownloadService::class.java)
+                    .setAction(OfflineRegionDownloadService.AUTO))
+            }
+        }
     }
     private fun openGoogleMaps() {
         val mapsPackage = "com.google.android.apps.maps"
