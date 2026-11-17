@@ -132,9 +132,9 @@ class MainActivity : Activity() {
             setPadding(dip(22), dip(10), dip(22), dip(6))
         }
         content.addView(TextView(this).apply {
-            text = "Bluetooth: " + if (bt) "включён ✓" else "выключен ✕"
-            text += "\nGPS: " + if (gps) "включён ✓" else "выключен ✕"
-            text += "\nРазрешения: " + if (permissionOk) "предоставлены ✓" else "не предоставлены ✕"
+            text = "Bluetooth: " + (if (bt) "включён ✓" else "выключен ✕")
+            text += "\nGPS: " + (if (gps) "включён ✓" else "выключен ✕")
+            text += "\nРазрешения: " + (if (permissionOk) "предоставлены ✓" else "не предоставлены ✕")
             textSize = 17f
             setTextColor(Color.DKGRAY)
         })
@@ -284,7 +284,8 @@ class MainActivity : Activity() {
         override fun run() {
             AirAlerts.refreshIfDue()
             showAlertStatus()
-            gpsSpeedValue.text = speedLabel(gpsSpeedKmh, gpsSpeedUpdatedElapsedMs)
+            gpsSpeedValue.text = if (isGpsEnabled() && !State.dr)
+                speedLabel(gpsSpeedKmh, gpsSpeedUpdatedElapsedMs) else "—"
             obdSpeedValue.text = speedLabel(
                 State.speed?.toDouble(), State.speedUpdatedElapsedMs
             )
