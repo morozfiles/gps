@@ -747,19 +747,28 @@ class NavService: Service(), LocationListener {
         val gpsRecent = gps != null && now-gpsTime < 6000L
         val gpsSpeedRecent = State.gpsSpeedKmh != null &&
             now-State.gpsSpeedUpdatedElapsedMs < 6000L
-        val gpsMoving = gpsRecent && gpsSpeedRecent && State.gpsSpeedKmh!! > 2.5
+        val gpsMoving=gpsRecent && gpsSpeedRecent &&
+            State.gpsSpeedKmh!!>2.5
+        val recentTeleport=lastGpsTeleport>0L &&
+            now-lastGpsTeleport<20_000L
+        val gpsSpeedUnavailable=!gpsSpeedRecent ||
+            State.gpsSpeedKmh==null || State.gpsSpeedKmh!!<1.5
 
-        if (!State.dr && autoEnabled && !fusedStarting &&
-            AirAlerts.snapshot().level == AirAlerts.Level.CITY &&
-            freshObd && obdKmh >= 7) {
-            // A GPS speed of 0 is normal when stationary; do not trigger
-            // unless independent OBD confirms the vehicle is moving.
-            val badGps = !gpsMoving
+        if(!State.dr && autoEnabled && !fusedStarting &&
+            AirAlerts.selectedCityHasAlert() &&
+            freshObd && obdKmh>=7.0) {
+            // City alert + independently confirmed OBD motion +
+            // (GPS speed zero/missing OR rejected >1 km teleport).
+            // Prevent stationary vehicles from triggering on zero GPS speed.
+            val badGps=!gpsRecent || gpsSpeedUnavailable || recentTeleport ||
+                (gpsSpeedRecent && !gpsMoving)
             if(badGps) {
                 if(gpsInvalidSince==0L)gpsInvalidSince=now
-                if(now-gpsInvalidSince > 6500L)startDr(force=false)
+                val debounce=if(recentTeleport)1500L else 5000L
+                if(now-gpsInvalidSince>=debounce)
+                    startDr(force=false)
             } else gpsInvalidSince=0L
-        } else if (!State.dr) gpsInvalidSince=0L
+        } else if(!State.dr)gpsInvalidSince=0L
 
         if(State.dr) {
             // Recovery requires consecutive real GNSS fixes; discard old evidence.
