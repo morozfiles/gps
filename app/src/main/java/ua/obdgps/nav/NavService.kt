@@ -592,6 +592,9 @@ class NavService: Service(), LocationListener {
             dr.pose?.let { pose ->
                 State.position="%.6f, %.6f; %.0f°".format(
                     Locale.US,pose.lat,pose.lon,pose.bearing)
+                State.recordInertialPoint(pose.lat,pose.lon,
+                    (pose.bearing+if(reverse)180.0 else 0.0)%360.0,
+                    obdKmh,now)
                 State.navigationMode=if(manualMode) "Датчики (вручную)" else "Датчики (авто)"
                 if(fused.active && now-lastMockSent > 900L) {
                     lastMockSent=now
@@ -647,7 +650,10 @@ class NavService: Service(), LocationListener {
                 return@start
             }
             dr.seed(fix.latitude,fix.longitude,carBearing)
+            State.clearInertialTrail()
             lastDrStart=SystemClock.elapsedRealtime()
+            State.recordInertialPoint(fix.latitude,fix.longitude,carBearing,
+                correctedSpeed()?:0.0,lastDrStart)
             tickTime=lastDrStart
             lastMockSent=0L
             gpsRecoveryCount=0
