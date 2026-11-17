@@ -2,6 +2,7 @@ package ua.obdgps.nav
 
 import android.Manifest
 import android.app.Activity
+import android.app.AlertDialog
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Bundle
@@ -16,17 +17,47 @@ class MainActivity : Activity() {
     private val handler = Handler(Looper.getMainLooper())
     private lateinit var root: LinearLayout
     private lateinit var status: TextView
-    private lateinit var devices: LinearLayout
-    private var listed = ""
+    private var picker: AlertDialog? = null
+    private var deviceAdapter: ArrayAdapter<String>? = null
+    private var pickerKeys = listOf<String>()
+    private fun updateDevicePicker() {
+        val list = State.devices.toList()
+        pickerKeys = list.map { it.first }
+        deviceAdapter?.let { adapter ->
+            adapter.clear()
+            adapter.addAll(
+                if (list.isEmpty()) listOf("Поиск устройств... Включи зажигание и Bluetooth")
+                else list.map { (key, name) -> "$name\n${key.substringAfter('|')}" }
+            )
+            adapter.notifyDataSetChanged()
+        }
+    }
+    private fun showDevicePicker() {
+        picker?.dismiss()
+        val adapter = ArrayAdapter<String>(this, android.R.layout.simple_list_item_1, mutableListOf())
+        deviceAdapter = adapter
+        val dialog = AlertDialog.Builder(this)
+            .setTitle("Выбери Bluetooth ELM327")
+            .setMessage("Сопряжённые устройства и найденные BLE. Для Bluetooth Classic сначала выполни сопряжение в настройках телефона.")
+            .setAdapter(adapter) { _, index ->
+                pickerKeys.getOrNull(index)?.let { send(NavService.CONNECT, it) }
+            }
+            .setPositiveButton("Искать снова") { _, _ ->
+                State.devices.clear()
+                send(NavService.SCAN)
+                showDevicePicker()
+            }
+            .setNegativeButton("Закрыть", null)
+            .create()
+        picker = dialog
+        dialog.setOnDismissListener { if (picker === dialog) { picker = null; deviceAdapter = null } }
+        dialog.show()
+        updateDevicePicker()
+    }
     private val refresh = object: Runnable {
         override fun run() {
-            status.text = "Статус: ${State.message}\nELM327: ${State.deviceName}\nСкорость: ${State.speed ?: "—"} км/ч\nDead Reckoning: ${State.dr}\nРасчёт: ${State.position}"
-            val key = State.devices.toString()
-            if (listed != key) {
-                listed = key
-                devices.removeAllViews()
-                for ((address,name) in State.devices) addButton(devices,"$name ($address)") { send(NavService.CONNECT,address) }
-            }
+            status.text = "Статус: ${State.message}\nELM327: ${State.deviceName}\nСкорость: ${State.speed ?: "—"} км/ч\nПротокол: ${State.modeLabel}\nDead Reckoning: ${State.dr}\nРасчёт: ${State.position}"
+            if (picker != null) updateDevicePicker()
             handler.postDelayed(this,750)
         }
     }
@@ -71,21 +102,36 @@ class MainActivity : Activity() {
         root.addView(TextView(this).apply { text="Закрепите телефон неподвижно. Не полагайтесь на расчёт как на единственный источник навигации." })
         status = TextView(this).apply { textSize=16f; setPadding(0,20,0,20) }; root.addView(status)
         addButton(root,"1. Разрешения Bluetooth и местоположения") { askPermissions() }
-        addButton(root,"2. Найти BLE ELM327") { State.devices.clear(); listed=""; send(NavService.SCAN) }
-        devices = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }; root.addView(devices)
-        addButton(root,"3. Настройки разработчика: приложение фиктивных местоположений") {
+        addButton(root,"2. Найти и выбрать Bluetooth ELM327") {
+            State.devices.clear()
+            send(NavService.SCAN)
+            showDevicePicker()
+        }
+        addButton(root,"3. Выбрать протокол OBD2 / Mitsubishi MUT-II") {
+            val modes = arrayOf("OBD2 K-Line (рекомендуется)", "MUT-II экспериментальный (скорость 0x2F)")
+            AlertDialog.Builder(this)
+                .setTitle("Mitsubishi Space Star 2003 — протокол")
+                .setSingleChoiceItems(modes, if (State.mutMode) 1 else 0) { dlg, index ->
+                    send(if(index == 1) NavService.SET_MUT else NavService.SET_OBD)
+                    dlg.dismiss()
+                }
+                .setNegativeButton("Отмена", null)
+                .show()
+        }
+        addButton(root,"4. Настройки разработчика: приложение фиктивных местоположений") {
             try { startActivity(Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS)) }
             catch (_: Exception) { startActivity(Intent(Settings.ACTION_SETTINGS)) }
         }
-        addButton(root,"4. Включить Dead Reckoning") { send(NavService.START_DR) }
+        addButton(root,"5. Включить Dead Reckoning") { send(NavService.START_DR) }
         addButton(root,"Выключить Dead Reckoning") { send(NavService.STOP_DR) }
         addButton(root,"Открыть Google Maps") {
             val i = packageManager.getLaunchIntentForPackage("com.google.android.apps.maps")
             if (i!=null) startActivity(i) else State.message="Google Maps не найден"
         }
         addButton(root,"Остановить") { send(NavService.EXIT) }
-        root.addView(TextView(this).apply { text="GPS используется для начальной точки; при отсутствии OBD-скорости вычисление движения приостанавливается. Подмена GPS определяется только по резким скачкам." })
+        root.addView(TextView(this).apply { text="MUT-II является экспериментальным: фирменная инициализация 0x01/15625 бод может быть не поддержана ELM327. Если адаптер не отвечает, приложение возвращается к OBD2 K-Line. Программа только читает параметры ЭБУ." })
+        root.addView(TextView(this).apply { text="GPS используется для начальной точки; без OBD-скорости вычисление движения приостанавливается. Подмена GPS определяется только по резким скачкам." })
     }
     override fun onResume() { super.onResume(); handler.post(refresh) }
-    override fun onPause() { handler.removeCallbacks(refresh); super.onPause() }
+    override fun onPause() { handler.removeCallbacks(refresh); picker?.dismiss(); super.onPause() }
 }
