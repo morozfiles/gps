@@ -2,6 +2,7 @@ package ua.obdgps.nav
 
 import android.content.Context
 import android.location.Geocoder
+import android.icu.text.Transliterator
 import android.os.Handler
 import android.os.Looper
 import org.json.JSONObject
@@ -23,18 +24,40 @@ class PlaceSearch(private val context:Context) {
     }
     private val main=Handler(Looper.getMainLooper())
 
+    companion object {
+        /** Russian/Ukrainian address search; digits permitted for house numbers. */
+        fun isAllowedAddress(text:String):Boolean {
+            if(text.length>180)return false
+            if(!text.any { Character.UnicodeScript.of(it.code)==
+                    Character.UnicodeScript.CYRILLIC })return false
+            return text.all { ch ->
+                Character.UnicodeScript.of(ch.code)==Character.UnicodeScript.CYRILLIC ||
+                ch.isDigit() || ch.isWhitespace() ||
+                ch in " ,.-/№'’()"
+            }
+        }
+
+        /** Make returned OSM/system labels readable without Latin letters. */
+        fun cyrillicLabel(raw:String):String {
+            val translated=runCatching {
+                Transliterator.getInstance("Latin-Cyrillic").transliterate(raw)
+            }.getOrDefault(raw)
+            val output=buildString {
+                for(ch in translated) {
+                    if(Character.UnicodeScript.of(ch.code)==Character.UnicodeScript.CYRILLIC ||
+                       ch.isDigit() || ch in " ,.-/№'’()")append(ch)
+                    else if(ch.isLetter() || ch.isWhitespace())append(' ')
+                }
+            }.replace(Regex("\\s+")," ").trim(' ', ',', '.', '-')
+            return output.take(150).ifBlank { "Адрес на карте" }
+        }
+    }
+
     fun search(query:String,callback:(kotlin.Result<List<Result>>)->Unit) {
         val term=query.trim()
-        val asCoordinates=parseCoordinates(term)
-        if(asCoordinates!=null) {
-            callback(kotlin.Result.success(listOf(Result(
-                "Координаты: %.6f, %.6f".format(Locale.US,
-                    asCoordinates.lat,asCoordinates.lon),asCoordinates))))
-            return
-        }
-        if(term.length<3 || term.length>180) {
+        if(!isAllowedAddress(term) || term.length<3) {
             callback(kotlin.Result.failure(IllegalArgumentException(
-                "Введите адрес или координаты (например, 50.4501, 30.5234)")))
+                "Введи адрес русскими или украинскими буквами, например: Київ, Хрещатик 1")))
             return
         }
         worker.execute {
@@ -61,7 +84,7 @@ class PlaceSearch(private val context:Context) {
         conn.setRequestProperty("User-Agent",
             "OBD-GPS-Navigator/0.9.1 (Android; https://github.com/morozfiles/gps)")
         conn.setRequestProperty("Accept","application/json")
-        conn.setRequestProperty("Accept-Language","en")
+        conn.setRequestProperty("Accept-Language","uk,ru;q=0.9")
         try {
             val code=conn.responseCode
             if(code !in 200..299) {
@@ -86,10 +109,12 @@ class PlaceSearch(private val context:Context) {
                 val xy=entry.getJSONObject("geometry").getJSONArray("coordinates")
                 val point=RoutingEngine.Point(xy.getDouble(1),xy.getDouble(0))
                 if(!RoutingEngine.valid(point))continue
-                val title=listOf("name","street","housenumber","city","district",
-                    "state","country").map { props.optString(it,"") }
-                    .filter { it.isNotBlank() }.distinct().joinToString(", ").take(160)
-                found.add(Result(title.ifBlank { "Точка на карте" },point))
+                val title=listOf("name:uk","name:ru","name","street","housenumber",
+                    "city","district","state","country").map {
+                        props.optString(it,"")
+                    }.filter { it.isNotBlank() }.distinct()
+                    .joinToString(", ").take(180)
+                found.add(Result(cyrillicLabel(title),point))
             }
             return found.distinctBy { "%.5f:%.5f".format(Locale.US,
                 it.coordinate.lat,it.coordinate.lon) }.take(8)
@@ -100,7 +125,7 @@ class PlaceSearch(private val context:Context) {
     private fun androidGeocoder(query:String):List<Result> {
         if(!Geocoder.isPresent())throw IllegalStateException(
             "Системная служба адресов Android недоступна")
-        val geocoder=Geocoder(context,Locale.getDefault())
+        val geocoder=Geocoder(context,Locale("uk","UA"))
         val addresses=geocoder.getFromLocationName(query,8).orEmpty()
         val result=ArrayList<Result>()
         for(a in addresses) {
@@ -108,16 +133,9 @@ class PlaceSearch(private val context:Context) {
             val p=RoutingEngine.Point(a.latitude,a.longitude)
             if(!RoutingEngine.valid(p))continue
             val caption=a.getAddressLine(0) ?: a.featureName ?: "Адрес на карте"
-            result.add(Result(caption.take(160),p))
+            result.add(Result(cyrillicLabel(caption),p))
         }
         return result
     }
 
-    private fun parseCoordinates(query:String):RoutingEngine.Point? {
-        val regex=Regex("""^\s*([+-]?\d+(?:[.,]\d+)?)\s*[,;\s]\s*([+-]?\d+(?:[.,]\d+)?)\s*$""")
-        val m=regex.matchEntire(query)?:return null
-        val lat=m.groupValues[1].replace(",",".").toDoubleOrNull()?:return null
-        val lon=m.groupValues[2].replace(",",".").toDoubleOrNull()?:return null
-        return RoutingEngine.Point(lat,lon).takeIf { RoutingEngine.valid(it) }
-    }
 }
