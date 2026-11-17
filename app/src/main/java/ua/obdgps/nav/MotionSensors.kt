@@ -58,10 +58,14 @@ class MotionSensors(
     }
 
     fun beginCompassCheck(obdKmh: Int?, obdFresh: Boolean):String {
-        if(obdFresh && obdKmh != 0)
-            return "Проверка компаса только на стоящем автомобиле"
-        if(!magnetometerPresent || sm.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)==null)
-            return "Нет магнитометра или датчика ориентации"
+        if(obdFresh && obdKmh != 0) {
+            State.compassCalibrationText="Останови автомобиль для проверки компаса"
+            return State.compassCalibrationText
+        }
+        if(!magnetometerPresent || sm.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)==null) {
+            State.compassCalibrationText="Магнитометр или датчик ориентации недоступен"
+            return State.compassCalibrationText
+        }
         compassCheckStartMs=SystemClock.elapsedRealtime()
         compassCheckSamples=0
         for(i in 0..2){magnetMin[i]=Double.POSITIVE_INFINITY;magnetMax[i]=Double.NEGATIVE_INFINITY}
