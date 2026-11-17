@@ -52,6 +52,7 @@ class DeadReckoner {
 object State {
     var message = "Ready"
     var speed: Int? = null
+    var speedUpdatedElapsedMs: Long = 0L
     var position = "—"
     var deviceName = "No ELM327"
     var dr = false
