@@ -29,6 +29,7 @@ object AirAlerts {
 
     val regions:List<Region> = listOf(
         Region("kyiv","Киев (город)","Киев",true),
+        Region("none","Нет","Нет",true),
         Region("vinnytska","Винницкая область","Винницкая обл."),
         Region("volynska","Волынская область","Волынская обл."),
         Region("dnipropetrovska","Днепропетровская область","Днепропетровская обл."),
@@ -110,11 +111,20 @@ object AirAlerts {
         refreshIfDue()
     }
 
-    fun citySnapshot():Snapshot=snapshotFor(currentCity())
+    fun citySnapshot():Snapshot {
+        val city=currentCity()
+        return if(city.slug=="none")Snapshot(Level.UNKNOWN,
+            "Город отключён: автоматическое DR ориентируется на "+currentOblast().name,
+            region=city) else snapshotFor(city)
+    }
     fun oblastSnapshot():Snapshot=snapshotFor(currentOblast())
 
-    /** Used by auto DR: only a fresh city-specific alarm can arm it. */
-    fun selectedCityHasAlert():Boolean=citySnapshot().level==Level.CITY
+    /** Auto DR uses the selected city, or the oblast when city="none". */
+    fun autoNavigationAlertActive():Boolean =
+        if(currentCity().slug=="none")oblastSnapshot().level==Level.OBLAST
+        else citySnapshot().level==Level.CITY
+    // Preserve older call sites while updating the service.
+    fun selectedCityHasAlert():Boolean=autoNavigationAlertActive()
 
     private fun snapshotFor(region:Region):Snapshot {
         val raw=feed.get()?:return Snapshot(
