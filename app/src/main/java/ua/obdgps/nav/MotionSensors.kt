@@ -161,7 +161,8 @@ class MotionSensors(
                 val rightRate=-Math.toDegrees(yawSmoothed)
                 State.yawDegPerSec=rightRate
                 State.motionText=when {
-                    State.speed == null -> "Нет скорости OBD"
+                    State.speed == null || SystemClock.elapsedRealtime()-
+                        State.speedUpdatedElapsedMs>3500L -> "Нет свежей скорости OBD"
                     State.speed == 0 -> "Стоим"
                     abs(rightRate) < 4.0 -> "Едем прямо"
                     rightRate > 0 -> "Поворот вправо"
