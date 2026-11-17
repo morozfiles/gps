@@ -317,52 +317,220 @@ class NavigatorActivity : Activity() {
         }
     }
 
-    private fun showAddressSearch() {
-        val field=EditText(this).apply {
-            hint="Адрес или 50.4501, 30.5234"
-            isSingleLine=true
+    private fun selectFoundAddress(item:PlaceSearch.Result) {
+        val p=item.coordinate
+        if(!RoutingEngine.valid(p))return
+        val label=PlaceSearch.cyrillicLabel(item.label)
+        NavigatorPrefs(this).rememberAddress(
+            NavigatorPrefs.RecentAddress(label,p.lat,p.lon))
+        selectedDestination=p
+        State.navigationDestination=p.lat to p.lon
+        map.centerAt(p.lat,p.lon)
+        pickMode="DEST"
+        pickStatus.text="Цель: "+label
+        buildRoute(false)
+    }
+
+    private fun performAddressSearch(raw:String) {
+        val query=raw.trim()
+        if(query.length<3 || !PlaceSearch.isAllowedAddress(query)) {
+            speechInput?.error="Введи название улицы или адрес русскими/украинскими буквами"
+            pickStatus.text="Поиск: только адреса на русском или украинском"
+            return
         }
-        val wrapper=LinearLayout(this).apply {
-            orientation=LinearLayout.VERTICAL
-            setPadding(dp(20),0,dp(20),0)
-        }
-        wrapper.addView(field)
-        AlertDialog.Builder(this).setTitle("Найти пункт назначения")
-            .setView(wrapper)
-            .setPositiveButton("Поиск"){_,_->
-                pickStatus.text="Поиск адреса..."
-                placeSearch.search(field.text.toString()){result->
-                    result.fold(
-                        onSuccess={items->
-                            if(items.isEmpty()) {
-                                pickStatus.text="Ничего не найдено"
-                            } else {
-                                AlertDialog.Builder(this).setTitle("Выбери адрес")
-                                    .setItems(items.map{it.label}.toTypedArray()){_,index->
-                                        val p=items[index].coordinate
-                                        selectedDestination=p
-                                        State.navigationDestination=p.lat to p.lon
-                                        map.centerAt(p.lat,p.lon)
-                                        pickMode="DEST"
-                                        pickStatus.text="Цель: "+items[index].label
-                                        buildRoute(false)
-                                    }.setNegativeButton("Отмена",null).show()
+        addressSearchDialog?.dismiss()
+        pickStatus.text="Поиск адреса: "+query
+        placeSearch.search(query){result->
+            if(isFinishing || isDestroyed)return@search
+            result.fold(
+                onSuccess={items->
+                    if(items.isEmpty()) {
+                        pickStatus.text="Ничего не найдено: "+query
+                        AlertDialog.Builder(this)
+                            .setTitle("Адрес не найден")
+                            .setMessage("Уточни город, улицу и номер дома.")
+                            .setPositiveButton("Повторить"){_,_->showAddressSearch(query)}
+                            .setNegativeButton("Закрыть",null).show()
+                    } else {
+                        AlertDialog.Builder(this).setTitle("Выбери адрес")
+                            .setItems(items.map {
+                                PlaceSearch.cyrillicLabel(it.label)
+                            }.toTypedArray()){_,index->
+                                selectFoundAddress(items[index])
                             }
-                        },
-                        onFailure={error->
-                            val message=error.localizedMessage?: "Нет ответа сервиса адресов"
-                            pickStatus.text="Поиск адреса: $message"
-                            AlertDialog.Builder(this)
-                                .setTitle("Не удалось найти адрес")
-                                .setMessage(message+"\n\nПовтори поиск, "+
-                                    "введи координаты (например, 50.4501, 30.5234) "+
-                                    "или выбери точку касанием карты.")
-                                .setPositiveButton("Повторить поиск"){_,_->showAddressSearch()}
-                                .setNegativeButton("Закрыть",null).show()
-                        }
-                    )
+                            .setNegativeButton("Отмена",null).show()
+                    }
+                },
+                onFailure={e->
+                    val detail=e.localizedMessage ?: "Нет ответа от сервиса адресов"
+                    pickStatus.text="Ошибка поиска: "+detail
+                    AlertDialog.Builder(this).setTitle("Поиск адреса")
+                        .setMessage(detail+"\n\nПроверь интернет или выбери точку на карте.")
+                        .setPositiveButton("Повторить"){_,_->showAddressSearch(query)}
+                        .setNegativeButton("Закрыть",null).show()
                 }
-            }.setNegativeButton("Отмена",null).show()
+            )
+        }
+    }
+
+    /** Uses the system speech-recognition activity, no microphone permission
+     * in this app is needed; a speech recognition provider must be installed. */
+    private fun askSpeechLanguage() {
+        AlertDialog.Builder(this)
+            .setTitle("Голосовой поиск адреса")
+            .setItems(arrayOf("Русский","Українська")) { _,index ->
+                val language=if(index==0)"ru-RU" else "uk-UA"
+                val request=Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                    putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL,
+                        RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                    putExtra(RecognizerIntent.EXTRA_LANGUAGE,language)
+                    putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE,language)
+                    putExtra(RecognizerIntent.EXTRA_PROMPT,
+                        "Назови город, улицу и номер дома")
+                    putExtra(RecognizerIntent.EXTRA_MAX_RESULTS,3)
+                }
+                try {
+                    @Suppress("DEPRECATION")
+                    startActivityForResult(request,speechRequestCode)
+                } catch (_:ActivityNotFoundException) {
+                    AlertDialog.Builder(this)
+                        .setTitle("Голосовой поиск недоступен")
+                        .setMessage("На телефоне нет приложения распознавания речи. " +
+                            "Установи или включи голосовой ввод Android.")
+                        .setPositiveButton("Понятно",null).show()
+                } catch (e:Exception) {
+                    pickStatus.text="Ошибка запуска голосового поиска: "+
+                        (e.localizedMessage?:"сервис недоступен")
+                }
+            }.show()
+    }
+
+    @Suppress("DEPRECATION")
+    override fun onActivityResult(requestCode:Int,resultCode:Int,data:Intent?) {
+        super.onActivityResult(requestCode,resultCode,data)
+        if(requestCode!=speechRequestCode || resultCode!=Activity.RESULT_OK)return
+        val choices=data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS).orEmpty()
+        val text=choices.map{PlaceSearch.cyrillicLabel(it)}
+            .firstOrNull{PlaceSearch.isAllowedAddress(it) && it.length>=3}
+        if(text==null) {
+            speechInput?.error="Не распознан адрес на русском или украинском"
+            pickStatus.text="Не удалось распознать адрес. Повтори голосовой поиск."
+            return
+        }
+        speechInput?.setText(text)
+        performAddressSearch(text)
+    }
+
+    private fun showAddressSearch(prefill:String="") {
+        val field=EditText(this).apply {
+            hint="Город, улица, номер дома"
+            isSingleLine=true
+            inputType=InputType.TYPE_CLASS_TEXT or
+                InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
+            imeOptions=EditorInfo.IME_ACTION_SEARCH
+            textSize=15f
+            setTextColor(textColor)
+            setHintTextColor(secondary)
+            setText(prefill)
+            setSelection(text.length)
+            // Exclude Latin, coordinates and unsupported scripts from typing
+            // or paste; permit Arabic numerals only for house numbering.
+            filters=arrayOf(InputFilter { source,start,end,_,_,_ ->
+                val allowed=buildString {
+                    for(i in start until end) {
+                        val ch=source[i]
+                        if(ch in 'А'..'я' || ch in "ЁёІіЇїЄєҐґ" ||
+                            ch.isDigit() || ch.isWhitespace() ||
+                            ch in " ,.-/№'’()")append(ch)
+                    }
+                }
+                if(allowed.length==end-start)null else allowed
+            })
+            setOnEditorActionListener { _,actionId,_->
+                if(actionId==EditorInfo.IME_ACTION_SEARCH) {
+                    performAddressSearch(text.toString())
+                    true
+                } else false
+            }
+        }
+        speechInput=field
+        val mic=mapControl("🎤") { askSpeechLanguage() }.apply {
+            contentDescription="Голосовой поиск адреса"
+            textSize=21f
+        }
+        val top=LinearLayout(this).apply {
+            orientation=LinearLayout.HORIZONTAL
+            gravity=Gravity.CENTER_VERTICAL
+            addView(field,LinearLayout.LayoutParams(0,dp(48),1f))
+            addView(mic,LinearLayout.LayoutParams(dp(50),dp(48)).apply{
+                leftMargin=dp(6)
+            })
+        }
+        val content=LinearLayout(this).apply {
+            orientation=LinearLayout.VERTICAL
+            setPadding(dp(18),0,dp(18),dp(7))
+            addView(top)
+        }
+        val history=NavigatorPrefs(this).recentAddresses()
+        content.addView(TextView(this).apply {
+            text="Последние адреса"
+            textSize=14f
+            typeface=Typeface.DEFAULT_BOLD
+            setTextColor(Color.rgb(142,195,251))
+            setPadding(dp(2),dp(14),0,dp(7))
+        })
+        if(history.isEmpty()) {
+            content.addView(TextView(this).apply {
+                text="Пока нет сохранённых адресов"
+                textSize=13f
+                setTextColor(secondary)
+                setPadding(dp(4),dp(6),0,dp(12))
+            })
+        } else {
+            history.take(5).forEachIndexed{index,recent->
+                val row=TextView(this).apply {
+                    text=(index+1).toString()+". "+
+                        PlaceSearch.cyrillicLabel(recent.label)
+                    textSize=14f
+                    setTextColor(textColor)
+                    maxLines=2
+                    setPadding(dp(6),dp(11),dp(6),dp(11))
+                    setOnClickListener {
+                        addressSearchDialog?.dismiss()
+                        selectFoundAddress(PlaceSearch.Result(
+                            recent.label,
+                            RoutingEngine.Point(recent.lat,recent.lon)))
+                    }
+                }
+                content.addView(row,LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT))
+                content.addView(View(this).apply {
+                    setBackgroundColor(Color.rgb(57,68,82))
+                },LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,dp(1)))
+            }
+        }
+        val scroll=ScrollView(this).apply {
+            addView(content)
+            isFillViewport=false
+        }
+        val dlg=AlertDialog.Builder(this).setTitle("Поиск адреса")
+            .setView(scroll)
+            .setPositiveButton("Найти",null)
+            .setNegativeButton("Закрыть",null)
+            .create()
+        addressSearchDialog=dlg
+        dlg.setOnShowListener {
+            dlg.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                performAddressSearch(field.text.toString())
+            }
+        }
+        dlg.setOnDismissListener {
+            if(addressSearchDialog===dlg)addressSearchDialog=null
+            if(speechInput===field)speechInput=null
+        }
+        dlg.show()
     }
 
     private fun currentFix():State.NavFix? {
