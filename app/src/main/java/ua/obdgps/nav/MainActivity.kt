@@ -610,6 +610,11 @@ class MainActivity : Activity() {
             showAlertCityPicker()
         }
 
+        section("КАРТЫ ОФЛАЙН")
+        item("Сохранённые карты и импорт области MBTiles") {
+            startActivity(Intent(this,OfflineMapsActivity::class.java))
+        }
+
         section("НАВИГАЦИЯ")
         item("Автопереключение · ${if(State.autoEnabled)"включено" else "выключено"}") {
             send(if(State.autoEnabled)NavService.AUTO_OFF else NavService.AUTO_ON)
