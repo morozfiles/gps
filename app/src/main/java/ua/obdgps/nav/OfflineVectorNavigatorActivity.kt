@@ -37,6 +37,8 @@ import org.mapsforge.map.android.view.MapView
 import org.mapsforge.map.layer.renderer.TileRendererLayer
 import org.mapsforge.map.layer.overlay.Polyline
 import org.mapsforge.map.reader.MapFile
+import org.mapsforge.map.datastore.MapDataStore
+import org.mapsforge.map.datastore.MultiMapDataStore
 import org.mapsforge.map.rendertheme.internal.MapsforgeThemes
 
 /**
@@ -59,7 +61,9 @@ class OfflineVectorNavigatorActivity:Activity() {
     private lateinit var guidance:TextView
     private lateinit var arrow:View
     private lateinit var alerts:AirAlertIndicatorsView
-    private var vectorMap:MapFile?=null
+    private var vectorMap:MapDataStore?=null
+    private var loadedMapSignature=""
+    private var loadedRegion=""
     private var routeLine:Polyline?=null
     private var route:RoutingEngine.Route?=null
     private var dest:RoutingEngine.Point?=null
@@ -120,9 +124,9 @@ class OfflineVectorNavigatorActivity:Activity() {
         window.navigationBarColor=bg
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         AirAlerts.initialize(this)
-        if(!OfflineVectorStore.hasMap(this)){
+        if(OfflineRegionPacks.mapFiles(this).isEmpty()){
             AlertDialog.Builder(this).setTitle("Нужна офлайн-карта")
-                .setMessage("Сначала импортируй векторный файл региона .map " +
+                .setMessage("Загрузи подробную карту области или обзор Украины " +
                     "в разделе «Карты офлайн». Можно также добавить файл .poi " +
                     "для поиска адресов без интернета.")
                 .setPositiveButton("Скачать Украину"){_,_->
@@ -171,7 +175,17 @@ class OfflineVectorNavigatorActivity:Activity() {
             mapView.setBuiltInZoomControls(false)
             mapView.getMapScaleBar().setVisible(false)
             mapView.setMapViewCenterY(0.68f)
-            val store=MapFile(OfflineVectorStore.mapFile(this))
+            val files=OfflineRegionPacks.mapFiles(this)
+            loadedRegion=OfflineRegionPacks.selected(this)
+            loadedMapSignature=signature(files)
+            val store:MapDataStore=if(files.size==1)MapFile(files.first())
+            else MultiMapDataStore(MultiMapDataStore.DataPolicy.DEDUPLICATE).apply {
+                files.forEachIndexed { index,file->
+                    val detail=MapFile(file)
+                    detail.setPriority(files.size-index)
+                    addMapDataStore(detail,false,false)
+                }
+            }
             vectorMap=store
             val tileCache=AndroidUtil.createTileCache(this,"offline-vector",
                 mapView.getModel().displayModel.getTileSize(),1.25f,
@@ -191,7 +205,10 @@ class OfflineVectorNavigatorActivity:Activity() {
             }
             renderer.setXmlRenderTheme(MapsforgeThemes.MOTORIDER)
             mapView.getLayerManager().getLayers().add(renderer)
-            mapView.setCenter(LatLong(50.4501,30.5234))
+            val region=OfflineRegionPacks.region(OfflineRegionPacks.selected(this))
+            val point=State.navFix
+            mapView.setCenter(LatLong(point?.lat?:region?.lat?:50.4501,
+                point?.lon?:region?.lon?:30.5234))
             mapView.setZoomLevel(17.toByte())
             mapView.setOnTouchListener{_,event->
                 if(event.actionMasked==MotionEvent.ACTION_DOWN && !picking)
@@ -343,7 +360,7 @@ class OfflineVectorNavigatorActivity:Activity() {
                         if(found.isEmpty()){
                             AlertDialog.Builder(this)
                                 .setTitle("Адрес не найден офлайн")
-                                .setMessage(if(!OfflineVectorStore.hasPois(this))
+                                .setMessage(if(OfflineRegionPacks.poiFiles(this).isEmpty())
                                     "Сначала импортируй файл .poi через «Офлайн-карты»."
                                     else "В базе POI нет этого адреса. "+
                                         "Часть номеров домов отсутствует в OpenStreetMap.")
@@ -529,9 +546,18 @@ class OfflineVectorNavigatorActivity:Activity() {
         }
     }
 
+    private fun signature(files:List<java.io.File>):String =
+        files.joinToString("|"){"${it.absolutePath}:${it.length()}:${it.lastModified()}"}
+
     override fun onResume(){
         super.onResume()
         if(::mapView.isInitialized){
+            val newFiles=OfflineRegionPacks.mapFiles(this)
+            if(loadedRegion!=OfflineRegionPacks.selected(this) ||
+                loadedMapSignature!=signature(newFiles)){
+                recreate()
+                return
+            }
             handler.removeCallbacks(refresh)
             handler.post(refresh)
         }
@@ -544,6 +570,7 @@ class OfflineVectorNavigatorActivity:Activity() {
         handler.removeCallbacks(refresh)
         if(::mapView.isInitialized){
             runCatching{mapView.destroyAll()}
+            runCatching{vectorMap?.close()}
         }
         runCatching{AndroidGraphicFactory.clearResourceMemoryCache()}
         searchWorker.shutdown()

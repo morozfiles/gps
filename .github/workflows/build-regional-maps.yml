@@ -1,0 +1,118 @@
+name: Prepare Ukraine overview or detailed oblast Mapsforge pack
+on:
+  workflow_dispatch:
+    inputs:
+      region:
+        description: 'overview, kyiv or an oblast id from OfflineRegionPacks.kt'
+        type: choice
+        required: true
+        default: kyiv
+        options:
+          - overview
+          - kyiv
+          - vinnytsia
+          - volyn
+          - dnipropetrovsk
+          - donetsk
+          - zhytomyr
+          - zakarpattia
+          - zaporizhzhia
+          - ivano-frankivsk
+          - kirovohrad
+          - luhansk
+          - lviv
+          - mykolaiv
+          - odesa
+          - poltava
+          - rivne
+          - sumy
+          - ternopil
+          - kharkiv
+          - kherson
+          - khmelnytskyi
+          - cherkasy
+          - chernivtsi
+          - chernihiv
+          - crimea
+          - sevastopol
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install map converters
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq osmium-tool osmosis sqlite3
+          mkdir -p ~/.openstreetmap/osmosis/plugins
+          curl -fSL --retry 3 -o ~/.openstreetmap/osmosis/plugins/mapsforge-map-writer.jar \
+            https://repo.maven.apache.org/maven2/org/mapsforge/mapsforge-map-writer/0.25.0/mapsforge-map-writer-0.25.0-jar-with-dependencies.jar
+          curl -fSL --retry 3 -o ~/.openstreetmap/osmosis/plugins/mapsforge-poi-writer.jar \
+            https://repo.maven.apache.org/maven2/org/mapsforge/mapsforge-poi-writer/0.25.0/mapsforge-poi-writer-0.25.0-jar-with-dependencies.jar
+      - name: Download fresh nationwide OpenStreetMap extract
+        run: |
+          curl -fSL --retry 3 --retry-delay 10 -o ukraine.pbf \
+            https://download.geofabrik.de/europe/ukraine-latest.osm.pbf
+          osmium fileinfo ukraine.pbf
+      - name: Extract requested map area
+        env:
+          REGION: ${{ inputs.region }}
+        run: |
+          set -euo pipefail
+          if [ "$REGION" = overview ]; then
+            # Include major roads, place labels, administrative boundaries;
+            # this is intentionally much lighter than a whole-country map.
+            osmium tags-filter ukraine.pbf \
+              w/highway=motorway,trunk,primary,secondary,tertiary \
+              n/place=city,town \
+              r/boundary=administrative \
+              -o selected.pbf --overwrite
+          else
+            case "$REGION" in
+              kyiv) POLY=kiev_oblast ;;
+              odesa) POLY=odessa_oblast ;;
+              zaporizhzhia) POLY=zaporizhia_oblast ;;
+              crimea|sevastopol) POLY="$REGION" ;;
+              *) POLY="${REGION}_oblast" ;;
+            esac
+            curl -fSL --retry 3 -o region.poly \
+              "https://download.openstreetmap.fr/polygons/europe/ukraine/${POLY}.poly"
+            osmium extract -p region.poly --strategy=smart \
+              ukraine.pbf -o selected.pbf --overwrite
+            if [ "$REGION" = kyiv ]; then
+              curl -fSL --retry 3 -o city.poly \
+                https://download.openstreetmap.fr/polygons/europe/ukraine/kiev.poly
+              osmium extract -p city.poly --strategy=smart \
+                ukraine.pbf -o city.pbf --overwrite
+              osmium merge selected.pbf city.pbf \
+                -o combined.pbf --overwrite
+              mv combined.pbf selected.pbf
+            fi
+          fi
+          osmium fileinfo selected.pbf
+      - name: Render Mapsforge map and offline POI file
+        env:
+          REGION: ${{ inputs.region }}
+          JAVACMD_OPTIONS: -Xmx6G
+        run: |
+          set -euo pipefail
+          osmosis --rb file=selected.pbf \
+            --mapfile-writer file="${REGION}.map" type=hd threads=4 \
+            map-start-position=50.4501,30.5234
+          test "$(stat -c%s "${REGION}.map")" -gt 10000
+          if [ "$REGION" != overview ]; then
+            osmosis --rb file=selected.pbf \
+              --poi-writer file="${REGION}.poi" normalize=true all-tags=true
+            sqlite3 "${REGION}.poi" 'SELECT count(*) FROM poi_data;'
+          fi
+          ls -lh "${REGION}."*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Offline-${{ inputs.region }}-Map-Package
+          path: |
+            ${{ inputs.region }}.map
+            ${{ inputs.region }}.poi
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6

@@ -10,6 +10,7 @@ import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.widget.EditText
 import android.widget.ProgressBar
 import android.view.Gravity
 import android.view.WindowInsets
@@ -32,11 +33,13 @@ class OfflineMapsActivity:Activity() {
     private lateinit var status:TextView
     private lateinit var detail:TextView
     private lateinit var downloadStatus:TextView
+    private lateinit var packStatus:TextView
     private lateinit var progressBar:ProgressBar
     private val ui=Handler(Looper.getMainLooper())
     private val tick=object:Runnable{
         override fun run(){
             if(::downloadStatus.isInitialized)renderDownloadStatus()
+            if(::packStatus.isInitialized)renderPackStatus()
             ui.postDelayed(this,900L)
         }
     }
@@ -167,6 +170,122 @@ class OfflineMapsActivity:Activity() {
         }
     }
 
+
+    private fun renderPackStatus(){
+        if(!::packStatus.isInitialized)return
+        val id=OfflineRegionPacks.selected(this)
+        val current=OfflineRegionPacks.region(id)?.name?:id
+        val saved=OfflineRegionPacks.mapFiles(this)
+        val progress=OfflineRegionDownloadService.progress
+        packStatus.text="Выбрано: $current"+
+            "\nОбзор Украины: "+
+            (if(OfflineRegionPacks.has(this,OfflineRegionPacks.OVERVIEW))
+                "сохранён" else "не загружен")+
+            "\nПодробная карта: "+
+            (if(OfflineRegionPacks.has(this,id))"сохранена" else "не загружена")+
+            "\nБаза адресов области: "+
+            (if(OfflineRegionPacks.has(this,id,"poi"))"сохранена" else "не загружена")+
+            "\nДоступных файлов карты: "+saved.size+
+            "\nСервер карт: "+(if(OfflineRegionPacks.baseUrl(this).isNotBlank())
+                "настроен" else "не задан")+
+            "\n"+progress.title+
+            (if(progress.running)" · ${progress.downloaded/1048576} / "+
+                (if(progress.total>0)"${progress.total/1048576}" else "?")+" МБ"
+                else "")+
+            (if(progress.message.isNotBlank())"\n"+progress.message else "")
+    }
+
+    private fun chooseRegion(){
+        val choices=OfflineRegionPacks.regions.map{region->
+            region.name+(if(OfflineRegionPacks.has(this,region.id))
+                " ✓" else "")
+        }.toTypedArray()
+        val selected=OfflineRegionPacks.regions.indexOfFirst{
+            it.id==OfflineRegionPacks.selected(this)}
+        AlertDialog.Builder(this).setTitle("Подробные карты областей")
+            .setSingleChoiceItems(choices,selected){dialog,which->
+                val region=OfflineRegionPacks.regions[which]
+                OfflineRegionPacks.select(this,region.id)
+                dialog.dismiss()
+                renderPackStatus()
+                if(!OfflineRegionPacks.has(this,region.id))
+                    AlertDialog.Builder(this).setTitle(region.name)
+                        .setMessage("Подробная карта не сохранена. Скачать её и "+
+                            "локальный адресный индекс по запросу?")
+                        .setPositiveButton("Скачать"){_,_->
+                            downloadPack(OfflineRegionDownloadService.DOWNLOAD_REGION)}
+                        .setNegativeButton("Позже",null).show()
+            }.setNegativeButton("Закрыть",null).show()
+    }
+
+    private fun showPackSettings(){
+        val field=EditText(this).apply{
+            hint="https://your-map-server.example/maps"
+            setSingleLine(true)
+            setText(OfflineRegionPacks.baseUrl(this@OfflineMapsActivity))
+        }
+        val wifi=android.widget.CheckBox(this).apply{
+            text="Загрузка только через Wi-Fi"
+            isChecked=OfflineRegionPacks.wifiOnly(this@OfflineMapsActivity)
+            setTextColor(textColorPrimary)
+        }
+        val auto=android.widget.CheckBox(this).apply{
+            text="При запуске автоматически загрузить обзор и Киевскую область"
+            isChecked=OfflineRegionPacks.autoDownload(this@OfflineMapsActivity)
+            setTextColor(textColorPrimary)
+        }
+        val container=LinearLayout(this).apply{
+            orientation=LinearLayout.VERTICAL
+            setPadding(dp(18),dp(7),dp(18),0)
+            addView(TextView(this@OfflineMapsActivity).apply{
+                text="Каталог подготовленных Mapsforge-файлов. Сервер должен "+
+                    "предоставлять overview.map, kyiv.map, kyiv.poi и файлы "+
+                    "других областей по тому же шаблону. Без адреса сервера "+
+                    "автоматическое скачивание недоступно."
+                setTextColor(textColorPrimary)
+                textSize=13f
+            })
+            addView(field)
+            addView(wifi)
+            addView(auto)
+        }
+        AlertDialog.Builder(this).setTitle("Источник офлайн-карт")
+            .setView(container).setPositiveButton("Сохранить"){_,_->
+                try{
+                    OfflineRegionPacks.setBaseUrl(this,field.text.toString())
+                    OfflineRegionPacks.setWifiOnly(this,wifi.isChecked)
+                    OfflineRegionPacks.setAutoDownload(this,auto.isChecked)
+                    renderPackStatus()
+                    if(OfflineRegionPacks.needsDefaultPacks(this))
+                        downloadPack(OfflineRegionDownloadService.AUTO)
+                }catch(e:Exception){
+                    Toast.makeText(this,e.localizedMessage,Toast.LENGTH_LONG).show()
+                }
+            }.setNegativeButton("Отмена",null).show()
+    }
+
+    private fun downloadPack(action:String) {
+        if(OfflineRegionPacks.baseUrl(this).isBlank()){
+            AlertDialog.Builder(this).setTitle("Нужен сервер карт")
+                .setMessage("Для загрузки областей требуются готовые .map и .poi "+
+                    "на HTTPS-сервере. Пока его нет, можно импортировать "+
+                    "файлы или скачать общую карту Украины из Mapsforge.")
+                .setPositiveButton("Настроить"){_,_->showPackSettings()}
+                .setNegativeButton("Закрыть",null).show()
+            return
+        }
+        try{
+            val id=OfflineRegionPacks.selected(this)
+            startForegroundService(Intent(this,OfflineRegionDownloadService::class.java)
+                .setAction(action)
+                .putExtra(OfflineRegionDownloadService.REGION_ID,id))
+            renderPackStatus()
+        }catch(e:Exception){
+            Toast.makeText(this,"Не удалось начать загрузку: "+
+                (e.localizedMessage?:"ошибка"),Toast.LENGTH_LONG).show()
+        }
+    }
+
     override fun onCreate(savedInstanceState:Bundle?) {
         super.onCreate(savedInstanceState)
         window.statusBarColor=bg
@@ -224,6 +343,62 @@ class OfflineMapsActivity:Activity() {
             }
         },LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT,dp(58)))
+
+        root.addView(TextView(this).apply{
+            text="ОБЛАСТИ УКРАИНЫ · ВЕКТОРНЫЕ КАРТЫ"
+            textSize=15f
+            typeface=Typeface.DEFAULT_BOLD
+            setTextColor(Color.rgb(137,190,250))
+            setPadding(0,dp(16),0,dp(9))
+        })
+        packStatus=TextView(this).apply{
+            setTextColor(textColorPrimary)
+            textSize=13f
+            setPadding(0,dp(7),0,dp(8))
+        }
+        root.addView(packStatus)
+        root.addView(button("Выбрать область для подробной карты"){
+            chooseRegion()
+        },LinearLayout.LayoutParams(-1,dp(55)))
+        root.addView(button("Скачать подробную карту выбранной области"){
+            downloadPack(OfflineRegionDownloadService.DOWNLOAD_REGION)
+        },LinearLayout.LayoutParams(-1,dp(55)).apply{topMargin=dp(6)})
+        root.addView(button("Скачать обзорную карту всей Украины"){
+            downloadPack(OfflineRegionDownloadService.DOWNLOAD_OVERVIEW)
+        },LinearLayout.LayoutParams(-1,dp(51)).apply{topMargin=dp(6)})
+        root.addView(button("Настроить источник, Wi-Fi и автозагрузку"){
+            showPackSettings()
+        },LinearLayout.LayoutParams(-1,dp(51)).apply{topMargin=dp(6)})
+        root.addView(button("Остановить загрузку областей"){
+            if(OfflineRegionDownloadService.progress.running)
+                startService(Intent(this,OfflineRegionDownloadService::class.java)
+                    .setAction(OfflineRegionDownloadService.STOP))
+            else Toast.makeText(this,"Нет активной загрузки",Toast.LENGTH_SHORT).show()
+        },LinearLayout.LayoutParams(-1,dp(42)).apply{topMargin=dp(6)})
+        root.addView(button("Удалить выбранную область из памяти"){
+            val id=OfflineRegionPacks.selected(this)
+            AlertDialog.Builder(this).setTitle("Удалить "+
+                (OfflineRegionPacks.region(id)?.name?:id)+"?")
+                .setMessage("Удалится только эта подробная карта и её база адресов. "+
+                    "Остальные области и обзор останутся на телефоне.")
+                .setPositiveButton("Удалить"){_,_->
+                    OfflineRegionPacks.delete(this,id)
+                    renderPackStatus()
+                }.setNegativeButton("Отмена",null).show()
+        },LinearLayout.LayoutParams(-1,dp(47)).apply{topMargin=dp(6)})
+        root.addView(TextView(this).apply{
+            text="Обзор Украины хранится отдельно от областей. Киевская область "+
+                "выбрана по умолчанию. Файлы не скачиваются повторно при "+
+                "запуске, если уже сохранены. Другие области загружаются "+
+                "только по запросу. Для региональных файлов нужен "+
+                "настроенный HTTPS-каталог; готового публичного каталога "+
+                "в приложении пока нет."
+            textSize=12f
+            setTextColor(muted)
+            setPadding(0,dp(8),0,dp(16))
+        })
+        renderPackStatus()
+
         root.addView(TextView(this).apply {
             text="СКАЧАТЬ С ИНТЕРНЕТА"
             textSize=15f
