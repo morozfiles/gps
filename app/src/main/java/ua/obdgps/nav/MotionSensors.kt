@@ -39,6 +39,67 @@ class MotionSensors(
     private var stoppedSinceMs=0L
     private var wasStopped=true
     private var lastMotionSpeed=0.0
+    private var magnetometerPresent=false
+    private var magneticSampleMs=0L
+    private var rotationHeadingAccuracyDeg=Double.NaN
+    private var compassCheckStartMs=0L
+    private var compassCheckSamples=0
+    private val magnetMin=DoubleArray(3){Double.POSITIVE_INFINITY}
+    private val magnetMax=DoubleArray(3){Double.NEGATIVE_INFINITY}
+    private var lastAlignedCourse: Double?=null
+    private var alignmentSamples=0
+    private var lastAlignmentSampleMs=0L
+
+    private fun accuracyLabel():String=when(magneticAccuracy) {
+        SensorManager.SENSOR_STATUS_ACCURACY_HIGH -> "высокая"
+        SensorManager.SENSOR_STATUS_ACCURACY_MEDIUM -> "средняя"
+        SensorManager.SENSOR_STATUS_ACCURACY_LOW -> "низкая"
+        else -> "недостоверная"
+    }
+
+    fun beginCompassCheck(obdKmh: Int?, obdFresh: Boolean):String {
+        if(obdFresh && obdKmh != 0)
+            return "Проверка компаса только на стоящем автомобиле"
+        if(!magnetometerPresent || sm.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)==null)
+            return "Нет магнитометра или датчика ориентации"
+        compassCheckStartMs=SystemClock.elapsedRealtime()
+        compassCheckSamples=0
+        for(i in 0..2){magnetMin[i]=Double.POSITIVE_INFINITY;magnetMax[i]=Double.NEGATIVE_INFINITY}
+        State.compassCalibrationText="Проверка 15 с: вращай телефон восьмёркой вдали от металла"
+        return State.compassCalibrationText
+    }
+
+    private fun finishCompassCheck():String {
+        compassCheckStartMs=0L
+        val ranges=(0..2).count{i->
+            magnetMin[i].isFinite() && magnetMax[i].isFinite() &&
+                magnetMax[i]-magnetMin[i]>15.0
+        }
+        val message=when {
+            compassCheckSamples<25 ->
+                "Магнитометр не отвечает. Проверь датчик в другой программе"
+            ranges<2 ->
+                "Недостаточно поворотов: повтори восьмёрку в 3 измерениях"
+            !compassReliable ->
+                "Компас неточен: убери магнитный чехол и повтори вдали от металла"
+            else ->
+                "Магнитный датчик проверен. Закрепи телефон и привяжи курс к GPS"
+        }
+        State.compassCalibrationText=message
+        return message
+    }
+
+    fun resetVehicleAlignment():String {
+        carOffset=null
+        prefs.edit().remove("carOffset").apply()
+        alignmentSamples=0
+        lastAlignmentSampleMs=0L
+        lastAlignedCourse=null
+        State.compassAlignmentText=
+            "Жду 4 устойчивых GPS-курса: едь прямо от 15 км/ч"
+        State.compassStatus="Компас: ожидает GPS-привязки"
+        return State.compassAlignmentText
+    }
 
     val compassReliable: Boolean get() =
         rotationReady && magneticStrength in 25.0..65.0 &&
