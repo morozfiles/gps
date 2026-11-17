@@ -178,21 +178,21 @@ class OfflineMapsActivity:Activity() {
         val saved=OfflineRegionPacks.mapFiles(this)
         val progress=OfflineRegionDownloadService.progress
         packStatus.text="Выбрано: $current"+
-            "\\nОбзор Украины: "+
+            "\nОбзор Украины: "+
             (if(OfflineRegionPacks.has(this,OfflineRegionPacks.OVERVIEW))
                 "сохранён" else "не загружен")+
-            "\\nПодробная карта: "+
+            "\nПодробная карта: "+
             (if(OfflineRegionPacks.has(this,id))"сохранена" else "не загружена")+
-            "\\nБаза адресов области: "+
+            "\nБаза адресов области: "+
             (if(OfflineRegionPacks.has(this,id,"poi"))"сохранена" else "не загружена")+
-            "\\nДоступных файлов карты: "+saved.size+
-            "\\nСервер карт: "+(if(OfflineRegionPacks.baseUrl(this).isNotBlank())
+            "\nДоступных файлов карты: "+saved.size+
+            "\nСервер карт: "+(if(OfflineRegionPacks.baseUrl(this).isNotBlank())
                 "настроен" else "не задан")+
-            "\\n"+progress.title+
+            "\n"+progress.title+
             (if(progress.running)" · ${progress.downloaded/1048576} / "+
                 (if(progress.total>0)"${progress.total/1048576}" else "?")+" МБ"
                 else "")+
-            (if(progress.message.isNotBlank())"\\n"+progress.message else "")
+            (if(progress.message.isNotBlank())"\n"+progress.message else "")
     }
 
     private fun chooseRegion(){
