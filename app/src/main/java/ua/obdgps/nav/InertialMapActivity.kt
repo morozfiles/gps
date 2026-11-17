@@ -12,6 +12,7 @@ import android.os.SystemClock
 import android.util.LruCache
 import android.view.Gravity
 import android.view.MotionEvent
+import android.view.ScaleGestureDetector
 import android.view.View
 import android.view.WindowInsets
 import android.view.WindowManager
@@ -193,7 +194,17 @@ internal class InertialTrackMapView(context:Context): View(context) {
         color=Color.rgb(10,33,49);style=Paint.Style.FILL
     }
     private val pinFill=Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color=Color.rgb(36,170,255);style=Paint.Style.FILL
+        color=Color.rgb(32,152,255);style=Paint.Style.FILL
+    }
+    private val navigationArrowOutline=Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color=Color.WHITE
+        strokeWidth=5.5f
+        style=Paint.Style.STROKE
+        strokeJoin=Paint.Join.ROUND
+    }
+    private val navigationArrowSpot=Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color=Color.WHITE
+        style=Paint.Style.FILL
     }
     private val cache=object:LruCache<String,Bitmap>(24*1024) {
         override fun sizeOf(key:String,value:Bitmap)=max(1,value.byteCount/1024)
@@ -206,6 +217,7 @@ internal class InertialTrackMapView(context:Context): View(context) {
     private val tileDir=File(context.cacheDir,"inertial-test-tiles").apply{mkdirs()}
     private val handler=Handler(Looper.getMainLooper())
     private var current:State.TrailPoint?=null
+    private var markerBearing:Double?=null
     private var history=emptyList<State.TrailPoint>()
     private var follow=true
     private var navigation=false
@@ -222,9 +234,36 @@ internal class InertialTrackMapView(context:Context): View(context) {
     private var zoom=16
     private var touchX=0f
     private var touchY=0f
+    private var multitouchSeen=false
+    private var pinchAccumulator=1.0
+    private val scaleDetector=ScaleGestureDetector(context,
+        object:ScaleGestureDetector.SimpleOnScaleGestureListener() {
+            override fun onScaleBegin(detector:ScaleGestureDetector):Boolean {
+                multitouchSeen=true
+                movedDuringTouch=true
+                follow=false
+                pinchAccumulator=1.0
+                return true
+            }
+            override fun onScale(detector:ScaleGestureDetector):Boolean {
+                val factor=detector.scaleFactor.toDouble()
+                if(!factor.isFinite() || factor<=0.0)return false
+                pinchAccumulator=(pinchAccumulator*factor).coerceIn(0.15,6.0)
+                while(pinchAccumulator>=1.23 && zoom<19) {
+                    zoomAround(zoom+1,detector.focusX,detector.focusY)
+                    pinchAccumulator/=1.23
+                }
+                while(pinchAccumulator<=1.0/1.23 && zoom>11) {
+                    zoomAround(zoom-1,detector.focusX,detector.focusY)
+                    pinchAccumulator*=1.23
+                }
+                return true
+            }
+        })
 
     fun updateFromInertial(point:State.TrailPoint?,trail:List<State.TrailPoint>) {
         current=point;history=trail
+        markerBearing=point?.bearing?.takeIf { it.isFinite() }
         if(follow && point!=null) {
             centerLat=point.latitude;centerLon=point.longitude
         }
@@ -246,6 +285,7 @@ internal class InertialTrackMapView(context:Context): View(context) {
         routePoints=route
         this.destination=destination
         manualOrigin=origin
+        markerBearing=fix?.bearing?.takeIf { it.isFinite() }
         current=fix?.let {
             State.TrailPoint(it.lat,it.lon,it.bearing?:0.0,0.0,it.elapsedMs)
         }
@@ -279,7 +319,20 @@ internal class InertialTrackMapView(context:Context): View(context) {
     }
 
     fun changeZoom(amount:Int) {
-        zoom=(zoom+amount).coerceIn(12,18)
+        zoomAround((zoom+amount).coerceIn(11,19),width/2f,height/2f)
+    }
+
+    /** Keep the geographic point below the fingers fixed while zooming. */
+    private fun zoomAround(targetZoom:Int,focusX:Float,focusY:Float) {
+        if(zoom==targetZoom || width<=0 || height<=0)return
+        val (anchorLat,anchorLon)=geoAt(focusX,focusY)
+        zoom=targetZoom
+        val world=256.0*(1 shl zoom)
+        val centerWorldX=worldX(anchorLon)-focusX+width/2.0
+        val centerWorldY=worldY(anchorLat)-focusY+height/2.0
+        centerLon=(((centerWorldX%world)+world)%world)/world*360.0-180.0
+        val my=centerWorldY.coerceIn(1.0,world-1.0)
+        centerLat=Math.toDegrees(atan(sinh(Math.PI*(1.0-2.0*my/world))))
         invalidate()
     }
 
