@@ -28,6 +28,7 @@ class NavService: Service(), LocationListener {
         const val AUTO_OFF="AUTO_OFF"
         const val CALIBRATE="CALIBRATE"
         const val ALIGN_COMPASS="ALIGN_COMPASS"
+        const val CHECK_COMPASS="CHECK_COMPASS"
         const val REVERSE="REVERSE"
         const val FORWARD="FORWARD"
         const val MONITOR="MONITOR"
@@ -173,12 +174,14 @@ class NavService: Service(), LocationListener {
                     State.message=motion.finishCalibration()
                 },5000)
             }
+            CHECK_COMPASS -> {
+                val fresh=SystemClock.elapsedRealtime()-speedTime<3500L
+                State.message=motion.beginCompassCheck(State.speed,fresh)
+            }
             ALIGN_COMPASS -> {
-                val location=gps
-                State.message=if(location!=null && SystemClock.elapsedRealtime()-gpsTime<10000 &&
-                    location.hasBearing() && location.speed*3.6>=12f)
-                    motion.alignNow((location.bearing.toDouble()+if(reverse)180.0 else 0.0)%360.0) else
-                    "Для согласования компаса проедь прямо с хорошим GPS (более 12 км/ч)"
+                // Does not require the driver to interact with the phone while moving.
+                // Arm stable GPS calibration now; complete automatically later.
+                State.message=motion.resetVehicleAlignment()
             }
             MONITOR -> {
                 val key=settings.adapterKey
