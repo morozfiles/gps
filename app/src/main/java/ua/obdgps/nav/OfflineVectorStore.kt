@@ -182,7 +182,7 @@ object OfflineVectorStore {
                     if(!lat.isFinite()||!lon.isFinite()||
                         lat !in -85.0..85.0||lon !in -180.0..180.0)continue
                     out.add(Place(PlaceSearch.cyrillicLabel(label),lat,lon))
-                    if(out.size>=limit)break
+                    if(out.size>=minOf(500,limit*50))break
                 }
             }
             val distinct=out.distinctBy{it.lat to it.lon}
