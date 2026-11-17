@@ -412,12 +412,26 @@ class NavigatorActivity : Activity() {
         }
     }
 
+    private fun liveCarSpeed():Double? {
+        val now=SystemClock.elapsedRealtime()
+        // The corrected ELM327/OBD value is the primary speed source.
+        val obd=State.obdSpeedKmh()
+        if(obd!=null && obd.isFinite() && State.speedUpdatedElapsedMs>0L &&
+            now-State.speedUpdatedElapsedMs<3500L)return obd
+        // Real GPS velocity can drive the camera when OBD is disconnected.
+        val gps=State.gpsSpeedKmh
+        if(gps!=null && gps.isFinite() && State.gpsSpeedUpdatedElapsedMs>0L &&
+            now-State.gpsSpeedUpdatedElapsedMs<6000L)return gps
+        return null
+    }
+
     private val refresh=object:Runnable {
         override fun run() {
             val fix=currentFix()
             val route=plan
+            val speed=liveCarSpeed()
             map.updateFromNavigation(fix,route?.points?:emptyList(),
-                selectedDestination,manualOrigin)
+                selectedDestination,manualOrigin,speed)
             source.text=State.sourceDescription+" · "+
                 if(State.dr)"DR + OBD" else "обычное местоположение"
             if(route!=null) {
