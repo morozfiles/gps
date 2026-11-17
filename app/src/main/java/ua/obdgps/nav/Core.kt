@@ -62,6 +62,56 @@ class DeadReckoner {
     }
 }
 object State {
+    /** Only values calculated by DeadReckoner are written here.
+     * No LocationManager/GPS or Google Fused locations are ever plotted.
+     * In-memory trail is intentionally cleared at the start of a new DR run.
+     */
+    data class TrailPoint(
+        val latitude: Double,
+        val longitude: Double,
+        val bearing: Double,
+        val speedKmh: Double,
+        val elapsedMs: Long
+    )
+    val inertialTrail = ArrayList<TrailPoint>()
+    var inertialPoint: TrailPoint? = null
+        private set
+
+    fun clearInertialTrail() {
+        inertialTrail.clear()
+        inertialPoint = null
+    }
+
+    fun recordInertialPoint(
+        lat: Double, lon: Double, bearing: Double,
+        speedKmh: Double, elapsedMs: Long
+    ) {
+        if (!lat.isFinite() || !lon.isFinite() || !bearing.isFinite() ||
+            !speedKmh.isFinite() || lat !in -85.0..85.0 ||
+            lon !in -180.0..180.0) return
+        val p=TrailPoint(lat,lon,bearing,speedKmh,elapsedMs)
+        val last=inertialPoint
+        inertialPoint=p
+        if(last!=null && elapsedMs-last.elapsedMs < 950L) return
+        if(last!=null) {
+            val dy=(lat-last.latitude)*111_195.0
+            val dx=(lon-last.longitude)*111_195.0 *
+                kotlin.math.cos(Math.toRadians(lat))
+            val d=kotlin.math.hypot(dx,dy)
+            val turn=kotlin.math.abs((((bearing-last.bearing+540)%360)+360)%360-180)
+            if(d<0.65 && turn<3.0 && elapsedMs-last.elapsedMs<10_000L)return
+        }
+        inertialTrail.add(p)
+        if(inertialTrail.size>1200) {
+            // Keep a longer historical route without unbounded memory growth.
+            val old=inertialTrail.take(600).filterIndexed { i,_->i%2==0 }
+            val newest=inertialTrail.drop(600)
+            inertialTrail.clear()
+            inertialTrail.addAll(old)
+            inertialTrail.addAll(newest)
+        }
+    }
+
     var message = "Ready"
     var speed: Int? = null
     var speedUpdatedElapsedMs: Long = 0L
