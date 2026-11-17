@@ -60,6 +60,15 @@ class PlaceSearch(private val context:Context) {
             return
         }
         worker.execute {
+            // Offline first: Mapsforge POI works without a network connection.
+            val offline=OfflineVectorStore.findPlaces(context,term,8)
+            if(offline.isNotEmpty()) {
+                val results=offline.map {
+                    Result(it.label,RoutingEngine.Point(it.lat,it.lon))
+                }
+                main.post{callback(kotlin.Result.success(results))}
+                return@execute
+            }
             val response=runCatching { photon(term) }
             val results=if(response.isSuccess && response.getOrNull()?.isNotEmpty()==true)
                 response
