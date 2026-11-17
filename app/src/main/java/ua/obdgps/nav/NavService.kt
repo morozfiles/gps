@@ -24,6 +24,10 @@ class NavService: Service(), LocationListener {
         const val EXIT="EXIT"
         const val SET_MUT="SET_MUT"
         const val SET_OBD="SET_OBD"
+        const val SET_CAN="SET_CAN"
+        const val SET_AUTO="SET_AUTO"
+        const val SET_MANUAL_START="SET_MANUAL_START"
+        const val CLEAR_MANUAL_START="CLEAR_MANUAL_START"
         const val AUTO_ON="AUTO_ON"
         const val AUTO_OFF="AUTO_OFF"
         const val CALIBRATE="CALIBRATE"
@@ -73,13 +77,30 @@ class NavService: Service(), LocationListener {
     private var mutSetupIndex = 0
     private var mutFailures = 0
 
-    // Early Mitsubishi K-line. ELM327 handles 5-baud / fast initialization on the adapter.
-    private val protocols = listOf(
+    private val klineProtocols = listOf(
         "3" to "ISO 9141-2",
         "4" to "KWP2000 5-baud",
-        "5" to "KWP2000 fast",
-        "0" to "Auto OBD2"
+        "5" to "KWP2000 fast"
     )
+    private val canProtocols = listOf(
+        "6" to "CAN 11-bit 500k",
+        "7" to "CAN 29-bit 500k",
+        "8" to "CAN 11-bit 250k",
+        "9" to "CAN 29-bit 250k"
+    )
+    private var protocols = klineProtocols + listOf("0" to "Auto OBD2")
+    private var protocolMode="KLINE"
+    private fun candidates(mode:String):List<Pair<String,String>> = when(mode) {
+        "CAN" -> canProtocols+listOf("0" to "Auto OBD2")
+        "AUTO" -> listOf("0" to "Auto OBD2")+canProtocols+klineProtocols
+        else -> klineProtocols+listOf("0" to "Auto OBD2")
+    }
+    private fun protocolLabel(mode:String)=when(mode) {
+        "MUT" -> "MUT-II (эксперимент)"
+        "CAN" -> "OBD2 CAN (ISO 15765-4)"
+        "AUTO" -> "OBD2 (авто K-Line / CAN)"
+        else -> "OBD2 K-Line"
+    }
     private var setupIndex = 0
     private var protocolIndex = 0
     private var configuredProtocol = -1
@@ -121,9 +142,18 @@ class NavService: Service(), LocationListener {
         State.obdFactor = settings.obdFactor
         autoEnabled = settings.autoEnabled
         State.autoEnabled = autoEnabled
-        mutMode = settings.mutMode
-        State.mutMode = mutMode
-        State.modeLabel = if(mutMode) "MUT-II (эксперимент)" else "OBD2 K-Line"
+        protocolMode=settings.protocolMode
+        mutMode=protocolMode=="MUT"
+        protocols=candidates(protocolMode)
+        State.mutMode=mutMode
+        State.modeLabel=protocolLabel(protocolMode)
+        State.manualStart=settings.manualStart
+        if(State.manualStart!=null) {
+            val start=State.manualStart!!
+            State.sourceDescription="Ручная стартовая точка сохранена"
+            State.navFix=State.NavFix(start.lat,start.lon,start.bearing,30f,
+                "Ручной старт",SystemClock.elapsedRealtime())
+        }
         State.deviceName = settings.adapterName ?: "Не выбран"
         State.directionText="Не определено — требуется калибровка"
         State.directionConfirmed=false
@@ -153,8 +183,34 @@ class NavService: Service(), LocationListener {
         when(i?.action) {
             SCAN -> scan()
             CONNECT -> i.getStringExtra("address")?.let { connectChoice(it) }
-            SET_MUT -> changeMode(true)
-            SET_OBD -> changeMode(false)
+            SET_MUT -> changeProtocol("MUT")
+            SET_OBD -> changeProtocol("KLINE")
+            SET_CAN -> changeProtocol("CAN")
+            SET_AUTO -> changeProtocol("AUTO")
+            SET_MANUAL_START -> {
+                val lat=i.getDoubleExtra("lat",Double.NaN)
+                val lon=i.getDoubleExtra("lon",Double.NaN)
+                val bearing=i.getDoubleExtra("bearing",Double.NaN)
+                if(lat.isFinite()&&lat in -85.0..85.0&&lon.isFinite()&&
+                    lon in -180.0..180.0&&bearing.isFinite()) {
+                    val item=NavigatorPrefs.ManualStart(lat,lon,
+                        ((bearing%360)+360)%360)
+                    settings.manualStart=item
+                    State.manualStart=item
+                    State.message="Старт вручную: %.5f, %.5f; курс %.0f°"
+                        .format(Locale.US,lat,lon,item.bearing)
+                    if(!State.dr) {
+                        State.navFix=State.NavFix(lat,lon,item.bearing,
+                            30f,"Ручной старт",SystemClock.elapsedRealtime())
+                        State.sourceDescription="Старт задан вручную"
+                    }
+                } else State.message="Некорректные координаты стартовой точки"
+            }
+            CLEAR_MANUAL_START -> {
+                settings.manualStart=null
+                State.manualStart=null
+                State.message="Ручная стартовая точка удалена"
+            }
             START_DR -> startDr(force=true)
             STOP_DR -> {
                 autoEnabled=false
@@ -196,12 +252,14 @@ class NavService: Service(), LocationListener {
         }
         return START_NOT_STICKY
     }
-    private fun changeMode(useMut:Boolean) {
-        settings.mutMode=useMut
-        mutMode=useMut
-        State.mutMode=useMut
-        State.modeLabel=if(useMut) "MUT-II 0x2F — эксперимент" else "OBD2 K-Line"
-        // Restart protocol negotiation in the same Bluetooth session.
+    private fun changeProtocol(mode:String) {
+        if(mode !in setOf("AUTO","CAN","KLINE","MUT")) return
+        settings.protocolMode=mode
+        protocolMode=mode
+        mutMode=mode=="MUT"
+        State.mutMode=mutMode
+        State.modeLabel=protocolLabel(mode)
+        protocols=candidates(mode)
         setupIndex=0
         mutSetupIndex=0
         mutFailures=0
@@ -213,12 +271,16 @@ class NavService: Service(), LocationListener {
         speedTime=0
         State.speed=null
         State.speedUpdatedElapsedMs=0L
-        State.message=if(useMut) "MUT-II: пробую 0x01/15625 бод" else "OBD2: поиск ISO9141/KWP"
+        State.message="Настройка протокола: "+State.modeLabel
+    }
+    private fun changeMode(useMut:Boolean) {
+        // Reinitialize the selected protocol after Bluetooth reconnection.
+        changeProtocol(if(useMut)"MUT" else protocolMode.takeIf{it!="MUT"}?:"KLINE")
     }
     private fun fallbackFromMut(reason:String) {
-        changeMode(false)
+        changeProtocol("KLINE")
         State.modeLabel="OBD2 K-Line (MUT недоступен)"
-        State.message="MUT-II не поддержан: $reason; переключился на OBD2 K-Line"
+        State.message="MUT-II недоступен: $reason; пробую OBD2 K-Line"
     }
     private fun scan() {
         try {
