@@ -9,8 +9,8 @@ android {
         applicationId = "ua.obdgps.nav"
         minSdk = 31
         targetSdk = 35
-        versionCode = 17
-        versionName = "0.9.5-alpha"
+        versionCode = 18
+        versionName = "0.9.6-alpha"
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
