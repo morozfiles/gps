@@ -523,6 +523,9 @@ class NavService: Service(), LocationListener {
         } else if (!State.dr) gpsInvalidSince=0L
 
         if(State.dr) {
+            // Recovery requires consecutive real GNSS fixes; discard old evidence.
+            if(gpsRecoveryLast > 0L && now-gpsRecoveryLast > 6000L)
+                gpsRecoveryCount=0
             if(!freshObd) {
                 State.message="Инерциальное ведение: нет свежей скорости OBD"
                 State.navigationMode="DR: нет OBD"
@@ -687,6 +690,8 @@ class NavService: Service(), LocationListener {
 
         if(State.dr) {
             // Require several consistent real fixes before trusting recovery.
+            if(gpsRecoveryLast>0L && now-gpsRecoveryLast>6000L)
+                gpsRecoveryCount=0
             if(kmh!=null && kmh >= 2.5 && (now-gpsRecoveryLast>=750L)) {
                 gpsRecoveryCount++
                 gpsRecoveryLast=now
