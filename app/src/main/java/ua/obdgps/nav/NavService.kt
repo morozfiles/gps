@@ -70,6 +70,8 @@ class NavService: Service(), LocationListener {
     private var previousNetworkFix:State.NavFix?=null
     private var networkCorrectionSamples=0
     private var lastNetworkCorrectionMs=0L
+    private var lastCorrectionSource=""
+    private var lastGpsCorrectionMs=0L
     private var manualMode = false
     private var reverse = false
     private var fusedStarting = false
@@ -663,6 +665,7 @@ class NavService: Service(), LocationListener {
                 dr.correctPosition(location.latitude,location.longitude,0.07)
                 State.driftMeters=(State.driftMeters*.94).coerceAtLeast(0.0)
                 lastNetworkCorrectionMs=now
+                lastCorrectionSource=provider
                 State.message="Мягкая коррекция DR: "+provider+
                     ", точность ~"+location.accuracy.toInt()+" м"
             }
@@ -698,7 +701,13 @@ class NavService: Service(), LocationListener {
                     (pose.bearing+if(reverse)180.0 else 0.0)%360.0,
                     (15+State.driftMeters).coerceAtMost(250.0).toFloat(),
                     "OBD + инерциальные датчики",now)
-                State.sourceDescription="Инерциальный расчёт · без GPS"
+                State.sourceDescription=when {
+                    now-lastGpsCorrectionMs<25_000L && lastGpsCorrectionMs>0L ->
+                        "DR + проверенная GPS-коррекция"
+                    now-lastNetworkCorrectionMs<25_000L && lastNetworkCorrectionMs>0L ->
+                        "DR + коррекция "+lastCorrectionSource
+                    else -> "Инерциальный расчёт · без коррекции"
+                }
             }
             return
         }
@@ -898,6 +907,10 @@ class NavService: Service(), LocationListener {
         gpsRecoveryCount=0
         gpsRecoveryLast=0L
         State.driftMeters=0.0
+        networkCorrectionSamples=0
+        previousNetworkFix=null
+        lastNetworkCorrectionMs=0L
+        lastGpsCorrectionMs=0L
         manualMode=force
         State.manualForced=force
         State.dr=true
@@ -925,6 +938,8 @@ class NavService: Service(), LocationListener {
         fusedStarting=false
         gpsRecoveryCount=0
         gpsInvalidSince=0L
+        lastGpsTeleport=0L
+        networkCorrectionSamples=0
         State.driftMeters=0.0
         State.navigationMode="GPS"
         State.message="Ведение по GPS (инерциальный режим выключен)"
@@ -1041,6 +1056,8 @@ class NavService: Service(), LocationListener {
 
             if(gpsRecoveryCount>=3) {
                 dr.correctPosition(location.latitude,location.longitude,0.14)
+                lastGpsCorrectionMs=now
+                lastGpsTeleport=0L
                 if(hasCourse && !reverse)
                     dr.correctHeading(location.bearing.toDouble(),0.7)
                 State.driftMeters*=0.85
