@@ -522,6 +522,9 @@ class MainActivity : Activity() {
         addButton(root,"Настройки") { showSettingsMenu() }
         addButton(root,"Принудительно: вести по датчикам") { send(NavService.START_DR) }
         addButton(root,"Вернуться к GPS") { send(NavService.STOP_DR) }
+        addButton(root,"Тестовая карта · только расчёт DR") {
+            startActivity(Intent(this, InertialMapActivity::class.java))
+        }
         addButton(root,"Открыть Google Maps") { openGoogleMaps() }
         addButton(root,"Остановить мониторинг") { send(NavService.EXIT) }
     }
