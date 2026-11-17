@@ -118,12 +118,22 @@ object OfflineVectorStore {
         val file=poiFile(context)
         val term=query.trim().lowercase(Locale.getDefault())
         if(!file.isFile||term.length<3)return emptyList()
-        val tokens=term.split(Regex("[\\s,]+")).filter{
+        val terms=term.split(Regex("[\\s,]+")).filter{
             it.length>=2 && it !in setOf("місто","город","вулиця","улица",
-                "область","район","будинок","дом","проспект")
+                "область","район","будинок","дом","проспект","проспект",
+                "україна","украина")
         }
+        // City names often aren't stored on every individual OSM POI.
+        // Treat explicit Kyiv prefix as a geographic ranking hint rather
+        // than requiring the string to exist in every building record.
+        val kyivCityQuery=terms.any{it=="київ"||it=="киев"}
+        val tokens=if(terms.size>1)terms.filterNot {
+            it in setOf("київ","киев","м.","г.")
+        } else terms
         if(tokens.isEmpty())return emptyList()
-        val leading=tokens.maxByOrNull{it.length} ?:return emptyList()
+        val numeric=tokens.firstOrNull{it.any(Char::isDigit)}
+        val leading=tokens.filter{it!=numeric}.maxByOrNull{it.length}
+            ?:tokens.maxByOrNull{it.length}?:return emptyList()
         val patterns=linkedSetOf<String>().apply {
             add(leading)
             add(leading.replaceFirstChar{it.titlecase(Locale.getDefault())})
@@ -161,6 +171,9 @@ object OfflineVectorStore {
                     val street=attrs["addr:street"]
                     val number=attrs["addr:housenumber"]
                     val city=attrs["addr:city"]
+                    if(numeric!=null &&
+                        (number==null ||
+                         !number.lowercase(Locale.getDefault()).startsWith(numeric)))continue
                     val label=listOfNotNull(name,street,number,city)
                         .distinct().filter{it.isNotBlank()}.joinToString(", ")
                     if(label.isBlank())continue
@@ -172,7 +185,12 @@ object OfflineVectorStore {
                     if(out.size>=limit)break
                 }
             }
-            return out.distinctBy{it.lat to it.lon}.take(limit)
+            val distinct=out.distinctBy{it.lat to it.lon}
+            return if(kyivCityQuery)distinct.sortedBy {
+                val dy=(it.lat-50.4501)*111_195.0
+                val dx=(it.lon-30.5234)*70_000.0
+                dy*dy+dx*dx
+            }.take(limit) else distinct.take(limit)
         } catch (_:Exception){return emptyList()}
         finally{db.close()}
     }
