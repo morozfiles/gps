@@ -145,7 +145,12 @@ class NavService: Service(), LocationListener {
             SET_MUT -> changeMode(true)
             SET_OBD -> changeMode(false)
             START_DR -> startDr(force=true)
-            STOP_DR -> stopDr()
+            STOP_DR -> {
+                autoEnabled=false
+                State.autoEnabled=false
+                stopDr()
+                State.message="GPS выбран вручную; автоведение отключено в настройках"
+            }
             AUTO_ON -> { autoEnabled=true; State.autoEnabled=true; State.message="Автоведение включено" }
             AUTO_OFF -> { autoEnabled=false; State.autoEnabled=false; State.message="Автоведение отключено" }
             CALIBRATE -> {
@@ -561,7 +566,16 @@ class NavService: Service(), LocationListener {
     }
 
     private fun startDr(force: Boolean) {
-        if(State.dr || fusedStarting) return
+        if(State.dr) {
+            if(force) {
+                manualMode=true
+                State.manualForced=true
+                State.navigationMode="Датчики (вручную)"
+                State.message="Принудительное ведение по датчикам активно"
+            }
+            return
+        }
+        if(fusedStarting) return
         val now=SystemClock.elapsedRealtime()
         if(State.speed==null || now-speedTime>3500L) {
             State.message="Ведение по датчикам: нет свежей скорости OBD"
