@@ -611,7 +611,7 @@ class MainActivity : Activity() {
         }
 
         section("КАРТЫ ОФЛАЙН")
-        item("Сохранённые карты и импорт области MBTiles") {
+        item("Офлайн-карты: растровые MBTiles / векторные .map / адреса .poi") {
             startActivity(Intent(this,OfflineMapsActivity::class.java))
         }
 
@@ -671,6 +671,9 @@ class MainActivity : Activity() {
         addButton(root,"Вернуться к GPS") { send(NavService.STOP_DR) }
         addButton(root,"Навигатор · маршрут и голосовые повороты") {
             startActivity(Intent(this,NavigatorActivity::class.java))
+        }
+        addButton(root,"Векторная офлайн-карта · дороги и адреса") {
+            startActivity(Intent(this,OfflineVectorNavigatorActivity::class.java))
         }
         addButton(root,"Тестовая карта · только расчёт DR") {
             startActivity(Intent(this, InertialMapActivity::class.java))
