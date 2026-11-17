@@ -32,6 +32,13 @@ class MotionSensors(
     private var gyroSum=0.0
     private var accelSamples=0
     private var accelSum=0.0
+    private var gpsReverseCandidate: Boolean? = null
+    private var gpsReverseCount=0
+    private var gpsEvidenceLastMs=0L
+    private var signedAccelerationFiltered=0.0
+    private var stoppedSinceMs=0L
+    private var wasStopped=true
+    private var lastMotionSpeed=0.0
 
     val compassReliable: Boolean get() =
         rotationReady && magneticStrength in 25.0..65.0 &&
@@ -106,6 +113,52 @@ class MotionSensors(
         prefs.edit().putFloat("carOffset",carOffset!!.toFloat()).apply()
     }
 
+    /** Compare GPS travel course with calibrated physical vehicle heading. */
+    fun directionFromGps(course: Double, speed: Double, now: Long): Boolean? {
+        val body = compassBearing ?: return null
+        if (!speed.isFinite() || speed < 7) return null
+        val difference=abs(wrapSigned(course-body))
+        val candidate=when {
+            difference < 38.0 -> false
+            difference > 142.0 -> true
+            else -> null
+        }
+        if(candidate==null) {
+            gpsReverseCandidate=null
+            gpsReverseCount=0
+            return null
+        }
+        if(now-gpsEvidenceLastMs>4500L || gpsReverseCandidate!=candidate) gpsReverseCount=0
+        gpsEvidenceLastMs=now
+        gpsReverseCandidate=candidate
+        gpsReverseCount++
+        return if(gpsReverseCount>=3) candidate else null
+    }
+
+    /**
+     * Infer reverse only from a clear starting acceleration after a confirmed
+     * stop and a previously calibrated phone-to-car orientation.
+     * Braking and slopes make this heuristic uncertain; otherwise return null.
+     */
+    fun directionFromAcceleration(speed: Double, now: Long): Boolean? {
+        if(!speed.isFinite()) return null
+        if(speed<0.5) {
+            if(!wasStopped) stoppedSinceMs=now
+            if(stoppedSinceMs==0L) stoppedSinceMs=now
+            wasStopped=true
+            lastMotionSpeed=speed
+            return null
+        }
+        val starting=wasStopped && now-stoppedSinceMs>1200L &&
+            now-stoppedSinceMs<18000L && speed in 2.5..17.0 &&
+            lastMotionSpeed<1.5
+        lastMotionSpeed=speed
+        wasStopped=false
+        if(!starting || !compassReliable || carOffset==null) return null
+        if(abs(signedAccelerationFiltered)<0.55) return null
+        return signedAccelerationFiltered < 0.0
+    }
+
     fun alignNow(course: Double): String {
         if(!compassReliable) return "Компас недоступен или есть магнитные помехи"
         carOffset=wrapSigned(course-trueNorth)
@@ -132,6 +185,17 @@ class MotionSensors(
                 val norm=sqrt((0..2).sumOf { i->event.values[i].toDouble().pow(2) })
                 if(calibrationStart!=0L) {accelSum+=norm;accelSamples++}
                 val corrected=(norm-accelBias).coerceAtLeast(0.0)
+                // Rotation matrix maps device acceleration to East/North/Up.
+                val carBearing=compassBearing
+                if(carBearing!=null) {
+                    val east=rotationMatrix[0]*event.values[0]+
+                        rotationMatrix[1]*event.values[1]+rotationMatrix[2]*event.values[2]
+                    val north=rotationMatrix[3]*event.values[0]+
+                        rotationMatrix[4]*event.values[1]+rotationMatrix[5]*event.values[2]
+                    val angle=Math.toRadians(carBearing)
+                    val forward=east*sin(angle)+north*cos(angle)
+                    signedAccelerationFiltered=0.86*signedAccelerationFiltered+0.14*forward
+                } else signedAccelerationFiltered=0.0
                 State.accelerationText=when{
                     corrected<0.25 -> "Ровное движение / стоим"
                     corrected<1.0 -> "Слабое ускорение или торможение"
@@ -145,6 +209,7 @@ class MotionSensors(
             Sensor.TYPE_ROTATION_VECTOR -> {
                 SensorManager.getRotationMatrixFromVector(rotationMatrix,event.values)
                 SensorManager.getOrientation(rotationMatrix,orientation)
+                rotationReady=true
                 trueNorth=wrap360(Math.toDegrees(orientation[0].toDouble())+declination)
                 State.compassStatus=if(compassBearing!=null)
                     "Курс " + compassBearing!!.toInt() + "°"
