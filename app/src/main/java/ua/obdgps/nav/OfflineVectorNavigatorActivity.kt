@@ -125,7 +125,12 @@ class OfflineVectorNavigatorActivity:Activity() {
                 .setMessage("Сначала импортируй векторный файл региона .map " +
                     "в разделе «Карты офлайн». Можно также добавить файл .poi " +
                     "для поиска адресов без интернета.")
-                .setPositiveButton("Открыть карты"){_,_->
+                .setPositiveButton("Скачать Украину"){_,_->
+                    startActivity(Intent(this,OfflineMapsActivity::class.java)
+                        .putExtra("download_ukraine",true))
+                    finish()
+                }
+                .setNeutralButton("Импортировать регион"){_,_->
                     startActivity(Intent(this,OfflineMapsActivity::class.java))
                     finish()
                 }.setNegativeButton("Назад"){_,_->finish()}
