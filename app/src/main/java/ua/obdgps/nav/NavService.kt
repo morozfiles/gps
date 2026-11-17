@@ -1079,6 +1079,15 @@ class NavService: Service(), LocationListener {
         if(location.latitude !in -85.0..85.0 ||
             location.longitude !in -180.0..180.0)return
         State.addRawGps(location.latitude,location.longitude,now)
+        // This gross geographic anomaly must be rejected even if GNSS
+        // advertises poor accuracy or a fabricated low velocity.
+        if(GpsSpoofGuard.isLima(location.latitude,location.longitude)){
+            val reported=if(location.hasSpeed())location.speed*3.6 else null
+            quarantineGps(now,"GPS: координаты в районе Лимы"+
+                (if(reported!=null && reported>180.0)
+                    " · скорость >180 км/ч" else ""))
+            return
+        }
         if(!location.hasAccuracy() || location.accuracy>45f) {
             State.gpsText="GPS: низкая точность"
             return
@@ -1093,13 +1102,6 @@ class NavService: Service(), LocationListener {
         }
         val freshObd=State.speed!=null && now-speedTime<3500L
         val obd=if(freshObd)correctedSpeed()?:0.0 else 0.0
-        // Reject Lima even when the spoofed speed drops below 180 km/h.
-        // The raw observation remains visible only in the diagnostic trace.
-        if(GpsSpoofGuard.isLima(location.latitude,location.longitude)){
-            quarantineGps(now,"GPS: координаты в районе Лимы"+
-                (if(kmh!=null && kmh>180.0)" · >180 км/ч" else ""))
-            return
-        }
         // A sudden >1 km teleport cannot become our new GNSS anchor.
         // Compare against plausible travel over elapsed time so a normal
         // long drive between sparse fixes isn't misclassified.
