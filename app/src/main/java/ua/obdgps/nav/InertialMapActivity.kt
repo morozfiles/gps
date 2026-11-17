@@ -163,7 +163,7 @@ class InertialMapActivity : Activity() {
 }
 
 /** Visible OSM raster tiles, seven-day disk caching, and a local-grid fallback. */
-private class InertialTrackMapView(context:Context): View(context) {
+internal class InertialTrackMapView(context:Context): View(context) {
     private val tilePaint=Paint(Paint.FILTER_BITMAP_FLAG)
     private val gridPaint=Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color=Color.rgb(65,75,87);strokeWidth=1f
@@ -171,6 +171,17 @@ private class InertialTrackMapView(context:Context): View(context) {
     private val routeOutline=Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color=Color.rgb(6,32,44);strokeWidth=11f;style=Paint.Style.STROKE
         strokeJoin=Paint.Join.ROUND;strokeCap=Paint.Cap.ROUND
+    }
+    private val navigationPaint=Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color=Color.rgb(255,177,58);strokeWidth=10f
+        style=Paint.Style.STROKE;strokeJoin=Paint.Join.ROUND
+        strokeCap=Paint.Cap.ROUND
+    }
+    private val destinationPaint=Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color=Color.rgb(237,76,84);style=Paint.Style.FILL
+    }
+    private val startPaint=Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color=Color.rgb(171,117,242);style=Paint.Style.FILL
     }
     private val routePaint=Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color=Color.rgb(22,207,206);strokeWidth=6f;style=Paint.Style.STROKE
@@ -195,6 +206,15 @@ private class InertialTrackMapView(context:Context): View(context) {
     private var current:State.TrailPoint?=null
     private var history=emptyList<State.TrailPoint>()
     private var follow=true
+    private var navigation=false
+    private var routePoints:List<RoutingEngine.Point> = emptyList()
+    private var destination:RoutingEngine.Point?=null
+    private var manualOrigin:RoutingEngine.Point?=null
+    private var selectionCallback:((Double,Double)->Unit)?=null
+    private var tapDownAt=0L
+    private var movedDuringTouch=false
+    private var downX=0f
+    private var downY=0f
     private var centerLat=50.4501 // Static map start, not user GPS.
     private var centerLon=30.5234
     private var zoom=16
@@ -207,6 +227,47 @@ private class InertialTrackMapView(context:Context): View(context) {
             centerLat=point.latitude;centerLon=point.longitude
         }
         invalidate()
+    }
+
+    fun enableNavigationMode(onPick:(Double,Double)->Unit) {
+        navigation=true
+        selectionCallback=onPick
+    }
+
+    fun updateFromNavigation(
+        fix:State.NavFix?,
+        route:List<RoutingEngine.Point>,
+        destination:RoutingEngine.Point?,
+        origin:RoutingEngine.Point?
+    ) {
+        navigation=true
+        routePoints=route
+        this.destination=destination
+        manualOrigin=origin
+        current=fix?.let {
+            State.TrailPoint(it.lat,it.lon,it.bearing?:0.0,0.0,it.elapsedMs)
+        }
+        // Show inertial breadcrumbs only when DR is active.
+        history=if(State.dr)State.inertialTrail.toList() else emptyList()
+        if(follow&&fix!=null) {
+            centerLat=fix.lat;centerLon=fix.lon
+        }
+        invalidate()
+    }
+
+    fun centerAt(lat:Double,lon:Double) {
+        centerLat=lat;centerLon=lon
+        follow=false
+        invalidate()
+    }
+
+    private fun geoAt(x:Float,y:Float):Pair<Double,Double> {
+        val world=256.0*(1 shl zoom)
+        val px=((worldX(centerLon)+x-width/2.0)%world+world)%world
+        val py=(worldY(centerLat)+y-height/2.0).coerceIn(1.0,world-1.0)
+        val longitude=px/world*360.0-180.0
+        val latitude=Math.toDegrees(atan(sinh(Math.PI*(1.0-2.0*py/world))))
+        return Pair(latitude,longitude)
     }
 
     fun followCar() {
@@ -256,6 +317,29 @@ private class InertialTrackMapView(context:Context): View(context) {
                 val image=tileBitmap(zoom,x,y)
                 if(image!=null)
                     canvas.drawBitmap(image,null,RectF(sx,sy,sx+256f,sy+256f),tilePaint)
+            }
+        }
+        if(navigation && routePoints.size>=2) {
+            val path=Path()
+            var first=true
+            var lastX=0f;var lastY=0f
+            for(point in routePoints) {
+                val (x,y)=point(point.lat,point.lon)
+                if(first || abs(x-lastX)>width*.8f || abs(y-lastY)>height*.8f) {
+                    path.moveTo(x,y);first=false
+                } else path.lineTo(x,y)
+                lastX=x;lastY=y
+            }
+            canvas.drawPath(path,navigationPaint)
+        }
+        if(navigation) {
+            destination?.let {
+                val (x,y)=point(it.lat,it.lon)
+                canvas.drawCircle(x,y,17f,destinationPaint)
+            }
+            manualOrigin?.let {
+                val (x,y)=point(it.lat,it.lon)
+                canvas.drawCircle(x,y,12f,startPaint)
             }
         }
         if(history.size>=2) {
@@ -356,24 +440,38 @@ private class InertialTrackMapView(context:Context): View(context) {
         when(event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 touchX=event.x;touchY=event.y
+                downX=event.x;downY=event.y
+                tapDownAt=SystemClock.elapsedRealtime()
+                movedDuringTouch=false
                 return true
             }
             MotionEvent.ACTION_MOVE -> {
                 val dx=event.x-touchX
                 val dy=event.y-touchY
+                if(abs(event.x-downX)>16f || abs(event.y-downY)>16f)
+                    movedDuringTouch=true
                 if(abs(dx)>2f || abs(dy)>2f) {
-                    follow=false
-                    val world=256.0*(1 shl zoom)
-                    val nx=(worldX(centerLon)-dx+world)%world
-                    val ny=(worldY(centerLat)-dy).coerceIn(1.0,world-1.0)
-                    centerLon=nx/world*360.0-180.0
-                    centerLat=Math.toDegrees(atan(sinh(Math.PI*(1.0-2.0*ny/world))))
-                    invalidate()
+                    if(movedDuringTouch) {
+                        follow=false
+                        val world=256.0*(1 shl zoom)
+                        val nx=(worldX(centerLon)-dx+world)%world
+                        val ny=(worldY(centerLat)-dy).coerceIn(1.0,world-1.0)
+                        centerLon=nx/world*360.0-180.0
+                        centerLat=Math.toDegrees(atan(sinh(Math.PI*(1.0-2.0*ny/world))))
+                        invalidate()
+                    }
                 }
                 touchX=event.x;touchY=event.y
                 return true
             }
-            MotionEvent.ACTION_UP,MotionEvent.ACTION_CANCEL -> return true
+            MotionEvent.ACTION_UP -> {
+                if(!movedDuringTouch && navigation) {
+                    val (lat,lon)=geoAt(event.x,event.y)
+                    selectionCallback?.invoke(lat,lon)
+                }
+                return true
+            }
+            MotionEvent.ACTION_CANCEL -> return true
         }
         return true
     }
