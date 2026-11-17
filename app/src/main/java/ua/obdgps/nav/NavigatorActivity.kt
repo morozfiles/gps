@@ -277,6 +277,15 @@ class NavigatorActivity : Activity() {
             Gravity.TOP or Gravity.LEFT).apply{
                 setMargins(dp(5),dp(5),0,0)
             })
+        mapContainer.addView(mapControl("↓") {
+            startActivity(Intent(this,OfflineMapsActivity::class.java))
+        }.apply{
+            textSize=23f
+            contentDescription="Сохранённые офлайн-карты и импорт области"
+        },FrameLayout.LayoutParams(dp(44),dp(44),
+            Gravity.TOP or Gravity.LEFT).apply{
+            setMargins(dp(7),dp(32),0,0)
+        })
         setContentView(root)
 
         NavigatorPrefs(this).manualStart?.let {
