@@ -30,9 +30,9 @@ import kotlin.math.*
  * This Activity never obtains GPS, Fused Location, or phone location.
  */
 class InertialMapActivity : Activity() {
-    private val background=Color.rgb(28,33,40)
+    private val pageBackgroundColor=Color.rgb(28,33,40)
     private val surface=Color.rgb(51,59,70)
-    private val foreground=Color.rgb(236,242,249)
+    private val primaryTextColor=Color.rgb(236,242,249)
     private val secondary=Color.rgb(180,193,209)
     private val handler=Handler(Looper.getMainLooper())
     private lateinit var map: InertialTrackMapView
@@ -43,7 +43,7 @@ class InertialMapActivity : Activity() {
         text=label
         isAllCaps=false
         textSize=14f
-        setTextColor(foreground)
+        setTextColor(primaryTextColor)
         setBackgroundColor(surface)
         setOnClickListener { action() }
     }
@@ -70,13 +70,13 @@ class InertialMapActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        window.statusBarColor=background
-        window.navigationBarColor=background
+        window.statusBarColor=pageBackgroundColor
+        window.navigationBarColor=pageBackgroundColor
         window.decorView.systemUiVisibility=0
 
         val column=LinearLayout(this).apply {
             orientation=LinearLayout.VERTICAL
-            setBackgroundColor(background)
+            setBackgroundColor(pageBackgroundColor)
             setPadding(dp(12),dp(7),dp(12),dp(8))
             setOnApplyWindowInsetsListener { view,insets ->
                 val bars=insets.getInsets(
@@ -94,7 +94,7 @@ class InertialMapActivity : Activity() {
             text="Тестовая карта · DR"
             textSize=20f
             typeface=Typeface.DEFAULT_BOLD
-            setTextColor(foreground)
+            setTextColor(primaryTextColor)
         },LinearLayout.LayoutParams(0,LinearLayout.LayoutParams.WRAP_CONTENT,1f))
         titleRow.addView(button("Назад") { finish() },
             LinearLayout.LayoutParams(dp(82),dp(44)))
