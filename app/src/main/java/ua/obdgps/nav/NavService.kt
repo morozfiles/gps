@@ -15,7 +15,7 @@ import java.io.OutputStream
 import kotlin.math.*
 
 @SuppressLint("MissingPermission")
-class NavService: Service(), SensorEventListener, LocationListener {
+class NavService: Service(), LocationListener {
     companion object {
         const val SCAN="SCAN"
         const val CONNECT="CONNECT"
@@ -24,10 +24,18 @@ class NavService: Service(), SensorEventListener, LocationListener {
         const val EXIT="EXIT"
         const val SET_MUT="SET_MUT"
         const val SET_OBD="SET_OBD"
+        const val AUTO_ON="AUTO_ON"
+        const val AUTO_OFF="AUTO_OFF"
+        const val CALIBRATE="CALIBRATE"
+        const val ALIGN_COMPASS="ALIGN_COMPASS"
+        const val REVERSE="REVERSE"
+        const val FORWARD="FORWARD"
+        const val MONITOR="MONITOR"
     }
     private val handler = Handler(Looper.getMainLooper())
     private lateinit var lm: LocationManager
-    private lateinit var sm: SensorManager
+    private lateinit var motion: MotionSensors
+    private lateinit var fused: FusedMockRelay
     private var gatt: BluetoothGatt? = null
     private var tx: BluetoothGattCharacteristic? = null
     private var sppSocket: BluetoothSocket? = null
@@ -41,11 +49,18 @@ class NavService: Service(), SensorEventListener, LocationListener {
     private var gps: Location? = null
     private var gpsTime = 0L
     private var speedTime = 0L
-    private var gyroTime = 0L
     private var tickTime = 0L
-    private var gravity = floatArrayOf(0f,0f,9.81f)
-    private var yawBias = 0.0
-    private var mockOn = false
+    private var lastMockSent = 0L
+    private var lastDrStart = 0L
+    private var gpsInvalidSince = 0L
+    private var gpsRecoveryCount = 0
+    private var gpsRecoveryLast = 0L
+    private var lastRejectedGps = 0L
+    private var lastAcceptedGps = 0L
+    private var manualMode = false
+    private var reverse = false
+    private var fusedStarting = false
+    private var autoEnabled = true
     private var connected = false
     private val responseBuffer = StringBuilder()
     private val commands = listOf("ATZ", "ATE0", "ATL0", "ATS0", "ATH0", "ATAT1", "ATST96")
@@ -91,22 +106,8 @@ class NavService: Service(), SensorEventListener, LocationListener {
                     write(command)
                 }
             }
-            if(State.dr) {
-                val dt = ((now - tickTime)/1000.0).coerceIn(0.0,0.5)
-                if(State.speed!=null && now-speedTime < 3000) {
-                    dr.move(State.speed!!,dt)
-                    dr.pose?.let { p ->
-                        val location = Location(LocationManager.GPS_PROVIDER).apply {
-                            latitude=p.lat; longitude=p.lon; bearing=p.bearing.toFloat()
-                            speed=State.speed!!/3.6f; accuracy=15f
-                            time=System.currentTimeMillis(); elapsedRealtimeNanos=SystemClock.elapsedRealtimeNanos()
-                        }
-                        try { lm.setTestProviderLocation(LocationManager.GPS_PROVIDER,location) }
-                        catch(e:Exception) { State.message="Mock Location: ${e.message}" }
-                        State.position="%.6f, %.6f; курс %.1f".format(Locale.US,p.lat,p.lon,p.bearing)
-                    }
-                } else State.message="Нет свежих данных OBD: расчёт остановлен"
-            }
+            AirAlerts.refreshIfDue()
+            updateNavigation(now)
             tickTime=now
             handler.postDelayed(this,250)
         }
@@ -114,7 +115,18 @@ class NavService: Service(), SensorEventListener, LocationListener {
     override fun onCreate() {
         super.onCreate()
         lm = getSystemService(LOCATION_SERVICE) as LocationManager
-        sm = getSystemService(SENSOR_SERVICE) as SensorManager
+        fused = FusedMockRelay(this)
+        motion = MotionSensors(this) { yaw, dt ->
+            if (State.dr) dr.turn(yaw, dt)
+        }
+        motion.start()
+        State.navigationMode = "GPS"
+        State.autoEnabled = true
+        State.manualForced = false
+        State.dr = false
+        State.gpsText = "Ожидаем GPS"
+        autoEnabled = true
+        reverse = false
         val channel = NotificationChannel("nav","OBD GPS Navigator",NotificationManager.IMPORTANCE_LOW)
         (getSystemService(NOTIFICATION_SERVICE) as NotificationManager).createNotificationChannel(channel)
         val intent = PendingIntent.getActivity(this,0,Intent(this,MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
@@ -123,8 +135,6 @@ class NavService: Service(), SensorEventListener, LocationListener {
         startForeground(1,n,android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION or android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
         if(checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)==PackageManager.PERMISSION_GRANTED)
             try { lm.requestLocationUpdates(LocationManager.GPS_PROVIDER,1000,0f,this,Looper.getMainLooper()) } catch (_:Exception) {}
-        sm.getDefaultSensor(Sensor.TYPE_GYROSCOPE)?.let { sm.registerListener(this,it,SensorManager.SENSOR_DELAY_GAME) }
-        sm.getDefaultSensor(Sensor.TYPE_GRAVITY)?.let { sm.registerListener(this,it,SensorManager.SENSOR_DELAY_GAME) }
         tickTime=SystemClock.elapsedRealtime()
         handler.post(loop)
     }
@@ -134,8 +144,31 @@ class NavService: Service(), SensorEventListener, LocationListener {
             CONNECT -> i.getStringExtra("address")?.let { connectChoice(it) }
             SET_MUT -> changeMode(true)
             SET_OBD -> changeMode(false)
-            START_DR -> startDr()
+            START_DR -> startDr(force=true)
             STOP_DR -> stopDr()
+            AUTO_ON -> { autoEnabled=true; State.autoEnabled=true; State.message="Автоведение включено" }
+            AUTO_OFF -> { autoEnabled=false; State.autoEnabled=false; State.message="Автоведение отключено" }
+            CALIBRATE -> {
+                val text=motion.calibrate(State.speed,SystemClock.elapsedRealtime()-speedTime<3000)
+                State.message=text
+                if(text.startsWith("Калибровка:")) handler.postDelayed({
+                    State.message=motion.finishCalibration()
+                },5000)
+            }
+            ALIGN_COMPASS -> {
+                val location=gps
+                State.message=if(location!=null && SystemClock.elapsedRealtime()-gpsTime<10000 &&
+                    location.hasBearing() && location.speed*3.6>=12f)
+                    motion.alignNow(location.bearing.toDouble()) else
+                    "Для согласования компаса проедь прямо с хорошим GPS (более 12 км/ч)"
+            }
+            REVERSE -> { reverse=true;State.reverseSelected=true
+                State.directionText="Назад (выбрано вручную)"
+                State.message="Выбран задний ход вручную" }
+            FORWARD -> { reverse=false;State.reverseSelected=false
+                State.directionText="Вперёд (предположительно)"
+                State.message="Выбрано движение вперёд" }
+            MONITOR -> State.message="Мониторинг датчиков запущен"
             EXIT -> { stopSelf(); return START_NOT_STICKY }
         }
         return START_NOT_STICKY
