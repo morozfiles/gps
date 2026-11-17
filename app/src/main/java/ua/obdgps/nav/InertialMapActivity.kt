@@ -413,15 +413,29 @@ internal class InertialTrackMapView(context:Context): View(context) {
         }
         current?.let {
             val (x,y)=point(it.latitude,it.longitude)
-            canvas.drawCircle(x,y,24f,pinHalo)
-            canvas.drawCircle(x,y,18f,pinFill)
-            canvas.save()
-            canvas.rotate(it.bearing.toFloat(),x,y)
-            val arrow=Path().apply {
-                moveTo(x,y-30f);lineTo(x-10f,y-12f);lineTo(x+10f,y-12f);close()
+            canvas.drawCircle(x,y,32f,pinHalo)
+            val course=markerBearing
+            if(course==null) {
+                // A heading that is not known must not be displayed as north.
+                canvas.drawCircle(x,y,18f,navigationArrowSpot)
+                canvas.drawCircle(x,y,14f,pinFill)
+            } else {
+                // Large vehicle chevron, similar to familiar navigation arrows.
+                // North-up map: rotate clockwise by actual travel heading.
+                canvas.save()
+                canvas.rotate(course.toFloat(),x,y)
+                val arrow=Path().apply {
+                    moveTo(x,y-34f)
+                    lineTo(x+18f,y+23f)
+                    lineTo(x,y+13f)
+                    lineTo(x-18f,y+23f)
+                    close()
+                }
+                canvas.drawPath(arrow,navigationArrowOutline)
+                canvas.drawPath(arrow,pinFill)
+                canvas.drawCircle(x,y-4f,4.5f,navigationArrowSpot)
+                canvas.restore()
             }
-            canvas.drawPath(arrow,pinFill)
-            canvas.restore()
         }
     }
 
@@ -492,41 +506,67 @@ internal class InertialTrackMapView(context:Context): View(context) {
     }
 
     override fun onTouchEvent(event:MotionEvent):Boolean {
+        // Pass all pointer events to the native scaling detector first.
+        scaleDetector.onTouchEvent(event)
         when(event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 touchX=event.x;touchY=event.y
                 downX=event.x;downY=event.y
                 tapDownAt=SystemClock.elapsedRealtime()
                 movedDuringTouch=false
+                multitouchSeen=false
+                return true
+            }
+            MotionEvent.ACTION_POINTER_DOWN -> {
+                multitouchSeen=true
+                movedDuringTouch=true
+                return true
+            }
+            MotionEvent.ACTION_POINTER_UP -> {
+                multitouchSeen=true
+                movedDuringTouch=true
+                val removed=event.actionIndex
+                val active=if(removed==0)1 else 0
+                if(active<event.pointerCount) {
+                    touchX=event.getX(active)
+                    touchY=event.getY(active)
+                }
                 return true
             }
             MotionEvent.ACTION_MOVE -> {
+                if(event.pointerCount>1 || scaleDetector.isInProgress)
+                    return true
+                if(multitouchSeen)return true
                 val dx=event.x-touchX
                 val dy=event.y-touchY
                 if(abs(event.x-downX)>16f || abs(event.y-downY)>16f)
                     movedDuringTouch=true
-                if(abs(dx)>2f || abs(dy)>2f) {
-                    if(movedDuringTouch) {
-                        follow=false
-                        val world=256.0*(1 shl zoom)
-                        val nx=(worldX(centerLon)-dx+world)%world
-                        val ny=(worldY(centerLat)-dy).coerceIn(1.0,world-1.0)
-                        centerLon=nx/world*360.0-180.0
-                        centerLat=Math.toDegrees(atan(sinh(Math.PI*(1.0-2.0*ny/world))))
-                        invalidate()
-                    }
+                if(movedDuringTouch && (abs(dx)>2f||abs(dy)>2f)) {
+                    follow=false
+                    val world=256.0*(1 shl zoom)
+                    val nx=(worldX(centerLon)-dx+world)%world
+                    val ny=(worldY(centerLat)-dy).coerceIn(1.0,world-1.0)
+                    centerLon=nx/world*360.0-180.0
+                    centerLat=Math.toDegrees(atan(sinh(Math.PI*(1.0-2.0*ny/world))))
+                    invalidate()
                 }
                 touchX=event.x;touchY=event.y
                 return true
             }
             MotionEvent.ACTION_UP -> {
-                if(!movedDuringTouch && navigation) {
+                val isTap=!movedDuringTouch && !multitouchSeen &&
+                    SystemClock.elapsedRealtime()-tapDownAt<650L
+                if(isTap && navigation) {
                     val (lat,lon)=geoAt(event.x,event.y)
                     selectionCallback?.invoke(lat,lon)
                 }
+                multitouchSeen=false
                 return true
             }
-            MotionEvent.ACTION_CANCEL -> return true
+            MotionEvent.ACTION_CANCEL -> {
+                multitouchSeen=false
+                return true
+            }
         }
         return true
     }
