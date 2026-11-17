@@ -9,6 +9,23 @@ object Obd {
         return pattern.find(cleaned)?.groupValues?.get(1)?.toIntOrNull(16)
     }
 }
+/**
+ * Mitsubishi MUT-II request 0x2F: vehicle speed = unsigned byte * 2 km/h.
+ * A native MUT reply (not an ELM echo or standard OBD response) is required.
+ * Vgate/ELM UART may not expose native raw MUT packets; fail closed.
+ */
+object MitsubishiMut {
+    fun parseSpeed(raw: String): Int? {
+        val text = raw.uppercase().replace("\\r", " ").replace("\\n", " ")
+        if (listOf("NO DATA","ERROR","TIMEOUT","UNABLE","BUS INIT","STOPPED").any { it in text }) return null
+        // Only accept a reply that explicitly contains the native MUT item 2F.
+        val response = Regex("""(?<![0-9A-F])2F[ :]+([0-9A-F]{2})(?![0-9A-F])""").find(text)
+            ?: Regex("""(?<![0-9A-F])2F([0-9A-F]{2})(?![0-9A-F])""").find(text)
+            ?: return null
+        return response.groupValues[1].toInt(16) * 2
+    }
+}
+
 class DeadReckoner {
     data class Pose(val lat: Double, val lon: Double, val bearing: Double)
     var pose: Pose? = null
@@ -38,5 +55,7 @@ object State {
     var position = "—"
     var deviceName = "No ELM327"
     var dr = false
+    var mutMode = false
+    var modeLabel = "OBD2 K-Line"
     val devices = linkedMapOf<String,String>()
 }
