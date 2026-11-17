@@ -24,6 +24,8 @@ class OfflineMapsActivity:Activity() {
     private val textColorPrimary=Color.rgb(238,242,248)
     private val muted=Color.rgb(170,191,210)
     private val pickMbtiles=4519
+    private val pickVector=4520
+    private val pickPoi=4521
     private lateinit var status:TextView
     private lateinit var detail:TextView
 
@@ -46,6 +48,20 @@ class OfflineMapsActivity:Activity() {
             setOnClickListener {onClick()}
         }
 
+    private fun pickVectorFile(code:Int) {
+        try {
+            @Suppress("DEPRECATION")
+            startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                addCategory(Intent.CATEGORY_OPENABLE)
+                type="*/*"
+            },code)
+        } catch (e:Exception) {
+            Toast.makeText(this,"Не удалось открыть документы: "+
+                (e.localizedMessage?:"нет файлового приложения"),
+                Toast.LENGTH_LONG).show()
+        }
+    }
+
     private fun info():String {
         val imported=OfflineMapStore.hasImportedRegion(this)
         val size=OfflineMapStore.importedSize(this)
@@ -60,9 +76,15 @@ class OfflineMapsActivity:Activity() {
     private fun updateStatus() {
         if(!::status.isInitialized)return
         status.text=info()
-        detail.text="Просмотренные карты: "+
+        detail.text="Векторная карта: "+
+            (if(OfflineVectorStore.hasMap(this))
+                formatSize(OfflineVectorStore.mapFile(this).length()) else "не загружена")+
+            "\nАдреса POI: "+
+            (if(OfflineVectorStore.hasPois(this))
+                formatSize(OfflineVectorStore.poiFile(this).length()) else "не загружены")+
+            "\nПросмотренные карты: "+
             formatSize(OfflineMapStore.viewedSize(this))+
-            "\nМесто хранения: память приложения, сохраняется при перезапуске"
+            "\nМесто хранения: память приложения"
     }
 
     override fun onCreate(savedInstanceState:Bundle?) {
@@ -123,6 +145,35 @@ class OfflineMapsActivity:Activity() {
         },LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT,dp(58)))
         root.addView(TextView(this).apply{
+            text="ВЕКТОРНЫЕ КАРТЫ — светлая автомобильная тема"
+            textSize=15f
+            typeface=Typeface.DEFAULT_BOLD
+            setTextColor(Color.rgb(137,190,250))
+            setPadding(0,dp(20),0,dp(10))
+        })
+        root.addView(button("Импортировать карту региона (.map)") {
+            pickVectorFile(pickVector)
+        },LinearLayout.LayoutParams(-1,dp(55)))
+        root.addView(button("Импортировать адреса (.poi)") {
+            pickVectorFile(pickPoi)
+        },LinearLayout.LayoutParams(-1,dp(55)).apply{
+            topMargin=dp(7)
+        })
+        root.addView(button("Открыть векторную офлайн-карту") {
+            startActivity(Intent(this,OfflineVectorNavigatorActivity::class.java))
+        },LinearLayout.LayoutParams(-1,dp(55)).apply{
+            topMargin=dp(7)
+        })
+        root.addView(TextView(this).apply{
+            text="Для векторного режима нужны файлы Mapsforge: "+
+                ".map (дороги и подписи) и .poi (локальный поиск мест). "+
+                "Поиск по POI зависит от полноты исходных адресов; "+
+                "встречаются улицы и дома, которые не внесены в OpenStreetMap."
+            textSize=13f
+            setTextColor(muted)
+            setPadding(0,dp(9),0,dp(6))
+        })
+        root.addView(TextView(this).apply{
             text="Готовая растровая карта области хранится на телефоне. "+
                 "Поддерживается формат MBTiles (PNG/JPEG/WebP), "+
                 "полученный из источника, разрешающего скачивание для офлайна. "+
@@ -174,8 +225,29 @@ class OfflineMapsActivity:Activity() {
     @Suppress("DEPRECATION")
     override fun onActivityResult(requestCode:Int,resultCode:Int,data:Intent?) {
         super.onActivityResult(requestCode,resultCode,data)
-        if(requestCode!=pickMbtiles || resultCode!=RESULT_OK)return
+        if(resultCode!=RESULT_OK)return
         val uri:Uri=data?.data?:return
+        if(requestCode==pickVector || requestCode==pickPoi) {
+            val kind=if(requestCode==pickVector)"map" else "poi"
+            status.text="Проверяю и копирую файл..."
+            OfflineVectorStore.importFile(this,uri,kind,
+                onProgress={status.text=it},
+                onDone={result->
+                    if(isFinishing || isDestroyed)return@importFile
+                    result.fold(
+                        onSuccess={message->
+                            Toast.makeText(this,message,Toast.LENGTH_LONG).show()
+                            updateStatus()
+                        },
+                        onFailure={error->
+                            status.text="Ошибка файла: "+
+                                (error.localizedMessage?:"неизвестная")
+                        }
+                    )
+                })
+            return
+        }
+        if(requestCode!=pickMbtiles)return
         status.text="Проверяю и сохраняю файл карты..."
         OfflineMapStore.importRegion(this,uri){result->
             if(isFinishing || isDestroyed)return@importRegion
