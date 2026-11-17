@@ -21,4 +21,7 @@ android {
 
 dependencies {
     implementation("com.google.android.gms:play-services-location:21.4.0")
+    implementation("org.mapsforge:mapsforge-map-android:0.25.0")
+    implementation("org.mapsforge:mapsforge-map-reader:0.25.0")
+    implementation("org.mapsforge:mapsforge-themes:0.25.0")
 }
