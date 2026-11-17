@@ -21,7 +21,7 @@ import java.util.Locale
 /** Offline region map management. No bulk requests to OSM's public tile API. */
 class OfflineMapsActivity:Activity() {
     private val bg=Color.rgb(27,31,38)
-    private val foreground=Color.rgb(238,242,248)
+    private val textColorPrimary=Color.rgb(238,242,248)
     private val muted=Color.rgb(170,191,210)
     private val pickMbtiles=4519
     private lateinit var status:TextView
@@ -36,7 +36,7 @@ class OfflineMapsActivity:Activity() {
             isAllCaps=false
             minHeight=0
             minimumHeight=0
-            setTextColor(foreground)
+            setTextColor(textColorPrimary)
             background=GradientDrawable().apply{
                 cornerRadius=dp(10).toFloat()
                 setColor(Color.rgb(47,54,65))
@@ -89,11 +89,11 @@ class OfflineMapsActivity:Activity() {
             text="Офлайн-карты"
             textSize=24f
             typeface=Typeface.DEFAULT_BOLD
-            setTextColor(foreground)
+            setTextColor(textColorPrimary)
             setPadding(0,0,0,dp(15))
         })
         status=TextView(this).apply{
-            setTextColor(foreground);textSize=16f
+            setTextColor(textColorPrimary);textSize=16f
             setPadding(0,dp(5),0,dp(4))
         }
         root.addView(status)
