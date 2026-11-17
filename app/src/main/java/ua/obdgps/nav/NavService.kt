@@ -502,58 +502,214 @@ class NavService: Service(), LocationListener {
             State.message="$reason; пробую ${protocols[protocolIndex].second}"
         } else State.message="$reason; стандартный PID 010D недоступен"
     }
-    private fun startDr() {
+    private fun updateNavigation(now: Long) {
+        val freshObd = State.speed != null && now-speedTime < 3500L
+        val obdKmh = if(freshObd) State.speed!! else 0
+        val gpsRecent = gps != null && now-gpsTime < 6000L
+        val gpsSpeedRecent = State.gpsSpeedKmh != null &&
+            now-State.gpsSpeedUpdatedElapsedMs < 6000L
+        val gpsMoving = gpsRecent && gpsSpeedRecent && State.gpsSpeedKmh!! > 2.5
+
+        if (!State.dr && autoEnabled && !fusedStarting &&
+            AirAlerts.snapshot().level == AirAlerts.Level.CITY &&
+            freshObd && obdKmh >= 7) {
+            // A GPS speed of 0 is normal when stationary; do not trigger
+            // unless independent OBD confirms the vehicle is moving.
+            val badGps = !gpsMoving
+            if(badGps) {
+                if(gpsInvalidSince==0L)gpsInvalidSince=now
+                if(now-gpsInvalidSince > 6500L)startDr(force=false)
+            } else gpsInvalidSince=0L
+        } else if (!State.dr) gpsInvalidSince=0L
+
+        if(State.dr) {
+            if(!freshObd) {
+                State.message="Инерциальное ведение: нет свежей скорости OBD"
+                State.navigationMode="DR: нет OBD"
+                tickTime=now
+                return
+            }
+            val dt=((now-tickTime)/1000.0).coerceIn(0.0,0.45)
+            if(dt > 0) {
+                dr.move(obdKmh,dt,reverse)
+                State.driftMeters += obdKmh/3.6*dt*.045 + .12*dt
+                // Magnetic readings can be distorted by steel and electronics:
+                // apply only a very small bounded correction, never a snap.
+                motion.compassBearing?.let { heading ->
+                    dr.correctHeading(heading,0.18)
+                }
+            }
+            dr.pose?.let { pose ->
+                State.position="%.6f, %.6f; %.0f°".format(
+                    Locale.US,pose.lat,pose.lon,pose.bearing)
+                State.navigationMode=if(manualMode) "Датчики (вручную)" else "Датчики (авто)"
+                if(fused.active && now-lastMockSent > 900L) {
+                    lastMockSent=now
+                    fused.publish(pose.lat,pose.lon,pose.bearing,obdKmh,
+                        (15.0+State.driftMeters).coerceAtMost(250.0).toFloat())
+                }
+            }
+        } else {
+            State.navigationMode="GPS"
+            if(gpsRecent) {
+                State.position="%.6f, %.6f".format(Locale.US,gps!!.latitude,gps!!.longitude)
+            }
+        }
+    }
+
+    private fun startDr(force: Boolean) {
+        if(State.dr || fusedStarting) return
         val now=SystemClock.elapsedRealtime()
-        if(State.speed==null || now-speedTime>3000) {State.message="Нет скорости ELM327";return}
-        val p=gps
-        if(p==null || now-gpsTime>15000 || !p.hasBearing() || p.accuracy>30f) {
-            State.message="Нужен свежий GPS и направление (проедьте при хорошем сигнале)";return
+        if(State.speed==null || now-speedTime>3500L) {
+            State.message="Ведение по датчикам: нет свежей скорости OBD"
+            return
         }
-        try {
-            lm.addTestProvider(LocationManager.GPS_PROVIDER,false,true,false,false,true,true,true,
-                android.location.Criteria.POWER_LOW,android.location.Criteria.ACCURACY_FINE)
-            lm.setTestProviderEnabled(LocationManager.GPS_PROVIDER,true)
-            mockOn=true
-            dr.seed(p.latitude,p.longitude,p.bearing.toDouble())
+        if(now-gpsTime>90000L || gps==null) {
+            State.message="Нет опорной точки GPS за последние 90 секунд"
+            return
+        }
+        val fix=gps!!
+        val bearing=if(fix.hasBearing() && fix.hasSpeed() &&
+            fix.speed*3.6f>7f) fix.bearing.toDouble() else motion.compassBearing
+        if(bearing==null) {
+            State.message="Для начала проедь прямо с хорошим GPS, нужен курс"
+            return
+        }
+        val carBearing=(bearing+if(reverse) 180.0 else 0.0)%360.0
+        fusedStarting=true
+        State.message="Включаю инерциальное ведение через Fused Location..."
+        fused.start { ok, detail ->
+            fusedStarting=false
+            if(!ok) {
+                State.message=detail+"; выбери приложение Mock Location"
+                State.navigationMode="GPS"
+                return@start
+            }
+            dr.seed(fix.latitude,fix.longitude,carBearing)
+            lastDrStart=SystemClock.elapsedRealtime()
+            tickTime=lastDrStart
+            lastMockSent=0L
+            gpsRecoveryCount=0
+            gpsRecoveryLast=0L
+            State.driftMeters=0.0
+            manualMode=force
+            State.manualForced=force
             State.dr=true
-            tickTime=now
-            State.message="Dead Reckoning включён"
-        } catch(e:Exception) {State.message="Выберите приложение фиктивных местоположений: ${e.message}"}
+            State.navigationMode=if(force)"Датчики (вручную)" else "Датчики (авто)"
+            State.message=if(force) "Принудительное ведение по датчикам включено" else
+                "Тревога в Киеве, GPS недостоверен: переход на датчики"
+            fused.publish(fix.latitude,fix.longitude,carBearing,State.speed?:0,15f)
+        }
     }
+
     private fun stopDr() {
+        if(State.dr || fusedStarting || fused.active) {
+            fused.stop()
+        }
         State.dr=false
-        if(mockOn) {
-            try {lm.removeTestProvider(LocationManager.GPS_PROVIDER)} catch(_:Exception){}
-            mockOn=false
+        State.manualForced=false
+        manualMode=false
+        fusedStarting=false
+        gpsRecoveryCount=0
+        gpsInvalidSince=0L
+        State.driftMeters=0.0
+        State.navigationMode="GPS"
+        State.message="Ведение по GPS (инерциальный режим выключен)"
+    }
+
+    override fun onLocationChanged(location: Location) {
+        if(location.isMock || location.provider != LocationManager.GPS_PROVIDER) return
+        val now=SystemClock.elapsedRealtime()
+        val ageNanos=SystemClock.elapsedRealtimeNanos()-location.elapsedRealtimeNanos
+        if(ageNanos<0L || ageNanos>8_000_000_000L) return
+        if(!location.hasAccuracy() || location.accuracy>45f) {
+            State.gpsText="GPS: низкая точность"
+            return
         }
-        gps=null; gpsTime=0
-        State.message="DR выключен. Возврат к GPS."
-    }
-    override fun onLocationChanged(location:Location) {
-        if(State.dr || location.isMock || !location.hasAccuracy() || location.accuracy>30f) return
-        if(gps!=null && gps!!.distanceTo(location)>5000f) { State.message="GPS: резкий скачок отклонён";return }
-        gps=Location(location);gpsTime=SystemClock.elapsedRealtime()
-    }
-    override fun onSensorChanged(event:SensorEvent) {
-        if(event.sensor.type==Sensor.TYPE_GRAVITY) gravity=event.values.clone()
-        if(event.sensor.type==Sensor.TYPE_GYROSCOPE && State.dr) {
-            val previous=gyroTime;gyroTime=event.timestamp
-            if(previous==0L) return
-            val dt=(event.timestamp-previous)*1e-9
-            if(dt<=0 || dt>0.5) return
-            val norm=sqrt(gravity.map {it.toDouble()*it}.sum())
-            if(norm<7) return
-            val yaw=event.values.indices.sumOf {event.values[it].toDouble()*gravity[it]}/norm
-            if(State.speed==0) yawBias=.995*yawBias+.005*yaw
-            dr.turn(yaw-yawBias,dt)
+        val kmh=if(location.hasSpeed()) location.speed*3.6 else null
+        if(kmh!=null && kmh in 0.0..350.0) {
+            State.gpsSpeedKmh=kmh
+            State.gpsSpeedUpdatedElapsedMs=now
+        } else {
+            State.gpsSpeedKmh=null
+            State.gpsSpeedUpdatedElapsedMs=0L
+        }
+        val freshObd=State.speed!=null && now-speedTime<3500L
+        val obd=if(freshObd)State.speed!! else 0
+
+        // Speed disagreement during OBD-confirmed motion is an important
+        // signal of spoofing/jamming (but not proof by itself).
+        if(freshObd && obd>=7) {
+            if(kmh==null || kmh<1.5) {
+                State.gpsText="GPS: скорость 0/неизвестна, OBD движется"
+                return
+            }
+            if(abs(kmh-obd)>max(18.0,obd*.50)) {
+                State.gpsText="GPS: скорость расходится с OBD"
+                return
+            }
+        }
+
+        // Reject physically implausible teleports from the last trusted fix.
+        gps?.let { previous ->
+            val dt=(now-gpsTime)/1000.0
+            if(dt>0.0 && dt<90.0) {
+                val maxDistance=max(65.0, max(obd.toDouble(),
+                    kmh?:0.0)/3.6*dt + location.accuracy*2.5 + 35.0)
+                if(previous.distanceTo(location)>maxDistance) {
+                    State.gpsText="GPS: скачок координат отклонён"
+                    lastRejectedGps=now
+                    return
+                }
+            }
+        }
+        if(State.dr) {
+            val pose=dr.pose ?: return
+            val predicted=Location(LocationManager.GPS_PROVIDER).apply {
+                latitude=pose.lat
+                longitude=pose.lon
+            }
+            val acceptable=max(65.0,50.0+State.driftMeters*1.5)
+            if(predicted.distanceTo(location)>acceptable) {
+                State.gpsText="GPS: слишком далеко от инерциального пути"
+                return
+            }
+        }
+        gps=Location(location)
+        gpsTime=now
+        lastAcceptedGps=now
+        State.gpsText="GPS: точность "+location.accuracy.toInt()+" м"
+        motion.setGeomagneticDeclination(location)
+
+        val hasCourse=location.hasBearing() && kmh!=null && kmh>=12.0
+        if(hasCourse)motion.alignToGps(location.bearing.toDouble(),kmh!!,
+            abs(State.yawDegPerSec)<3.0)
+
+        if(State.dr) {
+            // Require several consistent real fixes before trusting recovery.
+            if(kmh!=null && kmh >= 2.5 && (now-gpsRecoveryLast>=750L)) {
+                gpsRecoveryCount++
+                gpsRecoveryLast=now
+            } else if(kmh==null || kmh<1.5)gpsRecoveryCount=0
+
+            if(gpsRecoveryCount>=3) {
+                dr.correctPosition(location.latitude,location.longitude,0.14)
+                if(hasCourse && !reverse)
+                    dr.correctHeading(location.bearing.toDouble(),0.7)
+                State.driftMeters*=0.85
+            }
+            if(!manualMode && gpsRecoveryCount>=5 &&
+                now-lastDrStart>3500L) {
+                stopDr()
+                State.message="GPS стабильно восстановился: автоматический возврат"
+            }
         }
     }
-    override fun onAccuracyChanged(s:Sensor?,accuracy:Int) {}
     override fun onBind(i:Intent?):IBinder?=null
     override fun onDestroy() {
         handler.removeCallbacks(loop);stopScan();stopDr()
         disconnectTransport()
-        sm.unregisterListener(this)
+        motion.stop()
         try {lm.removeUpdates(this)} catch(_:Exception){}
         super.onDestroy()
     }
