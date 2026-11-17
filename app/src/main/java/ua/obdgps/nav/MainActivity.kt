@@ -310,6 +310,7 @@ class MainActivity : Activity() {
                 "ELM: ${State.deviceName}\n"+
                 "GPS: ${State.gpsText}\n"+
                 "Протокол: ${State.modeLabel}\n"+
+                "OBD: ${"%.1f".format(Locale.getDefault(),State.obdFactor*100)}% от ЭБУ\n"+
                 "Статус: ${State.message}\n"+
                 if(State.dr) "Путь: ${State.position}\nРост погрешности: ~${State.driftMeters.toInt()} м" else ""
             sensorStatus.text="Движение: ${State.motionText}\n"+
@@ -376,52 +377,107 @@ class MainActivity : Activity() {
             }.setNegativeButton("Отмена",null).show()
     }
 
-    private fun showDirectionChoice() {
-        // Standard PID 010D reports speed magnitude, not transmission gear.
-        AlertDialog.Builder(this).setTitle("Направление (ручной выбор)")
-            .setSingleChoiceItems(arrayOf("Вперёд","Назад"),if(State.reverseSelected)1 else 0) { dlg,i ->
-                send(if(i==1)NavService.REVERSE else NavService.FORWARD)
-                dlg.dismiss()
+    private fun showObdCorrection() {
+        val field=EditText(this).apply {
+            inputType=InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL
+            setSingleLine(true)
+            setText(String.format(Locale.US,"%.1f",State.obdFactor*100.0))
+            selectAll()
+            setTextColor(primaryText)
+        }
+        val content=LinearLayout(this).apply {
+            orientation=LinearLayout.VERTICAL
+            setPadding(dip(22),0,dip(22),0)
+        }
+        content.addView(TextView(this).apply {
+            text="Коэффициент в процентах от OBD.\n95%: 100 км/ч OBD → 95 км/ч для навигации.\n" +
+                "Спидометр может завышать скорость относительно OBD!"
+            textSize=14f
+            setTextColor(secondaryText)
+        })
+        content.addView(field)
+        AlertDialog.Builder(this).setTitle("Коррекция скорости OBD")
+            .setView(content)
+            .setPositiveButton("Сохранить") { _, _ ->
+                val value=field.text.toString().trim().replace(",",".").toDoubleOrNull()
+                if(value==null || !value.isFinite() || value !in 70.0..130.0) {
+                    Toast.makeText(this,"Допустимо от 70 до 130%",Toast.LENGTH_LONG).show()
+                } else {
+                    NavigatorPrefs(this).obdFactor=value/100.0
+                    State.obdFactor=NavigatorPrefs(this).obdFactor
+                    Toast.makeText(this,"OBD × ${"%.1f".format(Locale.getDefault(),value)}% сохранено",
+                        Toast.LENGTH_SHORT).show()
+                }
             }.setNegativeButton("Отмена",null).show()
     }
 
     private fun showSettingsMenu() {
-        val items=arrayOf(
-            "Bluetooth: проверить и включить",
-            "Bluetooth: выбрать адаптер ELM327",
-            "OBD: выбрать протокол",
-            "Датчики: калибровка на стоящей машине (5 с)",
-            "Компас: согласовать с курсом GPS",
-            "Направление: вперёд / назад",
-            "Автоведение: включить / выключить",
-            "Фиктивные местоположения Android",
-            "Состояние датчиков"
-        )
-        AlertDialog.Builder(this).setTitle("Настройки").setItems(items) { _,index ->
-            when(index) {
-                0 -> checkBluetoothGps()
-                1 -> chooseBluetooth()
-                2 -> showProtocolChoice()
-                3 -> {
-                    send(NavService.CALIBRATE)
-                    Toast.makeText(this,"Калибровка начата, телефон не двигать 5 секунд",Toast.LENGTH_LONG).show()
-                }
-                4 -> send(NavService.ALIGN_COMPASS)
-                5 -> showDirectionChoice()
-                6 -> {
-                    val enable= !State.autoEnabled
-                    send(if(enable)NavService.AUTO_ON else NavService.AUTO_OFF)
-                }
-                7 -> {
-                    try { startActivity(Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS)) }
-                    catch (_: Exception) { startActivity(Intent(Settings.ACTION_SETTINGS)) }
-                }
-                8 -> AlertDialog.Builder(this).setTitle("Датчики")
-                    .setMessage(State.sensorAvailability+"\n"+State.motionText+"\n"+
-                        State.accelerationText+"\n"+State.compassStatus+"\n"+State.calibrationText)
-                    .setPositiveButton("Закрыть",null).show()
-            }
-        }.setNegativeButton("Закрыть",null).show()
+        val list=LinearLayout(this).apply {
+            orientation=LinearLayout.VERTICAL
+            setPadding(dip(14),dip(3),dip(14),dip(8))
+        }
+        val scroll=ScrollView(this).apply {
+            addView(list)
+            isFillViewport=false
+        }
+        val dialog=AlertDialog.Builder(this).setTitle("Настройки")
+            .setView(scroll).setNegativeButton("Закрыть",null).create()
+        fun section(name: String) {
+            list.addView(TextView(this).apply {
+                text=name
+                textSize=13f
+                typeface=android.graphics.Typeface.DEFAULT_BOLD
+                setTextColor(Color.rgb(142,195,251))
+                setPadding(0,dip(18),0,dip(7))
+            })
+            list.addView(View(this).apply { setBackgroundColor(Color.rgb(85,95,110)) },
+                LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,dip(1)))
+        }
+        fun item(caption: String, action: ()->Unit) {
+            list.addView(TextView(this).apply {
+                text=caption
+                textSize=15f
+                setTextColor(primaryText)
+                setPadding(dip(8),dip(14),dip(8),dip(14))
+                setOnClickListener { dialog.dismiss();action() }
+            },LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT))
+            list.addView(View(this).apply { setBackgroundColor(Color.rgb(54,62,73)) },
+                LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,dip(1)))
+        }
+
+        section("BLUETOOTH И OBD")
+        item("Проверить Bluetooth и GPS") { checkBluetoothGps() }
+        item("Выбрать ELM327") { chooseBluetooth() }
+        item("Протокол двигателя") { showProtocolChoice() }
+        item("Коррекция OBD · ${"%.1f".format(Locale.getDefault(),State.obdFactor*100)}%") {
+            showObdCorrection()
+        }
+
+        section("ДАТЧИКИ")
+        item("Калибровка гироскопа и акселерометра (5 с)") {
+            send(NavService.CALIBRATE)
+            Toast.makeText(this,"Останови автомобиль, не двигай телефон 5 секунд",
+                Toast.LENGTH_LONG).show()
+        }
+        item("Согласовать компас с GPS") { send(NavService.ALIGN_COMPASS) }
+        item("Состояние датчиков") {
+            AlertDialog.Builder(this).setTitle("Датчики")
+                .setMessage(State.sensorAvailability+"\n"+State.motionText+"\n"+
+                    State.accelerationText+"\n"+State.compassStatus+"\n"+
+                    State.directionText+"\n"+State.calibrationText)
+                .setPositiveButton("Закрыть",null).show()
+        }
+
+        section("НАВИГАЦИЯ")
+        item("Автопереключение · ${if(State.autoEnabled)"включено" else "выключено"}") {
+            send(if(State.autoEnabled)NavService.AUTO_OFF else NavService.AUTO_ON)
+        }
+        item("Выбрать приложение фиктивного местоположения") {
+            try { startActivity(Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS)) }
+            catch (_: Exception) { startActivity(Intent(Settings.ACTION_SETTINGS)) }
+        }
+        dialog.show()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
