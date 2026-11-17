@@ -15,7 +15,7 @@
     <queries>
         <package android:name="com.google.android.apps.maps" />
     </queries>
-    <application android:theme="@android:style/Theme.Material.Light.NoActionBar"
+    <application android:theme="@android:style/Theme.Material.NoActionBar"
         android:label="OBD GPS Navigator" android:allowBackup="false">
         <activity android:name=".MainActivity" android:exported="true">
           <intent-filter>
