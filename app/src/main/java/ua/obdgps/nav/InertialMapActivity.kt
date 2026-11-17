@@ -231,7 +231,22 @@ internal class InertialTrackMapView(context:Context): View(context) {
     private var downY=0f
     private var centerLat=50.4501 // Static map start, not user GPS.
     private var centerLon=30.5234
-    private var zoom=16
+    private var zoom=18
+    // Heading-up camera with delayed acceptance of large course jumps.
+    private var headingUp=true
+    private var cameraHeading=0.0
+    private var targetHeading:Double?=null
+    private var headingInitialized=false
+    private var lastAnimationMs=0L
+    private var headingCandidate:Double?=null
+    private var headingCandidateFirstMs=0L
+    private var lastStableHeadingMs=0L
+    // Hysteresis prevents zoom changes at every small fluctuation in speed.
+    private var smoothedKmh=Double.NaN
+    private var candidateZoom=18
+    private var candidateZoomSince=0L
+    private var lastAutoZoomMs=0L
+    private var manualZoomUntilMs=0L
     private var touchX=0f
     private var touchY=0f
     private var multitouchSeen=false
@@ -261,10 +276,127 @@ internal class InertialTrackMapView(context:Context): View(context) {
             }
         })
 
+    private fun anchorX():Double=width/2.0
+    // Position the car below center in navigation, leaving more road ahead.
+    private fun anchorY():Double=if(navigation && follow && current!=null)
+        height*0.66 else height/2.0
+
+    private fun deltaAngle(to:Double,from:Double):Double =
+        ((to-from+540.0)%360.0+360.0)%360.0-180.0
+
+    private fun normalizedCourse(degrees:Double):Double=
+        ((degrees%360.0)+360.0)%360.0
+
+    private fun acceptHeading(course:Double?,speedKmh:Double?) {
+        if(!headingUp || !follow || course==null || !course.isFinite())return
+        // At rest GNSS bearings become unstable; keep the last trusted course.
+        if(speedKmh!=null && speedKmh<5.0)return
+        val now=SystemClock.elapsedRealtime()
+        val heading=normalizedCourse(course)
+        if(!headingInitialized) {
+            cameraHeading=heading
+            targetHeading=heading
+            headingInitialized=true
+            headingCandidate=null
+            lastAnimationMs=now
+            return
+        }
+        val currentTarget=targetHeading?:heading
+        val difference=abs(deltaAngle(heading,currentTarget))
+        if(difference<=46.0) {
+            targetHeading=heading
+            headingCandidate=null
+            lastStableHeadingMs=now
+        } else {
+            // Ignore one-off 90/180-degree compass jumps. A true turn is
+            // accepted after the new direction persists for ~0.9 seconds.
+            val prev=headingCandidate
+            if(prev==null || abs(deltaAngle(heading,prev))>28.0) {
+                headingCandidate=heading
+                headingCandidateFirstMs=now
+            } else if(now-headingCandidateFirstMs>=850L) {
+                targetHeading=heading
+                headingCandidate=null
+                lastStableHeadingMs=now
+            }
+        }
+    }
+
+    private fun advanceCamera() {
+        if(!headingInitialized || !headingUp || !follow)return
+        val target=targetHeading?:return
+        val now=SystemClock.elapsedRealtime()
+        val dt=(now-lastAnimationMs).coerceIn(1L,120L).toDouble()
+        lastAnimationMs=now
+        val diff=deltaAngle(target,cameraHeading)
+        if(abs(diff)<0.12) {
+            cameraHeading=normalizedCourse(target)
+            return
+        }
+        // EMA with a roughly 650ms time constant, capped at 130 degrees/s.
+        val part=(1.0-exp(-dt/650.0))*diff
+        val limited=part.coerceIn(-130.0*dt/1000.0,130.0*dt/1000.0)
+        cameraHeading=normalizedCourse(cameraHeading+limited)
+        postInvalidateDelayed(32L)
+    }
+
+    private fun autoZoomForSpeed(speedKmh:Double?) {
+        if(!follow || speedKmh==null || !speedKmh.isFinite() ||
+            speedKmh !in 0.0..250.0)return
+        val now=SystemClock.elapsedRealtime()
+        if(now<manualZoomUntilMs)return
+        smoothedKmh=if(smoothedKmh.isNaN())speedKmh
+            else smoothedKmh*.72+speedKmh*.28
+        val newZoom=when {
+            smoothedKmh<25.0 -> 18
+            smoothedKmh<55.0 -> 17
+            smoothedKmh<105.0 -> 16
+            else -> 15
+        }
+        if(newZoom!=candidateZoom) {
+            candidateZoom=newZoom
+            candidateZoomSince=now
+        }
+        if(newZoom!=zoom && now-candidateZoomSince>=2600L &&
+            now-lastAutoZoomMs>=4300L) {
+            // Keep the car anchored while the display range changes.
+            zoomAround(newZoom,anchorX().toFloat(),anchorY().toFloat())
+            lastAutoZoomMs=now
+        }
+    }
+
+    /** Return map-plane offsets for a touch coordinate on the rotated screen. */
+    private fun screenOffsets(x:Double,y:Double):Pair<Double,Double> {
+        val dx=x-anchorX()
+        val dy=y-anchorY()
+        val angle=Math.toRadians(if(headingInitialized && headingUp && follow)
+            cameraHeading else 0.0)
+        return Pair(cos(angle)*dx-sin(angle)*dy,
+            sin(angle)*dx+cos(angle)*dy)
+    }
+
+    private fun dragMap(dx:Double,dy:Double) {
+        val radians=Math.toRadians(if(headingInitialized&&headingUp&&follow)
+            cameraHeading else 0.0)
+        val deltaX=cos(radians)*dx-sin(radians)*dy
+        val deltaY=sin(radians)*dx+cos(radians)*dy
+        val world=256.0*(1 shl zoom)
+        val nx=((worldX(centerLon)-deltaX)%world+world)%world
+        val ny=(worldY(centerLat)-deltaY).coerceIn(1.0,world-1.0)
+        centerLon=nx/world*360.0-180.0
+        centerLat=Math.toDegrees(atan(sinh(Math.PI*(1.0-2.0*ny/world))))
+        invalidate()
+    }
+
     fun updateFromInertial(point:State.TrailPoint?,trail:List<State.TrailPoint>) {
         current=point;history=trail
         markerBearing=point?.bearing?.takeIf { it.isFinite() }
         if(follow && point!=null) {
+            val speed=point.speedKmh.takeIf {
+                it.isFinite() && SystemClock.elapsedRealtime()-point.elapsedMs<5000L
+            }
+            acceptHeading(markerBearing,speed)
+            autoZoomForSpeed(speed)
             centerLat=point.latitude;centerLon=point.longitude
         }
         invalidate()
@@ -279,7 +411,8 @@ internal class InertialTrackMapView(context:Context): View(context) {
         fix:State.NavFix?,
         route:List<RoutingEngine.Point>,
         destination:RoutingEngine.Point?,
-        origin:RoutingEngine.Point?
+        origin:RoutingEngine.Point?,
+        speedKmh:Double?=null
     ) {
         navigation=true
         routePoints=route
@@ -293,6 +426,8 @@ internal class InertialTrackMapView(context:Context): View(context) {
         history=if(State.dr)State.inertialTrail.toList() else emptyList()
         if(follow&&fix!=null) {
             centerLat=fix.lat;centerLon=fix.lon
+            acceptHeading(markerBearing,speedKmh)
+            autoZoomForSpeed(speedKmh)
         }
         invalidate()
     }
@@ -305,8 +440,9 @@ internal class InertialTrackMapView(context:Context): View(context) {
 
     private fun geoAt(x:Float,y:Float):Pair<Double,Double> {
         val world=256.0*(1 shl zoom)
-        val px=((worldX(centerLon)+x-width/2.0)%world+world)%world
-        val py=(worldY(centerLat)+y-height/2.0).coerceIn(1.0,world-1.0)
+        val delta=screenOffsets(x.toDouble(),y.toDouble())
+        val px=((worldX(centerLon)+delta.first)%world+world)%world
+        val py=(worldY(centerLat)+delta.second).coerceIn(1.0,world-1.0)
         val longitude=px/world*360.0-180.0
         val latitude=Math.toDegrees(atan(sinh(Math.PI*(1.0-2.0*py/world))))
         return Pair(latitude,longitude)
@@ -314,12 +450,18 @@ internal class InertialTrackMapView(context:Context): View(context) {
 
     fun followCar() {
         follow=true
+        manualZoomUntilMs=0L
+        lastAnimationMs=SystemClock.elapsedRealtime()
         current?.let{centerLat=it.latitude;centerLon=it.longitude}
+        smoothedKmh=Double.NaN
         invalidate()
     }
 
     fun changeZoom(amount:Int) {
-        zoomAround((zoom+amount).coerceIn(11,19),width/2f,height/2f)
+        // Zoom buttons override automatic scaling for one minute.
+        manualZoomUntilMs=SystemClock.elapsedRealtime()+60_000L
+        zoomAround((zoom+amount).coerceIn(11,19),
+            anchorX().toFloat(),anchorY().toFloat())
     }
 
     /** Keep the geographic point below the fingers fixed while zooming. */
@@ -328,8 +470,9 @@ internal class InertialTrackMapView(context:Context): View(context) {
         val (anchorLat,anchorLon)=geoAt(focusX,focusY)
         zoom=targetZoom
         val world=256.0*(1 shl zoom)
-        val centerWorldX=worldX(anchorLon)-focusX+width/2.0
-        val centerWorldY=worldY(anchorLat)-focusY+height/2.0
+        val offset=screenOffsets(focusX.toDouble(),focusY.toDouble())
+        val centerWorldX=worldX(anchorLon)-offset.first
+        val centerWorldY=worldY(anchorLat)-offset.second
         centerLon=(((centerWorldX%world)+world)%world)/world*360.0-180.0
         val my=centerWorldY.coerceIn(1.0,world-1.0)
         centerLat=Math.toDegrees(atan(sinh(Math.PI*(1.0-2.0*my/world))))
@@ -346,8 +489,8 @@ internal class InertialTrackMapView(context:Context): View(context) {
         var dx=worldX(lon)-worldX(centerLon)
         if(dx>world/2)dx-=world
         if(dx< -world/2)dx+=world
-        return Pair((width/2.0+dx).toFloat(),
-            (height/2.0+worldY(lat)-worldY(centerLat)).toFloat())
+        return Pair((anchorX()+dx).toFloat(),
+            (anchorY()+worldY(lat)-worldY(centerLat)).toFloat())
     }
 
     override fun onDraw(canvas:Canvas) {
