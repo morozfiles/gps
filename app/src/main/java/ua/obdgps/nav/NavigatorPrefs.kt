@@ -1,6 +1,8 @@
 package ua.obdgps.nav
 
 import android.content.Context
+import org.json.JSONArray
+import org.json.JSONObject
 
 /** Persistent user choices. Hardware calibration is retained separately in MotionSensors. */
 class NavigatorPrefs(context: Context) {
@@ -40,6 +42,46 @@ class NavigatorPrefs(context: Context) {
             if(value in setOf("AUTO","KLINE","CAN","MUT"))
                 store.edit().putString("protocolMode",value).putBoolean("mutMode",value=="MUT").apply()
         }
+
+    data class RecentAddress(val label:String,val lat:Double,val lon:Double)
+
+    fun recentAddresses():List<RecentAddress> {
+        val results=ArrayList<RecentAddress>()
+        val stored=store.getString("recentAddresses","[]")?:"[]"
+        try {
+            val array=JSONArray(stored)
+            for(i in 0 until minOf(array.length(),5)) {
+                val obj=array.optJSONObject(i)?:continue
+                val label=obj.optString("label","").take(180)
+                val lat=obj.optDouble("lat",Double.NaN)
+                val lon=obj.optDouble("lon",Double.NaN)
+                if(label.isNotBlank() && lat.isFinite() && lon.isFinite() &&
+                    lat in -85.0..85.0 && lon in -180.0..180.0)
+                    results.add(RecentAddress(label,lat,lon))
+            }
+        } catch(_:Exception) {}
+        return results
+    }
+
+    fun rememberAddress(item:RecentAddress) {
+        if(item.label.isBlank() || !item.lat.isFinite() || !item.lon.isFinite() ||
+            item.lat !in -85.0..85.0 || item.lon !in -180.0..180.0)return
+        val normalized=item.copy(label=item.label.trim().take(180))
+        val updated=mutableListOf(normalized)
+        updated.addAll(recentAddresses().filterNot {
+            (kotlin.math.abs(it.lat-normalized.lat)<0.00001 &&
+             kotlin.math.abs(it.lon-normalized.lon)<0.00001) ||
+             it.label.equals(normalized.label,true)
+        }.take(4))
+        val array=JSONArray()
+        for(entry in updated.take(5)) {
+            array.put(JSONObject()
+                .put("label",entry.label)
+                .put("lat",entry.lat)
+                .put("lon",entry.lon))
+        }
+        store.edit().putString("recentAddresses",array.toString()).apply()
+    }
 
     data class ManualStart(val lat:Double,val lon:Double,val bearing:Double)
     var manualStart:ManualStart?
