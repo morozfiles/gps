@@ -2,6 +2,7 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="true" />
     <uses-permission android:name="android.permission.INTERNET"/>
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
     <uses-permission android:name="android.permission.ACCESS_MOCK_LOCATION"/>
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/>
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/>
@@ -28,6 +29,8 @@
         <activity android:name=".NavigatorActivity" android:exported="false"/>
         <activity android:name=".OfflineMapsActivity" android:exported="false"/>
         <activity android:name=".OfflineVectorNavigatorActivity" android:exported="false"/>
+        <service android:name=".OfflineRegionDownloadService"
+            android:exported="false" android:foregroundServiceType="dataSync"/>
         <service android:name=".OfflineCountryDownloadService"
             android:exported="false" android:foregroundServiceType="dataSync"/>
         <service android:name=".NavService" android:exported="false"
