@@ -167,9 +167,10 @@ class InertialMapActivity : Activity() {
 
 /** Visible OSM raster tiles, seven-day disk caching, and a local-grid fallback. */
 internal class InertialTrackMapView(context:Context): View(context) {
-    // Scale standard 256px raster map tiles up 1.5x so street labels
-    // remain legible on high-resolution Android screens.
-    private val tilePixelSize=384.0
+    // Initial view is 1.5x closer than version 0.9.2. The same scale
+    // multiplier is retained as automatic speed-based zoom changes.
+    // 384px per OSM tile in 0.9.2 -> 576px in this version.
+    private val tilePixelSize=576.0
     private val tilePaint=Paint(Paint.FILTER_BITMAP_FLAG)
     private val gridPaint=Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color=Color.rgb(65,75,87);strokeWidth=1f
