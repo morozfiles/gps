@@ -112,6 +112,55 @@ object State {
         }
     }
 
+    /** Diagnostic-only independent traces, never used to publish navigation fixes. */
+    data class RawGpsPoint(
+        val latitude:Double,val longitude:Double,val elapsedMs:Long,
+        val approved:Boolean=false
+    )
+    val rawGpsTrail=ArrayList<RawGpsPoint>()
+    val pureSensorTrail=ArrayList<TrailPoint>()
+    var pureSensorPoint:TrailPoint?=null
+        private set
+    var diagnosticRunning=false
+    var diagnosticText="Тест двух треков не запущен"
+    var gpsSpoofStatus="GPS: ожидание контроля"
+
+    fun startDiagnostic(){
+        rawGpsTrail.clear()
+        pureSensorTrail.clear()
+        pureSensorPoint=null
+        diagnosticRunning=true
+        diagnosticText="Калибровка акселерометра · стоять 2 с"
+    }
+    fun stopDiagnostic(){
+        diagnosticRunning=false
+        diagnosticText="Тест остановлен · результаты остаются на карте"
+    }
+    fun addRawGps(lat:Double,lon:Double,time:Long) {
+        if(!diagnosticRunning || !lat.isFinite() || !lon.isFinite() ||
+            lat !in -85.0..85.0 || lon !in -180.0..180.0)return
+        val last=rawGpsTrail.lastOrNull()
+        if(last!=null && time-last.elapsedMs<900)return
+        rawGpsTrail.add(RawGpsPoint(lat,lon,time))
+        if(rawGpsTrail.size>1500)rawGpsTrail.removeAt(0)
+    }
+    fun markRawGpsApproved(time:Long) {
+        val i=rawGpsTrail.indexOfLast{it.elapsedMs==time}
+        if(i>=0)rawGpsTrail[i]=rawGpsTrail[i].copy(approved=true)
+    }
+    fun addPureSensorPoint(lat:Double,lon:Double,bearing:Double,
+                           kmh:Double,time:Long){
+        if(!diagnosticRunning || !lat.isFinite() || !lon.isFinite() ||
+            !bearing.isFinite() || !kmh.isFinite() ||
+            lat !in -85.0..85.0 || lon !in -180.0..180.0)return
+        val p=TrailPoint(lat,lon,bearing,kmh,time)
+        val last=pureSensorPoint
+        pureSensorPoint=p
+        if(last!=null && time-last.elapsedMs<950)return
+        pureSensorTrail.add(p)
+        if(pureSensorTrail.size>1500)pureSensorTrail.removeAt(0)
+    }
+
     var message = "Ready"
     var speed: Int? = null
     var speedUpdatedElapsedMs: Long = 0L
