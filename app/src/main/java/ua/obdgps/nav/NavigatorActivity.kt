@@ -3,6 +3,7 @@ package ua.obdgps.nav
 import android.app.Activity
 import android.app.AlertDialog
 import android.content.Intent
+import android.net.Uri
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
@@ -60,13 +61,20 @@ class NavigatorActivity : Activity() {
     private fun styledButton(label:String,onClick:()->Unit)=Button(this).apply {
         text=label
         isAllCaps=false
-        textSize=13f
+        textSize=11f
         setTextColor(textColor)
+        gravity=Gravity.CENTER
+        maxLines=2
+        includeFontPadding=false
+        minHeight=0
+        minimumHeight=0
+        minWidth=0
+        minimumWidth=0
         background=GradientDrawable().apply {
             setColor(panelColor)
-            cornerRadius=dp(8).toFloat()
+            cornerRadius=dp(6).toFloat()
         }
-        setPadding(dp(5),dp(7),dp(5),dp(7))
+        setPadding(dp(2),0,dp(2),0)
         setOnClickListener{onClick()}
     }
     private fun label(value:String,size:Float,color:Int=textColor)=TextView(this).apply {
@@ -77,12 +85,11 @@ class NavigatorActivity : Activity() {
     private fun row(vararg buttons:Button):LinearLayout {
         val container=LinearLayout(this).apply {
             orientation=LinearLayout.HORIZONTAL
-            setPadding(0,dp(4),0,dp(4))
+            setPadding(0,dp(2),0,dp(2))
         }
         buttons.forEach{b->
-            container.addView(b,LinearLayout.LayoutParams(0,
-                LinearLayout.LayoutParams.WRAP_CONTENT,1f).apply{
-                setMargins(dp(2),0,dp(2),0)
+            container.addView(b,LinearLayout.LayoutParams(0,dp(36),1f).apply{
+                setMargins(dp(1),0,dp(1),0)
             })
         }
         return container
@@ -116,7 +123,7 @@ class NavigatorActivity : Activity() {
             typeface=Typeface.DEFAULT_BOLD
         },LinearLayout.LayoutParams(0,LinearLayout.LayoutParams.WRAP_CONTENT,1f))
         title.addView(styledButton("Назад"){finish()},
-            LinearLayout.LayoutParams(dp(76),dp(38)))
+            LinearLayout.LayoutParams(dp(58),dp(32)))
         root.addView(title)
 
         source=label("Источники координат: ожидание",12f,secondary)
@@ -151,14 +158,14 @@ class NavigatorActivity : Activity() {
             setPadding(dp(2),dp(2),dp(2),dp(2))
         }
         zoom.addView(styledButton("+"){map.changeZoom(1)},
-            LinearLayout.LayoutParams(dp(48),dp(46)))
+            LinearLayout.LayoutParams(dp(34),dp(33)))
         zoom.addView(styledButton("−"){map.changeZoom(-1)},
-            LinearLayout.LayoutParams(dp(48),dp(46)).apply{topMargin=dp(5)})
+            LinearLayout.LayoutParams(dp(34),dp(33)).apply{topMargin=dp(3)})
         zoom.addView(styledButton("◎"){map.followCar()},
-            LinearLayout.LayoutParams(dp(48),dp(46)).apply{topMargin=dp(5)})
+            LinearLayout.LayoutParams(dp(34),dp(33)).apply{topMargin=dp(3)})
         mapContainer.addView(zoom,FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.WRAP_CONTENT,FrameLayout.LayoutParams.WRAP_CONTENT,
-            Gravity.RIGHT or Gravity.TOP).apply{setMargins(0,dp(12),dp(10),0)})
+            Gravity.RIGHT or Gravity.TOP).apply{setMargins(0,dp(8),dp(7),0)})
         root.addView(mapContainer,LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT,0,1f))
 
@@ -204,10 +211,28 @@ class NavigatorActivity : Activity() {
             styledButton("Вернуться к GPS"){sendService(NavService.STOP_DR)},
             voiceButton
         ))
-        root.addView(label(
-            "© OpenStreetMap contributors · Маршруты Valhalla (демо). " +
-                "Выбор точки — касанием карты. Не используй меню во время движения.",
-            10f,secondary).apply{gravity=Gravity.CENTER})
+        // Attribution is kept on the map itself for OSM license compliance;
+        // the former full-width copyright footer no longer consumes map height.
+        val credit=TextView(this).apply {
+            text="© OpenStreetMap contributors"
+            textSize=10f
+            setTextColor(Color.rgb(234,240,248))
+            setPadding(dp(5),dp(2),dp(5),dp(2))
+            background=GradientDrawable().apply {
+                setColor(Color.argb(205,27,31,38))
+                cornerRadius=dp(4).toFloat()
+            }
+            setOnClickListener {
+                startActivity(Intent(Intent.ACTION_VIEW,
+                    Uri.parse("https://www.openstreetmap.org/copyright")))
+            }
+        }
+        mapContainer.addView(credit,FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.WRAP_CONTENT,
+            FrameLayout.LayoutParams.WRAP_CONTENT,
+            Gravity.TOP or Gravity.LEFT).apply{
+                setMargins(dp(5),dp(5),0,0)
+            })
         setContentView(root)
 
         NavigatorPrefs(this).manualStart?.let {
