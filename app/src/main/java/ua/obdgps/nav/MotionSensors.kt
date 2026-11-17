@@ -171,16 +171,48 @@ class MotionSensors(
             System.currentTimeMillis()).declination.toDouble()
     }
 
-    /** Align the phone's magnetic Y-axis with travel heading on a straight GPS segment. */
-    fun alignToGps(course: Double, kmh: Double, straight: Boolean) {
-        if(!compassReliable || !straight || kmh < 12.0) return
-        val target=wrapSigned(course - trueNorth)
+    /**
+     * Align phone-to-vehicle heading after four consecutive real GPS courses
+     * on a straight segment (NavService filters mock and speed disagreements).
+     */
+    fun alignToGps(course:Double,kmh:Double,straight:Boolean) {
+        val now=SystemClock.elapsedRealtime()
+        if(!compassReliable) {
+            if(carOffset==null)State.compassAlignmentText=
+                "Нет точного магнитного поля: выполни проверку компаса"
+            alignmentSamples=0
+            return
+        }
+        if(!straight || kmh<15.0 || !course.isFinite()) {
+            if(carOffset==null)State.compassAlignmentText=
+                "Для привязки едь прямо с хорошим GPS от 15 км/ч"
+            alignmentSamples=0
+            return
+        }
+        if(lastAlignmentSampleMs>0L && now-lastAlignmentSampleMs<550L)return
+        val last=lastAlignedCourse
+        if(now-lastAlignmentSampleMs>5000L ||
+            (last!=null && abs(wrapSigned(course-last))>8.0))
+            alignmentSamples=0
+        lastAlignedCourse=course
+        lastAlignmentSampleMs=now
+        alignmentSamples++
+        if(alignmentSamples<4) {
+            if(carOffset==null)State.compassAlignmentText=
+                "Привязка к GPS: $alignmentSamples/4 устойчивых измерений"
+            return
+        }
+        val desired=wrapSigned(course-trueNorth)
         val previous=carOffset
-        carOffset=if(previous == null) target
-        else if(abs(wrapSigned(target-previous))<20.0)
-            wrapSigned(previous+0.12*wrapSigned(target-previous))
-        else previous
+        if(previous!=null && abs(wrapSigned(desired-previous))>=20.0) {
+            State.compassAlignmentText=
+                "Курс отличается от GPS: проверь крепление и магнитные помехи"
+            return
+        }
+        carOffset=if(previous==null)desired
+            else wrapSigned(previous+0.10*wrapSigned(desired-previous))
         prefs.edit().putFloat("carOffset",carOffset!!.toFloat()).apply()
+        State.compassAlignmentText="Привязка компаса к автомобилю выполнена и сохранена"
     }
 
     /** Compare GPS travel course with calibrated physical vehicle heading. */
