@@ -11,6 +11,7 @@ import android.hardware.*
 import android.location.*
 import android.os.*
 import java.util.*
+import java.io.OutputStream
 import kotlin.math.*
 
 @SuppressLint("MissingPermission")
@@ -21,12 +22,18 @@ class NavService: Service(), SensorEventListener, LocationListener {
         const val START_DR="START_DR"
         const val STOP_DR="STOP_DR"
         const val EXIT="EXIT"
+        const val SET_MUT="SET_MUT"
+        const val SET_OBD="SET_OBD"
     }
     private val handler = Handler(Looper.getMainLooper())
     private lateinit var lm: LocationManager
     private lateinit var sm: SensorManager
     private var gatt: BluetoothGatt? = null
     private var tx: BluetoothGattCharacteristic? = null
+    private var sppSocket: BluetoothSocket? = null
+    private var sppOutput: OutputStream? = null
+    private var sppReader: Thread? = null
+    private var transport = "BLE"
     private var scanner: BluetoothLeScanner? = null
     private var scanCallback: ScanCallback? = null
     private val bt by lazy { getSystemService(BluetoothManager::class.java).adapter }
@@ -42,6 +49,13 @@ class NavService: Service(), SensorEventListener, LocationListener {
     private var connected = false
     private val responseBuffer = StringBuilder()
     private val commands = listOf("ATZ", "ATE0", "ATL0", "ATS0", "ATH0", "ATAT1", "ATST96")
+    // Experimental Mitsubishi MUT-II K-line startup. Requires ELM firmware
+    // with custom slow-init address and 15625 baud support.
+    private val mutSetup = listOf("ATSP3", "ATAL", "ATKW0", "ATIIA01", "ATIB15", "ATSI")
+    private var mutMode = false
+    private var mutSetupIndex = 0
+    private var mutFailures = 0
+
     // Early Mitsubishi K-line. ELM327 handles 5-baud / fast initialization on the adapter.
     private val protocols = listOf(
         "3" to "ISO 9141-2",
@@ -60,7 +74,7 @@ class NavService: Service(), SensorEventListener, LocationListener {
     private val loop = object: Runnable {
         override fun run() {
             val now = SystemClock.elapsedRealtime()
-            if (connected && uartReady && tx != null) {
+            if (connected && uartReady && (tx != null || sppOutput != null)) {
                 // Never send another ELM command until the preceding prompt (>) arrives.
                 // Initializing ISO9141 / KWP can take several seconds.
                 if (pendingCommand != null && now - lastSentAt > 7000L) {
@@ -69,6 +83,8 @@ class NavService: Service(), SensorEventListener, LocationListener {
                 if (pendingCommand == null && now - lastPoll >= 900L) {
                     val command = when {
                         setupIndex < commands.size -> commands[setupIndex]
+                        mutMode && mutSetupIndex < mutSetup.size -> mutSetup[mutSetupIndex]
+                        mutMode -> "2F"
                         configuredProtocol != protocolIndex -> "ATSP${protocols[protocolIndex].first}"
                         else -> "010D"
                     }
@@ -115,44 +131,151 @@ class NavService: Service(), SensorEventListener, LocationListener {
     override fun onStartCommand(i: Intent?,flags:Int,startId:Int): Int {
         when(i?.action) {
             SCAN -> scan()
-            CONNECT -> i.getStringExtra("address")?.let { connect(it) }
+            CONNECT -> i.getStringExtra("address")?.let { connectChoice(it) }
+            SET_MUT -> changeMode(true)
+            SET_OBD -> changeMode(false)
             START_DR -> startDr()
             STOP_DR -> stopDr()
             EXIT -> { stopSelf(); return START_NOT_STICKY }
         }
         return START_NOT_STICKY
     }
+    private fun changeMode(useMut:Boolean) {
+        mutMode=useMut
+        State.mutMode=useMut
+        State.modeLabel=if(useMut) "MUT-II 0x2F — эксперимент" else "OBD2 K-Line"
+        // Restart protocol negotiation in the same Bluetooth session.
+        setupIndex=0
+        mutSetupIndex=0
+        mutFailures=0
+        protocolIndex=0
+        configuredProtocol=-1
+        failedSpeedRequests=0
+        pendingCommand=null
+        responseBuffer.clear()
+        speedTime=0
+        State.speed=null
+        State.message=if(useMut) "MUT-II: пробую 0x01/15625 бод" else "OBD2: поиск ISO9141/KWP"
+    }
+    private fun fallbackFromMut(reason:String) {
+        changeMode(false)
+        State.modeLabel="OBD2 K-Line (MUT недоступен)"
+        State.message="MUT-II не поддержан: $reason; переключился на OBD2 K-Line"
+    }
     private fun scan() {
         try {
-            val s=bt.bluetoothLeScanner ?: error("Bluetooth выключен")
-            scanner=s
+            stopScan()
+            State.devices.clear()
+            // Show paired classic devices and BLE devices separately. Some
+            // iCar Pro 2S variants advertise as Android-Vlink over RFCOMM.
+            bt.bondedDevices.forEach { d ->
+                val name=d.name ?: "Bluetooth без имени"
+                if(d.type==BluetoothDevice.DEVICE_TYPE_CLASSIC ||
+                   d.type==BluetoothDevice.DEVICE_TYPE_DUAL ||
+                   d.type==BluetoothDevice.DEVICE_TYPE_UNKNOWN)
+                    State.devices["SPP|${d.address}"]="Сопряжён: $name [Classic]"
+                if(d.type==BluetoothDevice.DEVICE_TYPE_LE ||
+                   d.type==BluetoothDevice.DEVICE_TYPE_DUAL)
+                    State.devices["BLE|${d.address}"]="Сопряжён: $name [BLE]"
+            }
+            val scan=bt.bluetoothLeScanner
+            if(scan==null) {
+                State.message="Bluetooth выключен; доступны только сопряжённые устройства"
+                return
+            }
+            scanner=scan
             val cb=object: ScanCallback() {
                 override fun onScanResult(type:Int,result:ScanResult) {
-                    val addr=result.device.address
-                    val name=result.scanRecord?.deviceName ?: runCatching {result.device.name}.getOrNull() ?: "BLE device"
-                    State.devices[addr]=name
+                    val address=result.device.address
+                    val name=result.scanRecord?.deviceName
+                        ?: runCatching { result.device.name }.getOrNull() ?: "BLE без имени"
+                    handler.post { State.devices["BLE|$address"]="Найден: $name [BLE]" }
                 }
-                override fun onScanFailed(code:Int){ State.message="Scan error $code" }
+                override fun onScanFailed(code:Int) {
+                    handler.post { State.message="Ошибка поиска BLE: $code" }
+                }
             }
             scanCallback=cb
-            s.startScan(cb)
-            State.message="Поиск BLE (12 сек.)"
-            handler.postDelayed({stopScan()},12000)
-        } catch(e:Exception) {State.message="BLE scan: ${e.message}"}
+            scan.startScan(cb)
+            State.message="Поиск BLE и сопряжённых устройств (15 секунд)"
+            handler.postDelayed({stopScan()},15000)
+        } catch(e:Exception) {State.message="Поиск Bluetooth: ${e.message}"}
     }
     private fun stopScan() {
         try { scanCallback?.let {scanner?.stopScan(it)} } catch(_:Exception) {}
         scanCallback=null
     }
+    private fun disconnectTransport() {
+        try { gatt?.disconnect(); gatt?.close() } catch (_: Exception) {}
+        gatt=null
+        tx=null
+        try { sppSocket?.close() } catch (_: Exception) {}
+        sppSocket=null
+        sppOutput=null
+        connected=false
+        uartReady=false
+        pendingCommand=null
+        State.speed=null
+    }
+    private fun connectChoice(choice:String) {
+        val protocol=choice.substringBefore("|")
+        val address=choice.substringAfter("|",choice)
+        if(protocol=="SPP") connectClassic(address) else connect(address)
+    }
+    private fun connectClassic(address:String) {
+        stopScan()
+        disconnectTransport()
+        transport="SPP"
+        State.deviceName=State.devices["SPP|$address"] ?: address
+        changeMode(mutMode)
+        State.message="Подключение Bluetooth Classic к $address"
+        val socket=bt.getRemoteDevice(address).createRfcommSocketToServiceRecord(
+            UUID.fromString("00001101-0000-1000-8000-00805f9b34fb"))
+        sppSocket=socket
+        sppReader=Thread {
+            try {
+                bt.cancelDiscovery()
+                socket.connect()
+                val output=socket.outputStream
+                handler.post {
+                    if (sppSocket===socket) {
+                        sppOutput=output
+                        connected=true
+                        uartReady=true
+                        State.message="Bluetooth Classic подключён: ELM327"
+                    }
+                }
+                val input=socket.inputStream
+                val buffer=ByteArray(256)
+                while(!Thread.currentThread().isInterrupted) {
+                    val n=input.read(buffer)
+                    if(n<0) break
+                    val packet=buffer.copyOf(n)
+                    handler.post { if(sppSocket===socket) feed(packet) }
+                }
+            } catch(e:Exception) {
+                handler.post {
+                    if(sppSocket===socket)
+                        State.message="Bluetooth Classic: ${e.message}"
+                }
+            } finally {
+                handler.post {
+                    if(sppSocket===socket) {
+                        connected=false;uartReady=false;sppOutput=null
+                        State.speed=null
+                        try { socket.close() } catch(_:Exception){}
+                    }
+                }
+            }
+        }.also {it.name="ELM327-SPP";it.start()}
+    }
     private fun connect(address:String) {
         stopScan()
         try {
-            gatt?.close()
-            tx=null; connected=false; uartReady=false
-            setupIndex=0; protocolIndex=0; configuredProtocol=-1
-            failedSpeedRequests=0; pendingCommand=null; responseBuffer.clear()
-            State.speed=null
-            State.deviceName=State.devices[address] ?: address
+            disconnectTransport()
+            transport="BLE"
+            changeMode(mutMode)
+            State.deviceName=State.devices["BLE|$address"] ?: address
             gatt=bt.getRemoteDevice(address).connectGatt(this,false,object:BluetoothGattCallback(){
                 override fun onConnectionStateChange(g:BluetoothGatt,status:Int,newState:Int) {
                     handler.post {
