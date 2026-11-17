@@ -43,6 +43,15 @@ class NavigatorPrefs(context: Context) {
                 store.edit().putString("protocolMode",value).putBoolean("mutMode",value=="MUT").apply()
         }
 
+    var alertRegionSlug:String
+        get()=store.getString("alertRegionSlug","kyiv")?.takeIf { slug ->
+            AirAlerts.regions.any {it.slug==slug}
+        } ?: "kyiv"
+        set(value) {
+            if(AirAlerts.regions.any {it.slug==value})
+                store.edit().putString("alertRegionSlug",value).apply()
+        }
+
     data class RecentAddress(val label:String,val lat:Double,val lon:Double)
 
     fun recentAddresses():List<RecentAddress> {
