@@ -141,6 +141,7 @@ class NavService: Service(), LocationListener {
         super.onCreate()
         lm = getSystemService(LOCATION_SERVICE) as LocationManager
         settings = NavigatorPrefs(this)
+        AirAlerts.initialize(this)
         State.obdFactor = settings.obdFactor
         autoEnabled = settings.autoEnabled
         State.autoEnabled = autoEnabled
