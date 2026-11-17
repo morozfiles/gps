@@ -15,7 +15,7 @@ class NavigatorPrefs(context: Context) {
         set(value){store.edit().putString("adapterName",value).apply()}
 
     var obdFactor: Double
-        get()=store.getFloat("obdFactor",1.0f).toDouble().coerceIn(0.70,1.30)
+        get()=store.getFloat("obdFactor",0.96f).toDouble().coerceIn(0.70,1.30)
         set(value){
             if(value.isFinite() && value in 0.70..1.30)
                 store.edit().putFloat("obdFactor",value.toFloat()).apply()
@@ -28,4 +28,37 @@ class NavigatorPrefs(context: Context) {
     var mutMode: Boolean
         get()=store.getBoolean("mutMode",false)
         set(value){store.edit().putBoolean("mutMode",value).apply()}
+
+    var protocolMode: String
+        get() {
+            val fallback=if(store.getBoolean("mutMode",false))"MUT" else "KLINE"
+            return store.getString("protocolMode",fallback)?.takeIf {
+                it in setOf("AUTO","KLINE","CAN","MUT")
+            } ?: fallback
+        }
+        set(value) {
+            if(value in setOf("AUTO","KLINE","CAN","MUT"))
+                store.edit().putString("protocolMode",value).putBoolean("mutMode",value=="MUT").apply()
+        }
+
+    data class ManualStart(val lat:Double,val lon:Double,val bearing:Double)
+    var manualStart:ManualStart?
+        get() {
+            if(!store.contains("manualLat")||!store.contains("manualLon")||
+               !store.contains("manualBearing"))return null
+            val lat=Double.fromBits(store.getLong("manualLat",0L))
+            val lon=Double.fromBits(store.getLong("manualLon",0L))
+            val bearing=Double.fromBits(store.getLong("manualBearing",0L))
+            return if(lat.isFinite()&&lon.isFinite()&&bearing.isFinite()&&
+                lat in -85.0..85.0&&lon in -180.0..180.0)ManualStart(lat,lon,bearing)
+                else null
+        }
+        set(value) {
+            val edit=store.edit()
+            if(value==null)edit.remove("manualLat").remove("manualLon").remove("manualBearing")
+            else edit.putLong("manualLat",value.lat.toBits())
+                .putLong("manualLon",value.lon.toBits())
+                .putLong("manualBearing",value.bearing.toBits())
+            edit.apply()
+        }
 }
