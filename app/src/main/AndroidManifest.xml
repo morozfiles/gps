@@ -10,6 +10,7 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION"/>
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC"/>
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
     <!-- Required for PackageManager.getLaunchIntentForPackage on Android 11+. -->
     <queries>
@@ -27,6 +28,8 @@
         <activity android:name=".NavigatorActivity" android:exported="false"/>
         <activity android:name=".OfflineMapsActivity" android:exported="false"/>
         <activity android:name=".OfflineVectorNavigatorActivity" android:exported="false"/>
+        <service android:name=".OfflineCountryDownloadService"
+            android:exported="false" android:foregroundServiceType="dataSync"/>
         <service android:name=".NavService" android:exported="false"
             android:foregroundServiceType="location|connectedDevice"/>
     </application>
