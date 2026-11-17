@@ -12,6 +12,11 @@ import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.speech.tts.TextToSpeech
+import android.speech.RecognizerIntent
+import android.text.InputFilter
+import android.text.InputType
+import android.view.inputmethod.EditorInfo
+import android.content.ActivityNotFoundException
 import android.view.Gravity
 import android.view.View
 import android.view.WindowInsets
@@ -53,7 +58,10 @@ class NavigatorActivity : Activity() {
     private var pickMode="DEST"
     private var lastRerouteMs=0L
     private var lastVoiceKey=""
-    private var voiceEnabled=true
+    private var voiceEnabled=false
+    private val speechRequestCode=1638
+    private var speechInput:EditText?=null
+    private var addressSearchDialog:AlertDialog?=null
     private var ttsReady=false
     private var tts:TextToSpeech?=null
 
@@ -77,6 +85,27 @@ class NavigatorActivity : Activity() {
         setPadding(dp(2),0,dp(2),0)
         setOnClickListener{onClick()}
     }
+    private fun mapControl(label:String,onClick:()->Unit):Button =
+        Button(this).apply {
+            text=label
+            isAllCaps=false
+            textSize=21f
+            gravity=Gravity.CENTER
+            includeFontPadding=false
+            setTextColor(Color.WHITE)
+            minHeight=0
+            minimumHeight=0
+            minWidth=0
+            minimumWidth=0
+            background=GradientDrawable().apply {
+                cornerRadius=dp(11).toFloat()
+                setColor(Color.argb(164,30,39,53))
+                setStroke(dp(1),Color.argb(160,210,225,244))
+            }
+            setPadding(0,0,0,0)
+            setOnClickListener{onClick()}
+        }
+
     private fun label(value:String,size:Float,color:Int=textColor)=TextView(this).apply {
         text=value
         textSize=size
@@ -157,12 +186,12 @@ class NavigatorActivity : Activity() {
             orientation=LinearLayout.VERTICAL
             setPadding(dp(2),dp(2),dp(2),dp(2))
         }
-        zoom.addView(styledButton("+"){map.changeZoom(1)},
-            LinearLayout.LayoutParams(dp(34),dp(33)))
-        zoom.addView(styledButton("−"){map.changeZoom(-1)},
-            LinearLayout.LayoutParams(dp(34),dp(33)).apply{topMargin=dp(3)})
-        zoom.addView(styledButton("◎"){map.followCar()},
-            LinearLayout.LayoutParams(dp(34),dp(33)).apply{topMargin=dp(3)})
+        zoom.addView(mapControl("+"){map.changeZoom(1)},
+            LinearLayout.LayoutParams(dp(45),dp(45)))
+        zoom.addView(mapControl("−"){map.changeZoom(-1)},
+            LinearLayout.LayoutParams(dp(45),dp(45)).apply{topMargin=dp(4)})
+        zoom.addView(mapControl("◎"){map.followCar()},
+            LinearLayout.LayoutParams(dp(45),dp(45)).apply{topMargin=dp(4)})
         mapContainer.addView(zoom,FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.WRAP_CONTENT,FrameLayout.LayoutParams.WRAP_CONTENT,
             Gravity.RIGHT or Gravity.TOP).apply{setMargins(0,dp(8),dp(7),0)})
@@ -201,7 +230,7 @@ class NavigatorActivity : Activity() {
             styledButton("Начать ведение"){startGuidance()},
             styledButton("Сброс"){stopGuidance()}
         ))
-        voiceButton=styledButton("Голос: вкл"){
+        voiceButton=styledButton("Голос: выкл"){
             voiceEnabled=!voiceEnabled
             voiceButton.text=if(voiceEnabled)"Голос: вкл" else "Голос: выкл"
             if(!voiceEnabled)tts?.stop()
