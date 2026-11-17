@@ -8,6 +8,8 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
+import android.view.WindowInsets
+import android.graphics.Color
 import android.widget.*
 
 class MainActivity : Activity() {
@@ -49,10 +51,23 @@ class MainActivity : Activity() {
     }
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val scroll = ScrollView(this)
+        val scroll = ScrollView(this).apply {
+            setBackgroundColor(Color.WHITE)
+            clipToPadding = false
+            // Android 15/16 enforces edge-to-edge drawing: reserve the
+            // status bar, display cutout and gesture navigation space.
+            setOnApplyWindowInsetsListener { view, windowInsets ->
+                val bars = windowInsets.getInsets(
+                    WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout()
+                )
+                view.setPadding(bars.left, bars.top, bars.right, bars.bottom)
+                windowInsets
+            }
+        }
         root = LinearLayout(this).apply { orientation=LinearLayout.VERTICAL; setPadding(30,30,30,40) }
         scroll.addView(root); setContentView(scroll)
-        root.addView(TextView(this).apply { text="OBD GPS Navigator — тестовая версия"; textSize=23f })
+        root.addView(TextView(this).apply { text="OBD GPS Navigator — Space Star K-Line"; textSize=23f })
+        root.addView(TextView(this).apply { text="Mitsubishi Space Star 2003 1.6 АКПП · Vgate iCar Pro 2S BLE · ISO 9141 / KWP2000" })
         root.addView(TextView(this).apply { text="Закрепите телефон неподвижно. Не полагайтесь на расчёт как на единственный источник навигации." })
         status = TextView(this).apply { textSize=16f; setPadding(0,20,0,20) }; root.addView(status)
         addButton(root,"1. Разрешения Bluetooth и местоположения") { askPermissions() }
