@@ -304,16 +304,38 @@ class MotionSensors(
             }
             Sensor.TYPE_MAGNETIC_FIELD -> {
                 magneticAccuracy=event.accuracy
-                magneticStrength=sqrt((0..2).sumOf{i->event.values[i].toDouble().pow(2)})
+                magneticSampleMs=SystemClock.elapsedRealtime()
+                magneticStrength=sqrt((0..2).sumOf{
+                    i->event.values[i].toDouble().pow(2)
+                })
+                State.compassAccuracyText=
+                    "Точность: ${accuracyLabel()}; поле: ${magneticStrength.toInt()} мкТ"
+                if(compassCheckStartMs!=0L) {
+                    compassCheckSamples++
+                    for(i in 0..2) {
+                        magnetMin[i]=min(magnetMin[i],event.values[i].toDouble())
+                        magnetMax[i]=max(magnetMax[i],event.values[i].toDouble())
+                    }
+                    val elapsed=SystemClock.elapsedRealtime()-compassCheckStartMs
+                    if(elapsed>=15_000L) finishCompassCheck()
+                    else State.compassCalibrationText=
+                        "Проверка компаса: ещё ${((15_000L-elapsed)/1000L+1L)} с. " +
+                        "Вращай телефон восьмёркой"
+                }
             }
             Sensor.TYPE_ROTATION_VECTOR -> {
                 SensorManager.getRotationMatrixFromVector(rotationMatrix,event.values)
                 SensorManager.getOrientation(rotationMatrix,orientation)
                 rotationReady=true
+                rotationHeadingAccuracyDeg=if(event.values.size>=5 &&
+                    event.values[4]>0f)
+                    Math.toDegrees(event.values[4].toDouble()) else Double.NaN
                 trueNorth=wrap360(Math.toDegrees(orientation[0].toDouble())+declination)
-                State.compassStatus=if(compassBearing!=null)
-                    "Курс " + compassBearing!!.toInt() + "°"
-                    else "Компас: нет точного курса / помехи"
+                State.compassStatus=when {
+                    !compassReliable -> "Компас: ${accuracyLabel()} / возможные помехи"
+                    compassBearing!=null -> "Курс авто: ${compassBearing!!.toInt()}°"
+                    else -> "Курс телефона: ${trueNorth.toInt()}°. Ожидается привязка к авто"
+                }
             }
             Sensor.TYPE_GYROSCOPE -> {
                 val norm=sqrt(gravity.sumOf{it.toDouble()*it})
