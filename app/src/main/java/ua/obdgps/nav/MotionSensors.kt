@@ -102,12 +102,21 @@ class MotionSensors(
     }
 
     val compassReliable: Boolean get() =
-        rotationReady && magneticStrength in 25.0..65.0 &&
-            magneticAccuracy >= SensorManager.SENSOR_STATUS_ACCURACY_LOW
+        rotationReady && magnetometerPresent &&
+            SystemClock.elapsedRealtime()-magneticSampleMs<3500L &&
+            magneticStrength in 22.0..72.0 &&
+            (magneticAccuracy >= SensorManager.SENSOR_STATUS_ACCURACY_LOW ||
+                (rotationHeadingAccuracyDeg.isFinite() &&
+                    rotationHeadingAccuracyDeg<25.0))
     val compassBearing: Double? get() =
         if(compassReliable && carOffset != null) wrap360(trueNorth + carOffset!!) else null
 
     fun start() {
+        magnetometerPresent=sm.getDefaultSensor(Sensor.TYPE_MAGNETIC_FIELD)!=null
+        State.compassCalibrationText="Магнитометр готов к проверке восьмёркой"
+        State.compassAlignmentText=if(carOffset==null)
+            "Курс автомобиля ещё не привязан. Доступна автопривязка по GPS"
+            else "Привязка к автомобилю сохранена"
         val sensorNames = listOf(
             "Гироскоп" to Sensor.TYPE_GYROSCOPE,
             "Акселерометр" to Sensor.TYPE_ACCELEROMETER,
