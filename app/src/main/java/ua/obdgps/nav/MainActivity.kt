@@ -41,6 +41,7 @@ class MainActivity : Activity() {
     private lateinit var root: LinearLayout
     private lateinit var status: TextView
     private lateinit var sensorStatus: TextView
+    private var compassDialogStatus: TextView? = null
     private lateinit var gpsSpeedValue: TextView
     private lateinit var obdSpeedValue: TextView
     private var gpsSpeedKmh: Double? = null
@@ -316,9 +317,13 @@ class MainActivity : Activity() {
             sensorStatus.text="Движение: ${State.motionText}\n"+
                 "Ускорение: ${State.accelerationText}\n"+
                 "Компас: ${State.compassStatus}\n"+
+                "${State.compassAccuracyText}\n"+
+                "Привязка курса: ${State.compassAlignmentText}\n"+
                 "Направление: ${State.directionText}\n"+
                 "Калибровка: ${State.calibrationText}\n"+
                 State.sensorAvailability
+            compassDialogStatus?.text=
+                State.compassAccuracyText+"\n"+State.compassCalibrationText
 
             if (picker != null) updateDevicePicker()
             handler.postDelayed(this,750)
