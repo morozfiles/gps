@@ -49,8 +49,8 @@ class DeadReckoner {
         if(abs(difference)>20) return
         pose=p.copy(bearing=(p.bearing + difference.coerceIn(-maxChangeDegrees,maxChangeDegrees)+360)%360)
     }
-    fun move(kmh: Int, dt: Double, reverse: Boolean = false) {
-        if (dt <= 0 || dt > 1 || kmh !in 0..255) return
+    fun move(kmh: Double, dt: Double, reverse: Boolean = false) {
+        if (dt <= 0 || dt > 1 || !kmh.isFinite() || kmh !in 0.0..260.0) return
         val p = pose ?: return
         val dist = (kmh / 3.6) * dt / 6371000
         val a = Math.toRadians(p.lat)
@@ -78,7 +78,11 @@ object State {
     var calibrationText = "Нужна калибровка"
     var yawDegPerSec = 0.0
     var reverseSelected = false
-    var directionText = "Вперёд (предположительно)"
+    var directionConfirmed = false
+    var directionText = "Направление: определяется"
+    var obdFactor = 1.0
+    fun obdSpeedKmh(): Double? = speed?.times(obdFactor)
+
     var driftMeters = 0.0
     var position = "—"
     var deviceName = "No ELM327"
