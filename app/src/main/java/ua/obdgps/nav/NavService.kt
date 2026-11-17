@@ -155,6 +155,7 @@ class NavService: Service(), SensorEventListener, LocationListener {
         responseBuffer.clear()
         speedTime=0
         State.speed=null
+        State.speedUpdatedElapsedMs=0L
         State.message=if(useMut) "MUT-II: пробую 0x01/15625 бод" else "OBD2: поиск ISO9141/KWP"
     }
     private fun fallbackFromMut(reason:String) {
@@ -216,6 +217,7 @@ class NavService: Service(), SensorEventListener, LocationListener {
         uartReady=false
         pendingCommand=null
         State.speed=null
+        State.speedUpdatedElapsedMs=0L
     }
     private fun connectChoice(choice:String) {
         val protocol=choice.substringBefore("|")
@@ -263,6 +265,7 @@ class NavService: Service(), SensorEventListener, LocationListener {
                     if(sppSocket===socket) {
                         connected=false;uartReady=false;sppOutput=null
                         State.speed=null
+        State.speedUpdatedElapsedMs=0L
                         try { socket.close() } catch(_:Exception){}
                     }
                 }
@@ -288,6 +291,7 @@ class NavService: Service(), SensorEventListener, LocationListener {
                             State.message="BLE отключён: $status"
                             connected=false; uartReady=false; pendingCommand=null
                             State.speed=null
+        State.speedUpdatedElapsedMs=0L
                         }
                     }
                 }
@@ -422,6 +426,7 @@ class NavService: Service(), SensorEventListener, LocationListener {
                 if(kmh!=null) {
                     State.speed=kmh
                     speedTime=SystemClock.elapsedRealtime()
+                    State.speedUpdatedElapsedMs=speedTime
                     mutFailures=0
                     State.message="MUT-II 0x2F: $kmh км/ч (проверить в движении)"
                 } else {
@@ -444,6 +449,7 @@ class NavService: Service(), SensorEventListener, LocationListener {
             if(kmh!=null) {
                 State.speed=kmh
                 speedTime=SystemClock.elapsedRealtime()
+                State.speedUpdatedElapsedMs=speedTime
                 failedSpeedRequests=0
                 State.message="${protocols[protocolIndex].second}: $kmh км/ч (PID 010D)"
             } else {
