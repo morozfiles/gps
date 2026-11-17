@@ -50,6 +50,25 @@ class InertialMapActivity : Activity() {
         setOnClickListener { action() }
     }
 
+    private fun mapButton(label:String,action:()->Unit):Button =
+        Button(this).apply {
+            text=label
+            isAllCaps=false
+            textSize=21f
+            gravity=Gravity.CENTER
+            includeFontPadding=false
+            setTextColor(Color.WHITE)
+            minHeight=0;minimumHeight=0
+            minWidth=0;minimumWidth=0
+            background=android.graphics.drawable.GradientDrawable().apply {
+                cornerRadius=dp(12).toFloat()
+                setColor(Color.argb(164,30,39,53))
+                setStroke(dp(1),Color.argb(160,210,225,244))
+            }
+            setPadding(0,0,0,0)
+            setOnClickListener{action()}
+        }
+
     private val refresh=object: Runnable {
         override fun run() {
             val point=State.inertialPoint
@@ -118,12 +137,12 @@ class InertialMapActivity : Activity() {
             orientation=LinearLayout.VERTICAL
             setPadding(dp(4),dp(4),dp(4),dp(4))
         }
-        controls.addView(button("+") { map.changeZoom(1) },
-            LinearLayout.LayoutParams(dp(46),dp(46)))
-        controls.addView(button("−") { map.changeZoom(-1) },
-            LinearLayout.LayoutParams(dp(46),dp(46)).apply { topMargin=dp(5) })
-        controls.addView(button("◎") { map.followCar() },
-            LinearLayout.LayoutParams(dp(46),dp(46)).apply { topMargin=dp(5) })
+        controls.addView(mapButton("+") { map.changeZoom(1) },
+            LinearLayout.LayoutParams(dp(50),dp(50)))
+        controls.addView(mapButton("−") { map.changeZoom(-1) },
+            LinearLayout.LayoutParams(dp(50),dp(50)).apply { topMargin=dp(5) })
+        controls.addView(mapButton("◎") { map.followCar() },
+            LinearLayout.LayoutParams(dp(50),dp(50)).apply { topMargin=dp(5) })
         container.addView(controls,FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.WRAP_CONTENT,FrameLayout.LayoutParams.WRAP_CONTENT,
             Gravity.TOP or Gravity.RIGHT).apply {setMargins(dp(4),dp(12),dp(8),0)})
