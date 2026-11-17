@@ -597,6 +597,7 @@ class NavService: Service(), LocationListener {
         fusedStarting=true
         State.message="Включаю инерциальное ведение через Fused Location..."
         fused.start { ok, detail ->
+            if(!fusedStarting) return@start
             fusedStarting=false
             if(!ok) {
                 State.message=detail+"; выбери приложение Mock Location"
