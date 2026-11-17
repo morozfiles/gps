@@ -32,8 +32,10 @@ class HybridLocator(
     private val fusedListener=object:LocationCallback() {
         override fun onLocationResult(result:LocationResult) {
             for(location in result.locations) {
-                // In DR mode the GMS provider itself may be in mock mode.
-                if(!location.isMock && !State.dr)onRealLocation(location,"Fused Android")
+                // Android marks our injected fused positions as mock.
+                // Real network/Wi-Fi/cellular/eligible BLE fixes are useful
+                // for a gently bounded DR correction too.
+                if(!location.isMock)onRealLocation(location,"Fused Android")
             }
         }
     }
