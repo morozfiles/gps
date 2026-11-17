@@ -832,40 +832,60 @@ class NavService: Service(), LocationListener {
             State.message="Нет свежей скорости OBD: проверь адаптер"
             return
         }
-        // A user-selected position + heading is a legitimate DR seed when
-        // GNSS is blocked; otherwise use a fresh trusted GNSS fix.
-        val manual=if(force)State.manualStart else null
+        // Use the last *accepted* GNSS fix or a corroborated, fresh
+        // network location. A rejected GPS teleport is never seeded.
+        val network=State.networkFix?.takeIf {
+            now-it.elapsedMs<12_000L && it.accuracy<=85f
+        }
+        val gpsCurrent=gps?.takeIf {now-gpsTime<30_000L}
+        val manual=if(force || (gpsCurrent==null && network==null &&
+            (gps==null || now-gpsTime>=90_000L)))State.manualStart else null
         val fix=when {
             manual!=null -> Location(LocationManager.GPS_PROVIDER).apply {
                 latitude=manual.lat;longitude=manual.lon
                 bearing=manual.bearing.toFloat()
-                accuracy=20f
+                accuracy=25f
                 speed=((correctedSpeed()?:0.0)/3.6).toFloat()
             }
-            gps!=null && now-gpsTime<90_000L -> gps!!
+            gpsCurrent!=null -> Location(gpsCurrent)
+            network!=null -> Location(LocationManager.NETWORK_PROVIDER).apply {
+                latitude=network.lat;longitude=network.lon
+                accuracy=network.accuracy
+                network.bearing?.let{bearing=it.toFloat()}
+            }
+            gps!=null && now-gpsTime<90_000L -> Location(gps!!)
             else -> null
         }
         if(fix==null) {
-            State.message="Нет исходной позиции: задай старт на карте или дождись GPS"
+            State.message="Нет исходной позиции: задай старт на карте или дождись GPS/сети"
             return
+        }
+        val trustedCourse=lastTrustedHeading?.takeIf {
+            now-lastTrustedHeadingMs<60_000L
+        }
+        val locationCourse=fix.bearing.toDouble().takeIf {
+            fix.hasBearing() && fix.hasSpeed() && fix.speed*3.6f>7f
         }
         val course=when {
             manual!=null -> manual.bearing
-            fix.hasBearing() && fix.hasSpeed() && fix.speed*3.6f>7f ->
-                fix.bearing.toDouble()
+            locationCourse!=null -> locationCourse
+            trustedCourse!=null -> trustedCourse
             motion.compassBearing!=null -> motion.compassBearing!!
             else -> Double.NaN
         }
         if(!course.isFinite()) {
-            State.message="Неизвестен курс: задай вручную старт и направление на карте"
+            State.message="Курс неизвестен: задай старт и направление на карте"
             return
         }
-        // Manual bearing is a forward travel heading, not a transmission gear guess.
         if(manual!=null) {
             reverse=false
-            State.reverseSelected=false
-            State.directionConfirmed=true
-            State.directionText="Вперёд по заданному на карте курсу"
+            applyDetectedDirection(false,"направление с карты")
+        } else if(!State.directionConfirmed &&
+            (locationCourse!=null || trustedCourse!=null)) {
+            // The last trusted GPS travel course defines forward travel
+            // for this DR segment unless sensors already detected reverse.
+            reverse=false
+            applyDetectedDirection(false,"последний проверенный GPS-курс")
         }
         val carBearing=(course+if(reverse)180.0 else 0.0)%360.0
         dr.seed(fix.latitude,fix.longitude,carBearing)
