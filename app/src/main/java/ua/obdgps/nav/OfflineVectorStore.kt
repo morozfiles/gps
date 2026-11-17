@@ -115,7 +115,16 @@ object OfflineVectorStore {
      * by carriage returns. Older POI archives may not contain every building.
      */
     fun findPlaces(context:Context,query:String,limit:Int=8):List<Place> {
-        val file=poiFile(context)
+        val found=ArrayList<Place>()
+        for(file in OfflineRegionPacks.poiFiles(context)) {
+            found.addAll(findPlacesInFile(context,file,query,limit))
+            if(found.size>=limit)break
+        }
+        return found.distinctBy{it.lat to it.lon}.take(limit)
+    }
+
+    private fun findPlacesInFile(context:Context,file:File,query:String,
+                                 limit:Int):List<Place> {
         val term=query.trim().lowercase(Locale.getDefault())
         if(!file.isFile||term.length<3)return emptyList()
         val terms=term.split(Regex("[\\s,]+")).filter{
