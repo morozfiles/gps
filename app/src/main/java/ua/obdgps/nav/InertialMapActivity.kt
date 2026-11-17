@@ -83,9 +83,22 @@ class InertialMapActivity : Activity() {
                 String.format(Locale.US,"%.5f, %.5f · %.1f км/ч",
                     it.latitude,it.longitude,it.speedKmh)
             }?:"нет стартовой точки"
+            val offset=if(lastRaw!=null && pure!=null){
+                val from=android.location.Location("gps").apply{
+                    latitude=lastRaw.latitude;longitude=lastRaw.longitude
+                }
+                val to=android.location.Location("sensor").apply{
+                    latitude=pure.latitude;longitude=pure.longitude
+                }
+                val metres=from.distanceTo(to).toDouble()
+                if(metres>=1000.0)
+                    String.format(Locale.getDefault(),"%.1f км",metres/1000.0)
+                else String.format(Locale.getDefault(),"%.0f м",metres)
+            } else "—"
             info.text=State.diagnosticText+
                 "\nGPS: $gpsLabel · точек: ${raw.size}"+
                 "\nЧистый DR: $pureLabel · точек: ${pureTrail.size}"+
+                "\nРасхождение GPS / DR: $offset"+
                 "\n"+State.gpsSpoofStatus
             handler.postDelayed(this,1000L)
         }
@@ -170,7 +183,7 @@ class InertialMapActivity : Activity() {
         val legend=TextView(this).apply {
             text="● Зелёный — только GPS    ● Синий — чистый DR\n"+
                  "● Оранжевый — отклонённый GPS · не используется для навигации"+
-                 "\nЧистый DR: начальная точка один раз, затем только датчики"
+                 "\nЧистый DR: старт с места; первые 2 с стоять неподвижно"
             setTextColor(secondary)
             textSize=12f
             gravity=Gravity.CENTER
