@@ -278,7 +278,7 @@ internal class InertialTrackMapView(context:Context): View(context) {
 
     private fun anchorX():Double=width/2.0
     // Position the car below center in navigation, leaving more road ahead.
-    private fun anchorY():Double=if(navigation && follow && current!=null)
+    private fun anchorY():Double=if(navigation && current!=null)
         height*0.66 else height/2.0
 
     private fun deltaAngle(to:Double,from:Double):Double =
