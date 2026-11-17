@@ -55,11 +55,14 @@ object AirAlerts {
         Region("chernihivska","Черниговская область","Черниговская обл.")
     )
 
+    val oblasts:List<Region> = regions.filterNot {it.city}
+    val cities:List<Region> = regions.filter {it.city}
+
     data class Snapshot(
         val level:Level,
         val explanation:String,
         val sourceUpdatedUtcMs:Long=0L,
-        val region:Region=regions.first()
+        val region:Region=cities.first()
     )
 
     private data class ActiveAlert(val slug:String,val oblastSlug:String)
@@ -74,37 +77,54 @@ object AirAlerts {
         Thread(runnable,"AirAlert-Fetch").apply {isDaemon=true}
     }
     private val feed=AtomicReference<Feed?>(null)
-    @Volatile private var selectedSlug="kyiv"
+    @Volatile private var selectedCitySlug="kyiv"
+    @Volatile private var selectedOblastSlug="kyivska"
     private var lastPollElapsed=-POLL_INTERVAL_MS
     private var fetching=false
 
     fun initialize(context:Context) {
-        selectedSlug=NavigatorPrefs(context).alertRegionSlug
+        val prefs=NavigatorPrefs(context)
+        selectedCitySlug=prefs.alertCitySlug
+        selectedOblastSlug=prefs.alertOblastSlug
         refreshIfDue()
     }
 
-    fun currentRegion():Region=
-        regions.firstOrNull {it.slug==selectedSlug}?:regions.first()
+    fun currentCity():Region=
+        cities.firstOrNull{it.slug==selectedCitySlug}?:cities.first()
 
-    fun selectRegion(context:Context,slug:String) {
-        val chosen=regions.firstOrNull{it.slug==slug}?:return
-        NavigatorPrefs(context).alertRegionSlug=chosen.slug
-        selectedSlug=chosen.slug
-        // Raw feed contains all regions; the new choice is reflected instantly.
+    fun currentOblast():Region=
+        oblasts.firstOrNull{it.slug==selectedOblastSlug}
+            ?:oblasts.first{it.slug=="kyivska"}
+
+    fun selectCity(context:Context,slug:String) {
+        val region=cities.firstOrNull{it.slug==slug}?:return
+        NavigatorPrefs(context).alertCitySlug=region.slug
+        selectedCitySlug=region.slug
         refreshIfDue()
     }
 
-    fun snapshot():Snapshot {
-        val region=currentRegion()
+    fun selectOblast(context:Context,slug:String) {
+        val region=oblasts.firstOrNull{it.slug==slug}?:return
+        NavigatorPrefs(context).alertOblastSlug=region.slug
+        selectedOblastSlug=region.slug
+        refreshIfDue()
+    }
+
+    fun citySnapshot():Snapshot=snapshotFor(currentCity())
+    fun oblastSnapshot():Snapshot=snapshotFor(currentOblast())
+
+    /** Used by auto DR: only a fresh city-specific alarm can arm it. */
+    fun selectedCityHasAlert():Boolean=citySnapshot().level==Level.CITY
+
+    private fun snapshotFor(region:Region):Snapshot {
         val raw=feed.get()?:return Snapshot(
-            Level.UNKNOWN,"Тревоги · "+region.name+": свежие данные недоступны",region=region)
+            Level.UNKNOWN,"Тревоги · "+region.name+": свежие данные недоступны",
+            region=region)
         val age=System.currentTimeMillis()-raw.updatedAt
         if(age>MAX_SOURCE_AGE_MS || age< -FUTURE_TOLERANCE_MS)
             return Snapshot(Level.UNKNOWN,
                 "Тревоги · "+region.name+": нет свежих данных",region=region)
 
-        // Kyiv city is its own region; do not infer city danger
-        // solely from a district in Kyiv Oblast.
         val active=if(region.city)raw.alerts.any{it.slug==region.slug}
             else raw.alerts.any{
                 it.slug==region.slug || it.oblastSlug==region.slug
@@ -114,7 +134,7 @@ object AirAlerts {
             region.city -> Level.CITY
             else -> Level.OBLAST
         }
-        val message=if(active) "Воздушная тревога: "+region.name else
+        val message=if(active)"Воздушная тревога: "+region.name else
             "По данным Tryvoha.online: "+region.name+" — тревога не указана"
         return Snapshot(level,message,raw.updatedAt,region)
     }
@@ -144,7 +164,7 @@ object AirAlerts {
         conn.readTimeout=8_000
         conn.requestMethod="GET"
         conn.setRequestProperty("Accept","application/json")
-        conn.setRequestProperty("User-Agent","OBD-GPS-Navigator/0.9.6 (Android)")
+        conn.setRequestProperty("User-Agent","OBD-GPS-Navigator/0.9.7 (Android)")
         conn.useCaches=false
         try {
             if(conn.responseCode!=HttpURLConnection.HTTP_OK)
