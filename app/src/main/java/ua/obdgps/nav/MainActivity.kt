@@ -438,14 +438,14 @@ class MainActivity : Activity() {
     }
 
     private fun showAlertCityPicker() {
-        // Tryvoha.online publishes Kyiv as a standalone city.
-        // Other cities do not have verified city-level records in this feed.
+        // "Нет": the selected oblast becomes the automatic DR alert gate.
+        // Tryvoha.online has a separate city-level record for Kyiv only.
         val options=AirAlerts.cities
         val selected=options.indexOfFirst {
             it.slug==AirAlerts.currentCity().slug
         }.coerceAtLeast(0)
         AlertDialog.Builder(this)
-            .setTitle("Город для тревог")
+            .setTitle("Город: Киев или Нет (по области)")
             .setSingleChoiceItems(options.map{it.name}.toTypedArray(),selected){dialog,index->
                 AirAlerts.selectCity(this,options[index].slug)
                 showAlertStatus()
