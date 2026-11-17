@@ -225,6 +225,7 @@ internal class InertialTrackMapView(context:Context): View(context) {
     private var history=emptyList<State.TrailPoint>()
     private var follow=true
     private var navigation=false
+    private var routeGuidanceActive=false
     private var routePoints:List<RoutingEngine.Point> = emptyList()
     private var destination:RoutingEngine.Point?=null
     private var manualOrigin:RoutingEngine.Point?=null
@@ -411,26 +412,70 @@ internal class InertialTrackMapView(context:Context): View(context) {
         selectionCallback=onPick
     }
 
+    /**
+     * "Start navigation" must reattach the camera to the car after the user
+     * panned to choose a destination, and immediately face the planned route.
+     * If a real vehicle heading becomes available, follow it with smoothing.
+     */
+    fun beginRouteGuidance(routeCourse:Double?,fallback:RoutingEngine.Point?) {
+        routeGuidanceActive=true
+        follow=true
+        manualZoomUntilMs=0L
+        smoothedKmh=Double.NaN
+        val fix=current
+        if(fix!=null) {
+            centerLat=fix.latitude
+            centerLon=fix.longitude
+        } else if(fallback!=null) {
+            centerLat=fallback.lat
+            centerLon=fallback.lon
+        }
+        routeCourse?.takeIf{it.isFinite()}?.let {
+            cameraHeading=normalizedCourse(it)
+            targetHeading=cameraHeading
+            headingInitialized=true
+            headingCandidate=null
+        }
+        lastAnimationMs=SystemClock.elapsedRealtime()
+        invalidate()
+    }
+
+    fun stopRouteGuidance() {
+        routeGuidanceActive=false
+        invalidate()
+    }
+
     fun updateFromNavigation(
         fix:State.NavFix?,
         route:List<RoutingEngine.Point>,
         destination:RoutingEngine.Point?,
         origin:RoutingEngine.Point?,
-        speedKmh:Double?=null
+        speedKmh:Double?=null,
+        routeCourse:Double?=null,
+        guidanceActive:Boolean=false
     ) {
         navigation=true
+        routeGuidanceActive=guidanceActive
         routePoints=route
         this.destination=destination
         manualOrigin=origin
-        markerBearing=fix?.bearing?.takeIf { it.isFinite() }
+        val measuredCourse=fix?.bearing?.takeIf{it.isFinite()}
+        val guidedCourse=routeCourse?.takeIf{it.isFinite()}
+        val courseForCamera=if(guidanceActive) {
+            if(speedKmh!=null && speedKmh>=8.0)measuredCourse?:guidedCourse
+            else guidedCourse?:measuredCourse
+        } else measuredCourse
+        markerBearing=measuredCourse?:if(guidanceActive)guidedCourse else null
         current=fix?.let {
-            State.TrailPoint(it.lat,it.lon,it.bearing?:0.0,0.0,it.elapsedMs)
+            State.TrailPoint(it.lat,it.lon,markerBearing?:0.0,0.0,it.elapsedMs)
         }
         // Show inertial breadcrumbs only when DR is active.
         history=if(State.dr)State.inertialTrail.toList() else emptyList()
         if(follow&&fix!=null) {
             centerLat=fix.lat;centerLon=fix.lon
-            acceptHeading(markerBearing,speedKmh)
+            if(guidanceActive && courseForCamera==guidedCourse && guidedCourse!=null)
+                acceptHeading(guidedCourse,maxOf(8.0,speedKmh?:0.0))
+            else acceptHeading(courseForCamera,speedKmh)
             autoZoomForSpeed(speedKmh)
         }
         invalidate()
