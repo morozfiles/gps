@@ -18,21 +18,30 @@ class FusedMockRelay(context: Context) {
         private set
     private var starting = false
     private var publishBusy = false
+    private var generation = 0L
 
     fun start(callback: (Boolean, String) -> Unit) {
         if(active) { callback(true, "Fused mock включён");return }
         if(starting) return
         starting=true
+        val request=++generation
         client.setMockMode(true)
             .addOnSuccessListener {
-                starting=false
-                active=true
-                callback(true,"Fused mock включён")
+                if(request!=generation) {
+                    // Stop was pressed while activation was still pending.
+                    client.setMockMode(false)
+                } else {
+                    starting=false
+                    active=true
+                    callback(true,"Fused mock включён")
+                }
             }
             .addOnFailureListener { e ->
-                starting=false
-                active=false
-                callback(false,"Mock Location недоступен: " + (e.message ?: "ошибка"))
+                if(request==generation) {
+                    starting=false
+                    active=false
+                    callback(false,"Mock Location недоступен: " + (e.message ?: "ошибка"))
+                }
             }
     }
 
@@ -59,6 +68,7 @@ class FusedMockRelay(context: Context) {
     }
 
     fun stop() {
+        generation++
         active=false
         starting=false
         publishBusy=false
