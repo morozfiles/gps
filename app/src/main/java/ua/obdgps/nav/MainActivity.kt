@@ -23,12 +23,20 @@ import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
 import android.view.Gravity
 import android.view.View
+import android.text.TextUtils
+import android.text.InputType
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import android.widget.*
 
 class MainActivity : Activity() {
+    private val bgColor=Color.rgb(29,33,39)
+    private val panelColor=Color.rgb(45,51,60)
+    private val surfaceColor=Color.rgb(54,61,72)
+    private val primaryText=Color.rgb(238,242,249)
+    private val secondaryText=Color.rgb(179,189,203)
+
     private val handler = Handler(Looper.getMainLooper())
     private lateinit var root: LinearLayout
     private lateinit var status: TextView
@@ -92,18 +100,18 @@ class MainActivity : Activity() {
                 setPadding(dip(6), dip(12), dip(6), dip(12))
                 background = GradientDrawable().apply {
                     cornerRadius = dip(12).toFloat()
-                    setColor(Color.rgb(239, 243, 249))
+                    setColor(panelColor)
                 }
             }
             panel.addView(TextView(this).apply {
                 text = name
                 textSize = 15f
-                setTextColor(Color.rgb(70, 83, 102))
+                setTextColor(secondaryText)
             })
             val number = TextView(this).apply {
                 text = "—"
                 textSize = 31f
-                setTextColor(Color.BLACK)
+                setTextColor(primaryText)
                 gravity = Gravity.CENTER
                 typeface = android.graphics.Typeface.DEFAULT_BOLD
             }
@@ -111,7 +119,7 @@ class MainActivity : Activity() {
             panel.addView(TextView(this).apply {
                 text = "км/ч"
                 textSize = 12f
-                setTextColor(Color.DKGRAY)
+                setTextColor(secondaryText)
             })
             line.addView(panel, LinearLayout.LayoutParams(0,
                 LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
@@ -137,7 +145,7 @@ class MainActivity : Activity() {
                 "\nGPS: " + (if (gps) "включён ✓" else "выключен ✕") +
                 "\nРазрешения: " + (if (permissionOk) "предоставлены ✓" else "не предоставлены ✕")
             textSize = 17f
-            setTextColor(Color.DKGRAY)
+            setTextColor(secondaryText)
         })
         val dialog = AlertDialog.Builder(this)
             .setTitle("Проверка Bluetooth и GPS")
@@ -198,9 +206,9 @@ class MainActivity : Activity() {
         else ""
         val caption = when (alert.level) {
             AirAlerts.Level.CITY -> "Киев: тревога"
-            AirAlerts.Level.OBLAST -> "Тревога: область"
-            AirAlerts.Level.CLEAR -> "Без тревог (по данным)"
-            AirAlerts.Level.UNKNOWN -> "Нет данных о тревогах"
+            AirAlerts.Level.OBLAST -> "Область: тревога"
+            AirAlerts.Level.CLEAR -> "Нет тревог"
+            AirAlerts.Level.UNKNOWN -> "Нет данных"
         }
         alertLabel.text = caption + timeLabel
         alertDot.contentDescription = alert.explanation
@@ -214,13 +222,13 @@ class MainActivity : Activity() {
         top.addView(TextView(this).apply {
             text = "OBD GPS"
             textSize = 24f
-            setTextColor(Color.BLACK)
+            setTextColor(primaryText)
             typeface = android.graphics.Typeface.DEFAULT_BOLD
         }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
 
         val indicator = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            gravity = Gravity.RIGHT
+            gravity = Gravity.CENTER_HORIZONTAL
         }
         alertDot = View(this).apply {
             isClickable = true
@@ -231,17 +239,22 @@ class MainActivity : Activity() {
             }
         }
         indicator.addView(alertDot, LinearLayout.LayoutParams(dip(22), dip(22)).apply {
-            gravity = Gravity.RIGHT
+            gravity = Gravity.CENTER_HORIZONTAL
         })
         alertLabel = TextView(this).apply {
             text = "Нет данных"
-            textSize = 11f
-            gravity = Gravity.RIGHT
-            setTextColor(Color.DKGRAY)
-            maxWidth = dip(140)
+            textSize = 10f
+            gravity = Gravity.CENTER
+            setTextColor(secondaryText)
+            maxLines = 2
+            ellipsize = TextUtils.TruncateAt.END
         }
-        indicator.addView(alertLabel)
-        top.addView(indicator)
+        indicator.addView(alertLabel, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+        top.addView(indicator, LinearLayout.LayoutParams(dip(108),
+            LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+            setMargins(0,0,dip(14),0)
+        })
         root.addView(top)
         showAlertStatus()
     }
@@ -289,7 +302,7 @@ class MainActivity : Activity() {
             val speedValue=if(updatedByService)State.gpsSpeedKmh else gpsSpeedKmh
             val speedTime=if(updatedByService)State.gpsSpeedUpdatedElapsedMs else gpsSpeedUpdatedElapsedMs
             gpsSpeedValue.text = if(isGpsEnabled()) speedLabel(speedValue,speedTime) else "—"
-            obdSpeedValue.text = speedLabel(State.speed?.toDouble(),State.speedUpdatedElapsedMs)
+            obdSpeedValue.text = speedLabel(State.obdSpeedKmh(),State.speedUpdatedElapsedMs)
             val bluetooth=if(isBluetoothEnabled())"вкл" else "выкл"
             val gps=if(isGpsEnabled())"вкл" else "выкл"
             status.text="Режим: ${State.navigationMode} · Авто: ${if(State.autoEnabled)"вкл" else "выкл"}\n"+
@@ -311,7 +324,22 @@ class MainActivity : Activity() {
         }
     }
     private fun addButton(parent: LinearLayout, caption: String, click: ()->Unit) {
-        parent.addView(Button(this).apply { text = caption; isAllCaps = false; setOnClickListener { click() } })
+        parent.addView(Button(this).apply {
+            text = caption
+            isAllCaps = false
+            textSize = 14f
+            setTextColor(primaryText)
+            background = GradientDrawable().apply {
+                cornerRadius=dip(9).toFloat()
+                setColor(surfaceColor)
+                setStroke(dip(1),Color.rgb(79,88,103))
+            }
+            setPadding(dip(12),dip(11),dip(12),dip(11))
+            setOnClickListener { click() }
+            layoutParams=LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { setMargins(0,dip(5),0,dip(5)) }
+        })
     }
     private fun send(action: String, address: String? = null) {
         if (!hasPermissions()) { checkBluetoothGps(); return }
@@ -399,7 +427,7 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val scroll = ScrollView(this).apply {
-            setBackgroundColor(Color.WHITE)
+            setBackgroundColor(bgColor)
             clipToPadding = false
             // Android 15/16 enforces edge-to-edge drawing: reserve the
             // status bar, display cutout and gesture navigation space.
@@ -411,19 +439,27 @@ class MainActivity : Activity() {
                 windowInsets
             }
         }
-        root = LinearLayout(this).apply { orientation=LinearLayout.VERTICAL; setPadding(30,30,30,40) }
+        window.statusBarColor=bgColor
+        window.navigationBarColor=bgColor
+        window.decorView.systemUiVisibility=0
+        root = LinearLayout(this).apply {
+            orientation=LinearLayout.VERTICAL
+            setPadding(dip(16),dip(14),dip(16),dip(24))
+            setBackgroundColor(bgColor)
+        }
+        State.obdFactor=NavigatorPrefs(this).obdFactor
         scroll.addView(root); setContentView(scroll)
         addAlertHeader()
         addSpeedPanels()
         status = TextView(this).apply {
             textSize = 15f
-            setTextColor(Color.DKGRAY)
+            setTextColor(secondaryText)
             setPadding(dip(4), dip(8), dip(4), dip(15))
         }
         root.addView(status)
         sensorStatus=TextView(this).apply {
             textSize=14f
-            setTextColor(Color.DKGRAY)
+            setTextColor(secondaryText)
             setPadding(dip(4),dip(7),dip(4),dip(15))
         }
         root.addView(sensorStatus)
