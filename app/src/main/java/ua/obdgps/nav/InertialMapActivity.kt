@@ -167,6 +167,9 @@ class InertialMapActivity : Activity() {
 
 /** Visible OSM raster tiles, seven-day disk caching, and a local-grid fallback. */
 internal class InertialTrackMapView(context:Context): View(context) {
+    // Scale standard 256px raster map tiles up 1.5x so street labels
+    // remain legible on high-resolution Android screens.
+    private val tilePixelSize=384.0
     private val tilePaint=Paint(Paint.FILTER_BITMAP_FLAG)
     private val gridPaint=Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color=Color.rgb(65,75,87);strokeWidth=1f
@@ -380,7 +383,7 @@ internal class InertialTrackMapView(context:Context): View(context) {
             cameraHeading else 0.0)
         val deltaX=cos(radians)*dx-sin(radians)*dy
         val deltaY=sin(radians)*dx+cos(radians)*dy
-        val world=256.0*(1 shl zoom)
+        val world=tilePixelSize*(1 shl zoom)
         val nx=((worldX(centerLon)-deltaX)%world+world)%world
         val ny=(worldY(centerLat)-deltaY).coerceIn(1.0,world-1.0)
         centerLon=nx/world*360.0-180.0
@@ -439,7 +442,7 @@ internal class InertialTrackMapView(context:Context): View(context) {
     }
 
     private fun geoAt(x:Float,y:Float):Pair<Double,Double> {
-        val world=256.0*(1 shl zoom)
+        val world=tilePixelSize*(1 shl zoom)
         val delta=screenOffsets(x.toDouble(),y.toDouble())
         val px=((worldX(centerLon)+delta.first)%world+world)%world
         val py=(worldY(centerLat)+delta.second).coerceIn(1.0,world-1.0)
@@ -469,7 +472,7 @@ internal class InertialTrackMapView(context:Context): View(context) {
         if(zoom==targetZoom || width<=0 || height<=0)return
         val (anchorLat,anchorLon)=geoAt(focusX,focusY)
         zoom=targetZoom
-        val world=256.0*(1 shl zoom)
+        val world=tilePixelSize*(1 shl zoom)
         val offset=screenOffsets(focusX.toDouble(),focusY.toDouble())
         val centerWorldX=worldX(anchorLon)-offset.first
         val centerWorldY=worldY(anchorLat)-offset.second
@@ -479,13 +482,13 @@ internal class InertialTrackMapView(context:Context): View(context) {
         invalidate()
     }
 
-    private fun worldX(lon:Double)=((lon+180.0)/360.0)*256.0*(1 shl zoom)
+    private fun worldX(lon:Double)=((lon+180.0)/360.0)*tilePixelSize*(1 shl zoom)
     private fun worldY(lat:Double):Double {
         val a=Math.toRadians(lat.coerceIn(-85.051128,85.051128))
-        return (1.0-ln(tan(a)+1.0/cos(a))/Math.PI)/2.0*256.0*(1 shl zoom)
+        return (1.0-ln(tan(a)+1.0/cos(a))/Math.PI)/2.0*tilePixelSize*(1 shl zoom)
     }
     private fun point(lat:Double,lon:Double):Pair<Float,Float> {
-        val world=256.0*(1 shl zoom)
+        val world=tilePixelSize*(1 shl zoom)
         var dx=worldX(lon)-worldX(centerLon)
         if(dx>world/2)dx-=world
         if(dx< -world/2)dx+=world
@@ -534,19 +537,19 @@ internal class InertialTrackMapView(context:Context): View(context) {
         val n=1 shl zoom
         val worldCenterX=worldX(centerLon)
         val worldCenterY=worldY(centerLat)
-        val left=floor((worldCenterX+minDX)/256.0).toInt()
-        val right=floor((worldCenterX+maxDX)/256.0).toInt()
-        val top=floor((worldCenterY+minDY)/256.0).toInt()
-        val bottom=floor((worldCenterY+maxDY)/256.0).toInt()
+        val left=floor((worldCenterX+minDX)/tilePixelSize).toInt()
+        val right=floor((worldCenterX+maxDX)/tilePixelSize).toInt()
+        val top=floor((worldCenterY+minDY)/tilePixelSize).toInt()
+        val bottom=floor((worldCenterY+maxDY)/tilePixelSize).toInt()
         for(y in top..bottom) {
             if(y<0 || y>=n)continue
             for(rawX in left..right) {
                 val x=((rawX%n)+n)%n
-                val sx=(rawX*256.0-worldCenterX+anchorX()).toFloat()
-                val sy=(y*256.0-worldCenterY+anchorY()).toFloat()
+                val sx=(rawX*tilePixelSize-worldCenterX+anchorX()).toFloat()
+                val sy=(y*tilePixelSize-worldCenterY+anchorY()).toFloat()
                 val bitmap=tileBitmap(zoom,x,y)
                 if(bitmap!=null)
-                    canvas.drawBitmap(bitmap,null,RectF(sx,sy,sx+256f,sy+256f),
+                    canvas.drawBitmap(bitmap,null,RectF(sx,sy,sx+tilePixelSize.toFloat(),sy+tilePixelSize.toFloat()),
                         tilePaint)
             }
         }
