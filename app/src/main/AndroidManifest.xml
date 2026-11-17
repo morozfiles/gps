@@ -10,6 +10,10 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION"/>
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE"/>
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+    <!-- Required for PackageManager.getLaunchIntentForPackage on Android 11+. -->
+    <queries>
+        <package android:name="com.google.android.apps.maps" />
+    </queries>
     <application android:theme="@android:style/Theme.Material.Light.NoActionBar"
         android:label="OBD GPS Navigator" android:allowBackup="false">
         <activity android:name=".MainActivity" android:exported="true">
