@@ -290,7 +290,7 @@ internal class InertialTrackMapView(context:Context): View(context) {
     private fun acceptHeading(course:Double?,speedKmh:Double?) {
         if(!headingUp || !follow || course==null || !course.isFinite())return
         // At rest GNSS bearings become unstable; keep the last trusted course.
-        if(speedKmh!=null && speedKmh<5.0)return
+        if(speedKmh==null || !speedKmh.isFinite() || speedKmh<5.0)return
         val now=SystemClock.elapsedRealtime()
         val heading=normalizedCourse(course)
         if(!headingInitialized) {
