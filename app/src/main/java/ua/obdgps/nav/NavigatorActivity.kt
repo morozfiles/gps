@@ -54,10 +54,7 @@ class NavigatorActivity : Activity() {
     private lateinit var source:TextView
     private lateinit var pickStatus:TextView
     private lateinit var voiceButton:Button
-    private lateinit var alertDot:View
-    private lateinit var alertLabel:TextView
-    private val kyivClock=DateTimeFormatter.ofPattern("HH:mm")
-        .withZone(ZoneId.of("Europe/Kyiv"))
+    private lateinit var alertsView:AirAlertIndicatorsView
     private var selectedDestination:RoutingEngine.Point?=null
     private var manualOrigin:RoutingEngine.Point?=null
     private var plan:RoutingEngine.Route?=null
@@ -75,30 +72,7 @@ class NavigatorActivity : Activity() {
     private var tts:TextToSpeech?=null
 
     private fun updateAlertIndicator() {
-        val alert=AirAlerts.snapshot()
-        val color=when(alert.level) {
-            AirAlerts.Level.CITY -> Color.rgb(217,48,37)
-            AirAlerts.Level.OBLAST -> Color.rgb(255,194,37)
-            AirAlerts.Level.CLEAR -> Color.rgb(27,156,70)
-            AirAlerts.Level.UNKNOWN -> Color.rgb(141,150,160)
-        }
-        alertDot.background=GradientDrawable().apply {
-            shape=GradientDrawable.OVAL
-            setColor(color)
-            setStroke(dp(1),Color.DKGRAY)
-        }
-        val location=alert.region.shortName
-        val caption=when(alert.level) {
-            AirAlerts.Level.CITY,AirAlerts.Level.OBLAST -> location+": тревога"
-            AirAlerts.Level.CLEAR -> location+": нет тревоги"
-            AirAlerts.Level.UNKNOWN -> location+": нет данных"
-        }
-        val time=if(alert.sourceUpdatedUtcMs>0L)
-            " · "+kyivClock.format(Instant.ofEpochMilli(alert.sourceUpdatedUtcMs))
-            else ""
-        alertLabel.text=caption+time
-        alertDot.contentDescription=alert.explanation
-        alertLabel.contentDescription=alert.explanation
+        alertsView.refresh()
     }
 
     private fun dp(n:Int)=(resources.displayMetrics.density*n+0.5f).toInt()
@@ -190,31 +164,9 @@ class NavigatorActivity : Activity() {
             isSingleLine=true
             ellipsize=TextUtils.TruncateAt.END
         },LinearLayout.LayoutParams(0,LinearLayout.LayoutParams.WRAP_CONTENT,1f))
-        val alertIndicator=LinearLayout(this).apply {
-            orientation=LinearLayout.HORIZONTAL
-            gravity=Gravity.CENTER_VERTICAL
-            setPadding(dp(4),dp(2),dp(2),dp(2))
-            setOnClickListener {
-                Toast.makeText(this@NavigatorActivity,
-                    AirAlerts.snapshot().explanation+
-                    "\nTryvoha.online · неофициальные данные",
-                    Toast.LENGTH_LONG).show()
-            }
-        }
-        alertDot=View(this)
-        alertIndicator.addView(alertDot,
-            LinearLayout.LayoutParams(dp(19),dp(19)).apply{
-                rightMargin=dp(6)
-            })
-        alertLabel=label("Киев: нет данных",11f,secondary).apply {
-            maxLines=2
-            ellipsize=TextUtils.TruncateAt.END
-            gravity=Gravity.CENTER_VERTICAL
-        }
-        alertIndicator.addView(alertLabel,LinearLayout.LayoutParams(
-            0,LinearLayout.LayoutParams.WRAP_CONTENT,1f))
-        title.addView(alertIndicator,LinearLayout.LayoutParams(
-            dp(158),dp(42)))
+        alertsView=AirAlertIndicatorsView(this)
+        title.addView(alertsView,LinearLayout.LayoutParams(
+            dp(168),dp(53)))
         root.addView(title)
         updateAlertIndicator()
 
