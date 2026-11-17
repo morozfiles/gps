@@ -930,6 +930,24 @@ class NavService: Service(), LocationListener {
         val freshObd=State.speed!=null && now-speedTime<3500L
         val obd=if(freshObd)correctedSpeed()?:0.0 else 0.0
 
+        // A sudden >1 km teleport cannot become our new GNSS anchor.
+        // Compare against plausible travel over elapsed time so a normal
+        // long drive between sparse fixes isn't misclassified.
+        gps?.let { previous ->
+            val dt=(now-gpsTime)/1000.0
+            if(dt in 0.2..90.0) {
+                val jump=previous.distanceTo(location).toDouble()
+                val plausible=max(obd,kmh?:0.0)/3.6*dt+
+                    location.accuracy*2.5+250.0
+                if(jump>1000.0 && jump>plausible) {
+                    lastGpsTeleport=now
+                    lastRejectedGps=now
+                    State.gpsText="GPS: скачок >1 км отклонён"
+                    return
+                }
+            }
+        }
+
         // Speed disagreement during OBD-confirmed motion is an important
         // signal of spoofing/jamming (but not proof by itself).
         if(freshObd && obd>=7) {
@@ -973,6 +991,13 @@ class NavService: Service(), LocationListener {
         lastAcceptedGps=now
         State.gpsText="GPS: точность "+location.accuracy.toInt()+" м"
         motion.setGeomagneticDeclination(location)
+
+        if(location.hasBearing() && kmh!=null && kmh>=5.0 &&
+            (!location.hasBearingAccuracy() ||
+                location.bearingAccuracyDegrees<25f)) {
+            lastTrustedHeading=location.bearing.toDouble()
+            lastTrustedHeadingMs=now
+        }
 
         val hasCourse=location.hasBearing() && kmh!=null && kmh>=12.0
         if(hasCourse) {
