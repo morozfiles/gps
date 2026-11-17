@@ -611,38 +611,84 @@ class NavService: Service(), LocationListener {
         } else State.message="$reason; стандартный PID 010D недоступен"
     }
     private fun acceptNetworkLocation(location:Location,provider:String) {
-        if(location.isMock || State.dr) return
-        if(!location.hasAccuracy() || location.accuracy>220f) return
+        // Android Location.isMock prevents feeding our injected position
+        // back into the filter as an apparently independent measurement.
+        if(location.isMock || !location.hasAccuracy())return
+        val maxAccuracy=if(State.dr)70f else 220f
+        if(location.accuracy<=0f || location.accuracy>maxAccuracy)return
         val age=SystemClock.elapsedRealtimeNanos()-location.elapsedRealtimeNanos
-        if(age<0L || age>12_000_000_000L) return
+        if(age<0L || age>12_000_000_000L)return
         if(location.latitude !in -85.0..85.0 ||
             location.longitude !in -180.0..180.0)return
+
         val now=SystemClock.elapsedRealtime()
-        val gpsRecent=gps!=null && now-gpsTime<8000L
-        if(gpsRecent) {
-            // Network is a backup: do not override accurate GNSS with
-            // typically less accurate cell/Wi-Fi estimates.
+        val candidate=State.NavFix(location.latitude,location.longitude,
+            if(location.hasBearing())location.bearing.toDouble() else null,
+            location.accuracy,provider,now)
+        if(State.dr) {
+            val pose=dr.pose?:return
+            val estimated=Location(LocationManager.NETWORK_PROVIDER).apply {
+                latitude=pose.lat
+                longitude=pose.lon
+            }
+            val distance=estimated.distanceTo(location).toDouble()
+            // A cellular geolocation can be kilometres off; corrections
+            // must stay near the predicted inertial path.
+            val tolerance=max(65.0,
+                min(220.0,location.accuracy.toDouble()*2.1+
+                    State.driftMeters*1.3))
+            if(distance>tolerance) {
+                networkCorrectionSamples=0
+                return
+            }
+            val previous=previousNetworkFix
+            val consistent=previous!=null &&
+                now-previous.elapsedMs in 1000L..15_000L &&
+                run {
+                    val prior=Location(LocationManager.NETWORK_PROVIDER).apply {
+                        latitude=previous.lat;longitude=previous.lon
+                    }
+                    val elapsedSeconds=(now-previous.elapsedMs)/1000.0
+                    val maxMove= max(75.0,
+                        (correctedSpeed()?:0.0)/3.6*elapsedSeconds+
+                        previous.accuracy+location.accuracy+55.0)
+                    prior.distanceTo(location)<maxMove
+                }
+            networkCorrectionSamples=if(consistent)
+                (networkCorrectionSamples+1).coerceAtMost(5) else 1
+            previousNetworkFix=candidate
+            State.networkFix=candidate
+            if(networkCorrectionSamples>=2 &&
+                now-lastNetworkCorrectionMs>=5000L) {
+                dr.correctPosition(location.latitude,location.longitude,0.07)
+                State.driftMeters=(State.driftMeters*.94).coerceAtLeast(0.0)
+                lastNetworkCorrectionMs=now
+                State.message="Мягкая коррекция DR: "+provider+
+                    ", точность ~"+location.accuracy.toInt()+" м"
+            }
             return
         }
+
+        val gpsRecent=gps!=null && now-gpsTime<8000L
+        if(gpsRecent)return
         val anchor=gps
         if(anchor!=null) {
-            // Spurious network-cell geolocation can be on another continent.
-            val d=anchor.distanceTo(location)
-            if(d>max(350.0,location.accuracy*4.0)) return
+            val dt=(now-gpsTime).coerceAtLeast(0L)/1000.0
+            val maxMove=350.0+min(dt,600.0)*36.0
+            if(anchor.distanceTo(location)>maxMove)return
         }
         val manual=State.manualStart
         if(manual!=null && anchor==null) {
-            val check=Location(LocationManager.NETWORK_PROVIDER).apply {
+            val start=Location(LocationManager.NETWORK_PROVIDER).apply {
                 latitude=manual.lat;longitude=manual.lon
             }
-            if(check.distanceTo(location)>max(350.0,location.accuracy*4.0))return
+            if(start.distanceTo(location)>max(350.0,location.accuracy*4.0))return
         }
-        val fix=State.NavFix(location.latitude,location.longitude,
-            if(location.hasBearing())location.bearing.toDouble() else null,
-            location.accuracy,provider,now)
-        State.networkFix=fix
-        State.navFix=fix
-        State.sourceDescription="Сеть: $provider; точность ~${location.accuracy.toInt()} м"
+        previousNetworkFix=candidate
+        State.networkFix=candidate
+        State.navFix=candidate
+        State.sourceDescription="Сеть: "+provider+
+            "; точность ~"+location.accuracy.toInt()+" м"
     }
 
     private fun publishActualNavigationPosition(now:Long) {
