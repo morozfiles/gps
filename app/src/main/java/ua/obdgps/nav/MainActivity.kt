@@ -23,6 +23,7 @@ import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
 import android.view.Gravity
 import android.view.View
+import android.view.WindowManager
 import android.text.TextUtils
 import android.text.InputType
 import java.time.Instant
@@ -308,6 +309,7 @@ class MainActivity : Activity() {
             val gps=if(isGpsEnabled())"вкл" else "выкл"
             status.text="Режим: ${State.navigationMode} · Авто: ${if(State.autoEnabled)"вкл" else "выкл"}\n"+
                 "Bluetooth: $bluetooth · GPS: $gps\n"+
+                "Положение: ${State.sourceDescription}\n"+
                 "ELM: ${State.deviceName}\n"+
                 "GPS: ${State.gpsText}\n"+
                 "Протокол: ${State.modeLabel}\n"+
@@ -374,12 +376,29 @@ class MainActivity : Activity() {
     }
 
     private fun showProtocolChoice() {
-        val items=arrayOf("OBD2 K-Line (рабочий)", "Mitsubishi MUT-II (эксперимент)")
-        AlertDialog.Builder(this).setTitle("Протокол OBD")
-            .setSingleChoiceItems(items,if(State.mutMode)1 else 0) { dlg,index ->
-                send(if(index==1) NavService.SET_MUT else NavService.SET_OBD)
+        val items=arrayOf(
+            "OBD2 K-Line (Space Star 2003)",
+            "OBD2 CAN (11/29 бит, 250/500 кбит/с)",
+            "OBD2 авто (CAN + K-Line)",
+            "Mitsubishi MUT-II (эксперимент)"
+        )
+        val mode=NavigatorPrefs(this).protocolMode
+        val selected=when(mode) {
+            "CAN"->1
+            "AUTO"->2
+            "MUT"->3
+            else->0
+        }
+        val actions=arrayOf(
+            NavService.SET_OBD,NavService.SET_CAN,
+            NavService.SET_AUTO,NavService.SET_MUT
+        )
+        AlertDialog.Builder(this).setTitle("Протокол двигателя")
+            .setSingleChoiceItems(items,selected){dlg,index->
+                send(actions[index])
                 dlg.dismiss()
-            }.setNegativeButton("Отмена",null).show()
+            }
+            .setNegativeButton("Отмена",null).show()
     }
 
     private fun showObdCorrection() {
@@ -555,6 +574,7 @@ class MainActivity : Activity() {
         window.statusBarColor=bgColor
         window.navigationBarColor=bgColor
         window.decorView.systemUiVisibility=0
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         root = LinearLayout(this).apply {
             orientation=LinearLayout.VERTICAL
             setPadding(dip(16),dip(14),dip(16),dip(24))
@@ -579,6 +599,9 @@ class MainActivity : Activity() {
         addButton(root,"Настройки") { showSettingsMenu() }
         addButton(root,"Принудительно: вести по датчикам") { send(NavService.START_DR) }
         addButton(root,"Вернуться к GPS") { send(NavService.STOP_DR) }
+        addButton(root,"Навигатор · маршрут и голосовые повороты") {
+            startActivity(Intent(this,NavigatorActivity::class.java))
+        }
         addButton(root,"Тестовая карта · только расчёт DR") {
             startActivity(Intent(this, InertialMapActivity::class.java))
         }
