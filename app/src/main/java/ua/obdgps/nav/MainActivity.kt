@@ -38,7 +38,6 @@ class MainActivity : Activity() {
         deviceAdapter = adapter
         val dialog = AlertDialog.Builder(this)
             .setTitle("Выбери Bluetooth ELM327")
-            .setMessage("Сопряжённые устройства и найденные BLE. Для Bluetooth Classic сначала выполни сопряжение в настройках телефона.")
             .setAdapter(adapter) { _, index ->
                 pickerKeys.getOrNull(index)?.let { send(NavService.CONNECT, it) }
             }
