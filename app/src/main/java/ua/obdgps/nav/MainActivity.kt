@@ -416,6 +416,44 @@ class MainActivity : Activity() {
             }.setNegativeButton("Отмена",null).show()
     }
 
+    private fun showCompassCheck() {
+        val content=LinearLayout(this).apply {
+            orientation=LinearLayout.VERTICAL
+            setPadding(dip(20),dip(8),dip(20),dip(10))
+        }
+        content.addView(TextView(this).apply {
+            text="Этап 1: на стоящей машине вынь телефон из магнитного крепления. " +
+                "Вдали от автомобиля и металлических предметов плавно повращай " +
+                "его восьмёркой во всех плоскостях 15 секунд.\n\n" +
+                "Этот шаг проверяет точность магнитного датчика Android. " +
+                "Он не задаёт направление машины."
+            textSize=15f
+            setTextColor(primaryText)
+        })
+        val result=TextView(this).apply {
+            text=State.compassAccuracyText+"\n"+State.compassCalibrationText
+            textSize=14f
+            setTextColor(Color.rgb(142,195,251))
+            setPadding(0,dip(12),0,0)
+        }
+        compassDialogStatus=result
+        content.addView(result)
+        val dialog=AlertDialog.Builder(this)
+            .setTitle("Проверка и калибровка компаса")
+            .setView(content)
+            .setPositiveButton("Начать 15 с",null)
+            .setNegativeButton("Закрыть",null)
+            .create()
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                send(NavService.CHECK_COMPASS)
+                result.text="Запущена проверка. Вращай телефон восьмёркой 15 секунд..."
+            }
+        }
+        dialog.setOnDismissListener { compassDialogStatus=null }
+        dialog.show()
+    }
+
     private fun showSettingsMenu() {
         val list=LinearLayout(this).apply {
             orientation=LinearLayout.VERTICAL
@@ -465,12 +503,26 @@ class MainActivity : Activity() {
             Toast.makeText(this,"Останови автомобиль, не двигай телефон 5 секунд",
                 Toast.LENGTH_LONG).show()
         }
-        item("Согласовать компас с GPS") { send(NavService.ALIGN_COMPASS) }
+        item("Проверить магнитный компас (восьмёрка, 15 с)") {
+            showCompassCheck()
+        }
+        item("Привязать курс компаса к автомобилю") {
+            send(NavService.ALIGN_COMPASS)
+            AlertDialog.Builder(this).setTitle("Привязка компаса")
+                .setMessage("Привязка включена. Закрепи телефон в штатном положении. " +
+                    "Когда будет хороший GPS, приложение автоматически согласует " +
+                    "курс телефона с направлением автомобиля после нескольких " +
+                    "измерений при прямолинейном движении от 15 км/ч. " +
+                    "Ничего нажимать во время движения не нужно.")
+                .setPositiveButton("Понятно",null).show()
+        }
         item("Состояние датчиков") {
             AlertDialog.Builder(this).setTitle("Датчики")
                 .setMessage(State.sensorAvailability+"\n"+State.motionText+"\n"+
                     State.accelerationText+"\n"+State.compassStatus+"\n"+
-                    State.directionText+"\n"+State.calibrationText)
+                    State.compassAccuracyText+"\n"+State.compassCalibrationText+"\n"+
+                    State.compassAlignmentText+"\n"+State.directionText+"\n"+
+                    State.calibrationText)
                 .setPositiveButton("Закрыть",null).show()
         }
 
