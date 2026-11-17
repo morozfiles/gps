@@ -401,7 +401,7 @@ class OfflineVectorNavigatorActivity:Activity() {
                 val p=AndroidGraphicFactory.INSTANCE.createPaint().apply{
                     color=Color.rgb(11,132,246)
                     strokeWidth=dp(8).toFloat()
-                    style=org.mapsforge.core.graphics.Style.STROKE
+                    setStyle(org.mapsforge.core.graphics.Style.STROKE)
                 }
                 routeLine=Polyline(p,AndroidGraphicFactory.INSTANCE).apply{
                     addPoints(itinerary.points.map{it->LatLong(it.lat,it.lon)})
