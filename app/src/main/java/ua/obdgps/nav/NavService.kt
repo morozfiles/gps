@@ -283,7 +283,7 @@ class NavService: Service(), SensorEventListener, LocationListener {
             } else {
                 failedSpeedRequests++
                 val detail=upper.replace("\r"," ").replace("\n"," ").trim().takeLast(54)
-                State.message="${protocols[protocolIndex].second}: нет скорости (\$failedSpeedRequests/3): $detail"
+                State.message="${protocols[protocolIndex].second}: нет скорости ($failedSpeedRequests/3): $detail"
                 if(failedSpeedRequests>=3 && protocolIndex<protocols.lastIndex)
                     nextProtocol("PID 010D не ответил")
                 // The last mode remains in auto; do not fake wheel speed.
