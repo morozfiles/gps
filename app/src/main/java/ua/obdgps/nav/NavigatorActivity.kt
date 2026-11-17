@@ -36,7 +36,7 @@ class NavigatorActivity : Activity() {
     private val secondary=Color.rgb(170,191,210)
     private val handler=Handler(Looper.getMainLooper())
     private val engine=RoutingEngine()
-    private val placeSearch=PlaceSearch()
+    private val placeSearch=PlaceSearch(this)
     private lateinit var map:InertialTrackMapView
     private lateinit var summary:TextView
     private lateinit var instruction:TextView
@@ -244,7 +244,7 @@ class NavigatorActivity : Activity() {
 
     private fun showAddressSearch() {
         val field=EditText(this).apply {
-            hint="Улица, дом, город"
+            hint="Адрес или 50.4501, 30.5234"
             isSingleLine=true
         }
         val wrapper=LinearLayout(this).apply {
@@ -275,8 +275,15 @@ class NavigatorActivity : Activity() {
                             }
                         },
                         onFailure={error->
-                            pickStatus.text="Ошибка поиска: "+
-                                (error.localizedMessage?:"нет интернета")
+                            val message=error.localizedMessage?: "Нет ответа сервиса адресов"
+                            pickStatus.text="Поиск адреса: $message"
+                            AlertDialog.Builder(this)
+                                .setTitle("Не удалось найти адрес")
+                                .setMessage(message+"\n\nПовтори поиск, "+
+                                    "введи координаты (например, 50.4501, 30.5234) "+
+                                    "или выбери точку касанием карты.")
+                                .setPositiveButton("Повторить поиск"){_,_->showAddressSearch()}
+                                .setNegativeButton("Закрыть",null).show()
                         }
                     )
                 }
