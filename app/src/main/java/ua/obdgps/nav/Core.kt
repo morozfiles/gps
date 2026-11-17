@@ -125,6 +125,9 @@ object State {
     var motionText = "Датчики: ожидание"
     var accelerationText = "Акселерометр: ожидание"
     var compassStatus = "Компас: ожидание"
+    var compassAccuracyText = "Магнитный датчик: ожидаем"
+    var compassCalibrationText = "Проверка компаса не запускалась"
+    var compassAlignmentText = "Курс автомобиля: не согласован"
     var calibrationText = "Нужна калибровка"
     var yawDegPerSec = 0.0
     var reverseSelected = false
