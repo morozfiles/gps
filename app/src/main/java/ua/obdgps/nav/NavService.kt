@@ -36,6 +36,8 @@ class NavService: Service(), LocationListener {
         const val REVERSE="REVERSE"
         const val FORWARD="FORWARD"
         const val MONITOR="MONITOR"
+        const val START_DIAGNOSTIC="START_DIAGNOSTIC"
+        const val STOP_DIAGNOSTIC="STOP_DIAGNOSTIC"
     }
     private val handler = Handler(Looper.getMainLooper())
     private lateinit var lm: LocationManager
@@ -53,6 +55,10 @@ class NavService: Service(), LocationListener {
     private var scanCallback: ScanCallback? = null
     private val bt by lazy { getSystemService(BluetoothManager::class.java).adapter }
     private val dr = DeadReckoner()
+    private val pureDr=PureInertialTracker()
+    private var gpsQuarantined=false
+    private var quarantineRecoveryCount=0
+    private var quarantineRecoveryLast=0L
     private var gps: Location? = null
     private var gpsTime = 0L
     private var speedTime = 0L
@@ -140,6 +146,14 @@ class NavService: Service(), LocationListener {
             }
             AirAlerts.refreshIfDue()
             updateNavigation(now)
+            if(State.diagnosticRunning){
+                pureDr.pose?.let{pose->
+                    if(!pureDr.calibrating)
+                        State.diagnosticText="Чистый DR · только гироскоп и акселерометр"
+                    State.addPureSensorPoint(pose.lat,pose.lon,pose.bearing,
+                        pose.speedMetersPerSecond*3.6,now)
+                }
+            }
             publishActualNavigationPosition(now)
             tickTime=now
             handler.postDelayed(this,250)
@@ -173,9 +187,14 @@ class NavService: Service(), LocationListener {
         hybridLocator = HybridLocator(this) { location,source ->
             acceptNetworkLocation(location,source)
         }
-        motion = MotionSensors(this) { yaw, dt ->
-            if (State.dr) dr.turn(yaw, dt)
-        }
+        motion = MotionSensors(this,
+            onYaw={ yaw, dt ->
+                if(State.dr)dr.turn(yaw,dt)
+                if(State.diagnosticRunning)pureDr.turn(yaw,dt)
+            },
+            onPureAcceleration={ forward,timeNanos ->
+                if(State.diagnosticRunning)pureDr.acceleration(forward,timeNanos)
+            })
         motion.start()
         State.navigationMode = "GPS"
         State.manualForced = false
@@ -230,6 +249,12 @@ class NavService: Service(), LocationListener {
                 State.message="Ручная стартовая точка удалена"
             }
             START_DR -> startDr(force=true)
+            START_DIAGNOSTIC -> startDiagnostic()
+            STOP_DIAGNOSTIC -> {
+                State.stopDiagnostic()
+                pureDr.stop()
+                motion.endPureInertialAxis()
+            }
             STOP_DR -> {
                 autoEnabled=false
                 State.autoEnabled=false
@@ -612,10 +637,107 @@ class NavService: Service(), LocationListener {
             State.message="$reason; пробую ${protocols[protocolIndex].second}"
         } else State.message="$reason; стандартный PID 010D недоступен"
     }
+    private fun startDiagnostic(){
+        val now=SystemClock.elapsedRealtime()
+        // One-time seed only. The independent inertial estimator never uses
+        // OBD/GPS/network/Bluetooth after this point.
+        val manual=State.manualStart
+        val realGps=gps?.takeIf{!gpsQuarantined && now-gpsTime<10_000L}
+        val heading=manual?.bearing ?:realGps?.takeIf{
+            it.hasBearing() && it.hasSpeed() && it.speed>2.0f
+        }?.bearing?.toDouble() ?: motion.compassBearing
+        val lat=manual?.lat?:realGps?.latitude
+        val lon=manual?.lon?:realGps?.longitude
+        if(lat==null||lon==null||heading==null||!heading.isFinite()){
+            State.diagnosticText="Нет проверенной стартовой точки и курса. "+
+                "Задай старт вручную или дождись надёжного GPS."
+            State.message=State.diagnosticText
+            return
+        }
+        if(!motion.beginPureInertialAxis(heading)){
+            State.diagnosticText="Нет ориентации телефона: проверь датчики и компас"
+            State.message=State.diagnosticText
+            return
+        }
+        pureDr.start(lat,lon,heading)
+        State.startDiagnostic()
+        State.addPureSensorPoint(lat,lon,heading,0.0,now)
+        State.message="Начат тест: GPS и чистый DR. "+
+            "Для калибровки ускорения стой неподвижно 2 секунды."
+    }
+
+    private fun quarantineGps(now:Long,reason:String){
+        gpsQuarantined=true
+        quarantineRecoveryCount=0
+        quarantineRecoveryLast=0L
+        lastGpsTeleport=now
+        lastRejectedGps=now
+        State.gpsText=reason
+        State.gpsSpoofStatus="GPS отклонён · "+reason+
+            " · проверяю восстановление по независимой позиции"
+        // A suspicious GPS fix never seeds DR. Only an earlier accepted
+        // GPS/manual position or corroborated independent NETWORK fix can.
+        if(!State.dr && autoEnabled)startDr(force=false)
+    }
+
+    private fun allowGpsRecovery(location:Location,kmh:Double?,now:Long):Boolean{
+        if(!gpsQuarantined)return true
+        if(kmh==null||kmh>180.0||GpsSpoofGuard.isLima(
+                location.latitude,location.longitude)){
+            quarantineRecoveryCount=0
+            State.gpsSpoofStatus="GPS в карантине · скорость или координаты подозрительны"
+            return false
+        }
+        // Never let GNSS or a fused location containing GNSS verify itself.
+        val network=State.networkFix?.takeIf{
+            it.source=="Wi-Fi/сеть" &&
+                now-it.elapsedMs<15_000L && it.accuracy<=100f
+        }
+        val independent=if(network!=null)
+            Location(LocationManager.NETWORK_PROVIDER).apply{
+                latitude=network.lat;longitude=network.lon
+            }
+        else dr.pose?.takeIf{State.dr}?.let{
+            Location(LocationManager.NETWORK_PROVIDER).apply{
+                latitude=it.lat;longitude=it.lon
+            }
+        }
+        if(independent==null){
+            quarantineRecoveryCount=0
+            State.gpsSpoofStatus="GPS в карантине · нужна независимая проверка позиции"
+            return false
+        }
+        val distance=independent.distanceTo(location).toDouble()
+        val limit=if(network!=null)250.0
+            else (65.0+State.driftMeters*1.5).coerceAtMost(250.0)
+        if(!GpsSpoofGuard.plausibleRecovery(distance,kmh) ||
+            distance>limit) {
+            quarantineRecoveryCount=0
+            State.gpsSpoofStatus="GPS в карантине · расхождение "+
+                distance.toInt()+" м"
+            return false
+        }
+        if(quarantineRecoveryLast!=0L &&
+            now-quarantineRecoveryLast>6_000L)quarantineRecoveryCount=0
+        if(quarantineRecoveryLast==0L || now-quarantineRecoveryLast>=750L){
+            quarantineRecoveryCount++
+            quarantineRecoveryLast=now
+        }
+        State.gpsSpoofStatus="Проверка GPS: $quarantineRecoveryCount/5 совпадений"
+        if(quarantineRecoveryCount<5)return false
+        gpsQuarantined=false
+        quarantineRecoveryCount=0
+        quarantineRecoveryLast=0L
+        State.gpsSpoofStatus="GPS восстановлен · проверен по независимым координатам"
+        return true
+    }
+
     private fun acceptNetworkLocation(location:Location,provider:String) {
         // Android Location.isMock prevents feeding our injected position
         // back into the filter as an apparently independent measurement.
         if(location.isMock || !location.hasAccuracy())return
+        if(gpsQuarantined && provider!="Wi-Fi/сеть")return
+        if(GpsSpoofGuard.isLima(location.latitude,location.longitude))return
         val maxAccuracy=if(State.dr)70f else 220f
         if(location.accuracy<=0f || location.accuracy>maxAccuracy)return
         val age=SystemClock.elapsedRealtimeNanos()-location.elapsedRealtimeNanos
@@ -672,7 +794,7 @@ class NavService: Service(), LocationListener {
             return
         }
 
-        val gpsRecent=gps!=null && now-gpsTime<8000L
+        val gpsRecent=!gpsQuarantined && gps!=null && now-gpsTime<8000L
         if(gpsRecent)return
         val anchor=gps
         if(anchor!=null) {
@@ -753,7 +875,7 @@ class NavService: Service(), LocationListener {
         if(freshObd) motion.directionFromAcceleration(obdKmh,now)?.let {
             applyDetectedDirection(it,"акселерометр")
         }
-        val gpsRecent = gps != null && now-gpsTime < 6000L
+        val gpsRecent = !gpsQuarantined && gps != null && now-gpsTime < 6000L
         val gpsSpeedRecent = State.gpsSpeedKmh != null &&
             now-State.gpsSpeedUpdatedElapsedMs < 6000L
         val gpsMoving=gpsRecent && gpsSpeedRecent &&
@@ -769,7 +891,7 @@ class NavService: Service(), LocationListener {
             // City alert + independently confirmed OBD motion +
             // (GPS speed zero/missing OR rejected >1 km teleport).
             // Prevent stationary vehicles from triggering on zero GPS speed.
-            val badGps=!gpsRecent || gpsSpeedUnavailable || recentTeleport ||
+            val badGps=gpsQuarantined || !gpsRecent || gpsSpeedUnavailable || recentTeleport ||
                 (gpsSpeedRecent && !gpsMoving)
             if(badGps) {
                 if(gpsInvalidSince==0L)gpsInvalidSince=now
@@ -778,6 +900,8 @@ class NavService: Service(), LocationListener {
                     startDr(force=false)
             } else gpsInvalidSince=0L
         } else if(!State.dr)gpsInvalidSince=0L
+        if(gpsQuarantined && !State.dr && autoEnabled &&
+            freshObd && obdKmh>=0.0)startDr(force=false)
 
         if(State.dr) {
             // Recovery requires consecutive real GNSS fixes; discard old evidence.
@@ -950,6 +1074,9 @@ class NavService: Service(), LocationListener {
         val now=SystemClock.elapsedRealtime()
         val ageNanos=SystemClock.elapsedRealtimeNanos()-location.elapsedRealtimeNanos
         if(ageNanos<0L || ageNanos>8_000_000_000L) return
+        if(location.latitude !in -85.0..85.0 ||
+            location.longitude !in -180.0..180.0)return
+        State.addRawGps(location.latitude,location.longitude,now)
         if(!location.hasAccuracy() || location.accuracy>45f) {
             State.gpsText="GPS: низкая точность"
             return
@@ -964,6 +1091,17 @@ class NavService: Service(), LocationListener {
         }
         val freshObd=State.speed!=null && now-speedTime<3500L
         val obd=if(freshObd)correctedSpeed()?:0.0 else 0.0
+        // Reject Lima even when the spoofed speed drops below 180 km/h.
+        // The raw observation remains visible only in the diagnostic trace.
+        if(GpsSpoofGuard.isLima(location.latitude,location.longitude)){
+            quarantineGps(now,"GPS: координаты в районе Лимы"+
+                (if(kmh!=null && kmh>180.0)" · >180 км/ч" else ""))
+            return
+        }
+        if(gpsQuarantined && !allowGpsRecovery(location,kmh,now)){
+            State.gpsText=State.gpsSpoofStatus
+            return
+        }
 
         // A sudden >1 km teleport cannot become our new GNSS anchor.
         // Compare against plausible travel over elapsed time so a normal
@@ -975,9 +1113,7 @@ class NavService: Service(), LocationListener {
                 val plausible=max(obd,kmh?:0.0)/3.6*dt+
                     location.accuracy*2.5+250.0
                 if(jump>1000.0 && jump>plausible) {
-                    lastGpsTeleport=now
-                    lastRejectedGps=now
-                    State.gpsText="GPS: скачок >1 км отклонён"
+                    quarantineGps(now,"GPS: невозможный скачок >1 км")
                     return
                 }
             }
@@ -1024,6 +1160,7 @@ class NavService: Service(), LocationListener {
         gps=Location(location)
         gpsTime=now
         lastAcceptedGps=now
+        State.markRawGpsApproved(now)
         State.gpsText="GPS: точность "+location.accuracy.toInt()+" м"
         motion.setGeomagneticDeclination(location)
 
@@ -1074,6 +1211,8 @@ class NavService: Service(), LocationListener {
         handler.removeCallbacks(loop);stopScan();stopDr()
         disconnectTransport()
         motion.stop()
+        pureDr.stop()
+        State.stopDiagnostic()
         hybridLocator.stop()
         try {lm.removeUpdates(this)} catch(_:Exception){}
         super.onDestroy()
