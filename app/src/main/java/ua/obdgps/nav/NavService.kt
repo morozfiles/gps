@@ -355,45 +355,88 @@ class NavService: Service(), SensorEventListener, LocationListener {
         } catch(e:Exception) { State.message="Connection error: ${e.message}" }
     }
     private fun write(command:String) {
-        val g=gatt?:return
-        val c=tx?:return
         try {
-            val kind=if(c.properties and BluetoothGattCharacteristic.PROPERTY_WRITE !=0)
-                BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT else BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
-            val result=g.writeCharacteristic(c,"$command\r".toByteArray(Charsets.US_ASCII),kind)
+            val payload="$command\r".toByteArray(Charsets.US_ASCII)
+            val sent=if(transport=="SPP") {
+                val out=sppOutput ?: return
+                out.write(payload)
+                out.flush()
+                true
+            } else {
+                val g=gatt ?: return
+                val c=tx ?: return
+                val kind=if(c.properties and BluetoothGattCharacteristic.PROPERTY_WRITE !=0)
+                    BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT else
+                    BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+                g.writeCharacteristic(c,payload,kind)==BluetoothStatusCodes.SUCCESS
+            }
             lastPoll=SystemClock.elapsedRealtime()
-            if (result==BluetoothStatusCodes.SUCCESS) {
+            if(sent) {
                 pendingCommand=command
                 lastSentAt=lastPoll
                 responseBuffer.clear()
-                if(command.startsWith("ATSP"))
+                if(command.startsWith("ATSP") && !mutMode)
                     State.message="K-Line: проверяю ${protocols[protocolIndex].second}"
-            } else State.message="Ошибка BLE write $result: $command"
-        } catch(e:Exception) { State.message="Write: ${e.message}" }
+                else if(mutMode && mutSetupIndex<mutSetup.size)
+                    State.message="MUT-II: настройка $command"
+            } else State.message="Не удалось отправить $command через Bluetooth"
+        } catch(e:Exception) {
+            pendingCommand=null
+            State.message="Ошибка записи $command: ${e.message}"
+        }
     }
     private fun feed(bytes:ByteArray) {
         responseBuffer.append(bytes.toString(Charsets.US_ASCII).replace("\u0000",""))
         if(responseBuffer.length>4096) responseBuffer.clear()
-        val index=responseBuffer.indexOf(">")
-        if(index<0) return
-        val reply=responseBuffer.substring(0,index)
-        responseBuffer.delete(0,index+1)
-        processElmReply(reply)
+        var end=responseBuffer.indexOf(">")
+        while(end>=0) {
+            val reply=responseBuffer.substring(0,end)
+            responseBuffer.delete(0,end+1)
+            processElmReply(reply)
+            end=responseBuffer.indexOf(">")
+        }
     }
     private fun processElmReply(reply:String) {
         val command=pendingCommand ?: return
         pendingCommand=null
         val upper=reply.uppercase()
-        if(command.startsWith("ATSP")) {
-            if(upper.contains("?") || upper.contains("ERROR") || upper.contains("TIMEOUT")) {
-                nextProtocol("ELM не принял $command")
-            } else configuredProtocol=protocolIndex
+        val failed=upper.contains("TIMEOUT") || upper.contains("ERROR") ||
+                   upper.contains("UNABLE TO CONNECT") || upper.trim()=="?" ||
+                   upper.contains("BUS INIT: ERROR") || upper.contains("STOPPED")
+        if(setupIndex<commands.size && command==commands[setupIndex]) {
+            setupIndex++
             return
         }
-        if(command.startsWith("AT")) {
-            // Continue setup after prompt; a specific command may be unsupported
-            // by a clone, but protocol probing will still determine compatibility.
-            setupIndex++
+        if(mutMode) {
+            if(mutSetupIndex<mutSetup.size && command==mutSetup[mutSetupIndex]) {
+                if(failed) {
+                    fallbackFromMut("$command: ${upper.takeLast(42).trim()}")
+                } else {
+                    mutSetupIndex++
+                    State.message="MUT-II: ${command} принят (${mutSetupIndex}/${mutSetup.size})"
+                }
+                return
+            }
+            if(command=="2F") {
+                val kmh=MitsubishiMut.parseSpeed(reply)
+                if(kmh!=null) {
+                    State.speed=kmh
+                    speedTime=SystemClock.elapsedRealtime()
+                    mutFailures=0
+                    State.message="MUT-II 0x2F: $kmh км/ч (проверить в движении)"
+                } else {
+                    mutFailures++
+                    val detail=upper.replace("\r"," ").replace("\n"," ").trim().takeLast(60)
+                    State.message="MUT-II: нет валидного ответа 0x2F ($mutFailures/3): $detail"
+                    if(mutFailures>=3)
+                        fallbackFromMut("нет MUT ответа; нужен raw K-Line или другой интерфейс")
+                }
+                return
+            }
+        }
+        if(command.startsWith("ATSP")) {
+            if(failed) nextProtocol("ELM не принял $command")
+            else configuredProtocol=protocolIndex
             return
         }
         if(command=="010D") {
@@ -409,7 +452,6 @@ class NavService: Service(), SensorEventListener, LocationListener {
                 State.message="${protocols[protocolIndex].second}: нет скорости ($failedSpeedRequests/3): $detail"
                 if(failedSpeedRequests>=3 && protocolIndex<protocols.lastIndex)
                     nextProtocol("PID 010D не ответил")
-                // The last mode remains in auto; do not fake wheel speed.
             }
         }
     }
@@ -471,7 +513,7 @@ class NavService: Service(), SensorEventListener, LocationListener {
     override fun onBind(i:Intent?):IBinder?=null
     override fun onDestroy() {
         handler.removeCallbacks(loop);stopScan();stopDr()
-        try {gatt?.close()} catch(_:Exception){}
+        disconnectTransport()
         sm.unregisterListener(this)
         try {lm.removeUpdates(this)} catch(_:Exception){}
         super.onDestroy()
