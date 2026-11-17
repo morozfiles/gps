@@ -36,6 +36,7 @@ class NavService: Service(), LocationListener {
     private lateinit var lm: LocationManager
     private lateinit var motion: MotionSensors
     private lateinit var fused: FusedMockRelay
+    private lateinit var settings: NavigatorPrefs
     private var gatt: BluetoothGatt? = null
     private var tx: BluetoothGattCharacteristic? = null
     private var sppSocket: BluetoothSocket? = null
@@ -115,17 +116,26 @@ class NavService: Service(), LocationListener {
     override fun onCreate() {
         super.onCreate()
         lm = getSystemService(LOCATION_SERVICE) as LocationManager
+        settings = NavigatorPrefs(this)
+        State.obdFactor = settings.obdFactor
+        autoEnabled = settings.autoEnabled
+        State.autoEnabled = autoEnabled
+        mutMode = settings.mutMode
+        State.mutMode = mutMode
+        State.modeLabel = if(mutMode) "MUT-II (эксперимент)" else "OBD2 K-Line"
+        State.deviceName = settings.adapterName ?: "Не выбран"
+        State.directionText="Не определено — требуется калибровка"
+        State.directionConfirmed=false
+        State.reverseSelected=false
         fused = FusedMockRelay(this)
         motion = MotionSensors(this) { yaw, dt ->
             if (State.dr) dr.turn(yaw, dt)
         }
         motion.start()
         State.navigationMode = "GPS"
-        State.autoEnabled = true
         State.manualForced = false
         State.dr = false
         State.gpsText = "Ожидаем GPS"
-        autoEnabled = true
         reverse = false
         val channel = NotificationChannel("nav","OBD GPS Navigator",NotificationManager.IMPORTANCE_LOW)
         (getSystemService(NOTIFICATION_SERVICE) as NotificationManager).createNotificationChannel(channel)
@@ -148,11 +158,14 @@ class NavService: Service(), LocationListener {
             STOP_DR -> {
                 autoEnabled=false
                 State.autoEnabled=false
+                settings.autoEnabled=false
                 stopDr()
                 State.message="GPS выбран вручную; автоведение отключено в настройках"
             }
-            AUTO_ON -> { autoEnabled=true; State.autoEnabled=true; State.message="Автоведение включено" }
-            AUTO_OFF -> { autoEnabled=false; State.autoEnabled=false; State.message="Автоведение отключено" }
+            AUTO_ON -> { autoEnabled=true; State.autoEnabled=true; settings.autoEnabled=true
+                State.message="Автоведение включено" }
+            AUTO_OFF -> { autoEnabled=false; State.autoEnabled=false; settings.autoEnabled=false
+                State.message="Автоведение отключено" }
             CALIBRATE -> {
                 val text=motion.calibrate(State.speed,SystemClock.elapsedRealtime()-speedTime<3000)
                 State.message=text
@@ -167,18 +180,21 @@ class NavService: Service(), LocationListener {
                     motion.alignNow((location.bearing.toDouble()+if(reverse)180.0 else 0.0)%360.0) else
                     "Для согласования компаса проедь прямо с хорошим GPS (более 12 км/ч)"
             }
-            REVERSE -> { reverse=true;State.reverseSelected=true
-                State.directionText="Назад (выбрано вручную)"
-                State.message="Выбран задний ход вручную" }
-            FORWARD -> { reverse=false;State.reverseSelected=false
-                State.directionText="Вперёд (предположительно)"
-                State.message="Выбрано движение вперёд" }
-            MONITOR -> State.message="Мониторинг датчиков запущен"
+            MONITOR -> {
+                val key=settings.adapterKey
+                if(key!=null && !connected && !fusedStarting &&
+                    checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT)==PackageManager.PERMISSION_GRANTED &&
+                    bt.isEnabled) {
+                    State.message="Подключение к сохранённому ELM327..."
+                    connectChoice(key,save=false)
+                } else if(!connected) State.message="Мониторинг датчиков запущен"
+            }
             EXIT -> { stopSelf(); return START_NOT_STICKY }
         }
         return START_NOT_STICKY
     }
     private fun changeMode(useMut:Boolean) {
+        settings.mutMode=useMut
         mutMode=useMut
         State.mutMode=useMut
         State.modeLabel=if(useMut) "MUT-II 0x2F — эксперимент" else "OBD2 K-Line"
@@ -257,7 +273,13 @@ class NavService: Service(), LocationListener {
         State.speed=null
         State.speedUpdatedElapsedMs=0L
     }
-    private fun connectChoice(choice:String) {
+    private fun connectChoice(choice:String, save:Boolean=true) {
+        val selectedName=State.devices[choice] ?: settings.adapterName ?: choice
+        if(save) {
+            settings.adapterKey=choice
+            settings.adapterName=selectedName
+        }
+        State.deviceName=selectedName
         val protocol=choice.substringBefore("|")
         val address=choice.substringAfter("|",choice)
         if(protocol=="SPP") connectClassic(address) else connect(address)
@@ -266,7 +288,7 @@ class NavService: Service(), LocationListener {
         stopScan()
         disconnectTransport()
         transport="SPP"
-        State.deviceName=State.devices["SPP|$address"] ?: address
+        State.deviceName=State.devices["SPP|$address"] ?: settings.adapterName ?: address
         changeMode(mutMode)
         State.message="Подключение Bluetooth Classic к $address"
         val socket=bt.getRemoteDevice(address).createRfcommSocketToServiceRecord(
@@ -316,7 +338,7 @@ class NavService: Service(), LocationListener {
             disconnectTransport()
             transport="BLE"
             changeMode(mutMode)
-            State.deviceName=State.devices["BLE|$address"] ?: address
+            State.deviceName=State.devices["BLE|$address"] ?: settings.adapterName ?: address
             gatt=bt.getRemoteDevice(address).connectGatt(this,false,object:BluetoothGattCallback(){
                 override fun onConnectionStateChange(g:BluetoothGatt,status:Int,newState:Int) {
                     handler.post {
@@ -507,9 +529,23 @@ class NavService: Service(), LocationListener {
             State.message="$reason; пробую ${protocols[protocolIndex].second}"
         } else State.message="$reason; стандартный PID 010D недоступен"
     }
+    private fun correctedSpeed(): Double? = State.obdSpeedKmh()
+
+    private fun applyDetectedDirection(reverseDetected: Boolean, method: String) {
+        if(State.directionConfirmed && reverse==reverseDetected) return
+        reverse=reverseDetected
+        State.reverseSelected=reverseDetected
+        State.directionConfirmed=true
+        State.directionText=(if(reverseDetected) "Назад" else "Вперёд")+" ($method)"
+        State.message="Направление определено: "+State.directionText
+    }
+
     private fun updateNavigation(now: Long) {
         val freshObd = State.speed != null && now-speedTime < 3500L
-        val obdKmh = if(freshObd) State.speed!! else 0
+        val obdKmh = if(freshObd) correctedSpeed() ?: 0.0 else 0.0
+        if(freshObd) motion.directionFromAcceleration(obdKmh,now)?.let {
+            applyDetectedDirection(it,"акселерометр")
+        }
         val gpsRecent = gps != null && now-gpsTime < 6000L
         val gpsSpeedRecent = State.gpsSpeedKmh != null &&
             now-State.gpsSpeedUpdatedElapsedMs < 6000L
@@ -537,6 +573,12 @@ class NavService: Service(), LocationListener {
                 tickTime=now
                 return
             }
+            if(!State.directionConfirmed && obdKmh>=2.0) {
+                State.navigationMode="DR: направление не определено"
+                State.message="Направление не определено: нужна калибровка компаса и данные датчиков"
+                tickTime=now
+                return
+            }
             val dt=((now-tickTime)/1000.0).coerceIn(0.0,0.45)
             if(dt > 0) {
                 dr.move(obdKmh,dt,reverse)
@@ -554,7 +596,7 @@ class NavService: Service(), LocationListener {
                 if(fused.active && now-lastMockSent > 900L) {
                     lastMockSent=now
                     fused.publish(pose.lat,pose.lon,
-                        (pose.bearing+if(reverse)180.0 else 0.0)%360.0,obdKmh,
+                        (pose.bearing+if(reverse)180.0 else 0.0)%360.0,obdKmh.toInt(),
                         (15.0+State.driftMeters).coerceAtMost(250.0).toFloat())
                 }
             }
@@ -617,7 +659,7 @@ class NavService: Service(), LocationListener {
             State.navigationMode=if(force)"Датчики (вручную)" else "Датчики (авто)"
             State.message=if(force) "Принудительное ведение по датчикам включено" else
                 "Тревога в Киеве, GPS недостоверен: переход на датчики"
-            fused.publish(fix.latitude,fix.longitude,bearing,State.speed?:0,15f)
+            fused.publish(fix.latitude,fix.longitude,bearing,correctedSpeed()?.toInt()?:0,15f)
         }
     }
 
@@ -654,7 +696,7 @@ class NavService: Service(), LocationListener {
             State.gpsSpeedUpdatedElapsedMs=0L
         }
         val freshObd=State.speed!=null && now-speedTime<3500L
-        val obd=if(freshObd)State.speed!! else 0
+        val obd=if(freshObd)correctedSpeed()?:0.0 else 0.0
 
         // Speed disagreement during OBD-confirmed motion is an important
         // signal of spoofing/jamming (but not proof by itself).
@@ -673,7 +715,7 @@ class NavService: Service(), LocationListener {
         gps?.let { previous ->
             val dt=(now-gpsTime)/1000.0
             if(dt>0.0 && dt<90.0) {
-                val maxDistance=max(65.0, max(obd.toDouble(),
+                val maxDistance=max(65.0, max(obd,
                     kmh?:0.0)/3.6*dt + location.accuracy*2.5 + 35.0)
                 if(previous.distanceTo(location)>maxDistance) {
                     State.gpsText="GPS: скачок координат отклонён"
@@ -701,9 +743,15 @@ class NavService: Service(), LocationListener {
         motion.setGeomagneticDeclination(location)
 
         val hasCourse=location.hasBearing() && kmh!=null && kmh>=12.0
-        if(hasCourse)motion.alignToGps(
-            (location.bearing.toDouble()+if(reverse)180.0 else 0.0)%360.0,
-            kmh!!,abs(State.yawDegPerSec)<3.0)
+        if(hasCourse) {
+            val accuracyOk=!location.hasBearingAccuracy() || location.bearingAccuracyDegrees<22f
+            if(accuracyOk) motion.directionFromGps(location.bearing.toDouble(),kmh!!,now)?.let {
+                applyDetectedDirection(it,"GPS + компас")
+            }
+            // Never recalibrate the front-of-car offset from a reverse travel course.
+            if(!reverse && abs(State.yawDegPerSec)<3.0 && accuracyOk)
+                motion.alignToGps(location.bearing.toDouble(),kmh!!,true)
+        }
 
         if(State.dr) {
             // Require several consistent real fixes before trusting recovery.
