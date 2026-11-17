@@ -206,11 +206,11 @@ class MainActivity : Activity() {
         val timeLabel = if (alert.sourceUpdatedUtcMs > 0L)
             " · ${kyivClock.format(Instant.ofEpochMilli(alert.sourceUpdatedUtcMs))}"
         else ""
+        val location=alert.region.shortName
         val caption = when (alert.level) {
-            AirAlerts.Level.CITY -> "Киев: тревога"
-            AirAlerts.Level.OBLAST -> "Область: тревога"
-            AirAlerts.Level.CLEAR -> "Нет тревог"
-            AirAlerts.Level.UNKNOWN -> "Нет данных"
+            AirAlerts.Level.CITY, AirAlerts.Level.OBLAST -> location+": тревога"
+            AirAlerts.Level.CLEAR -> location+": нет тревоги"
+            AirAlerts.Level.UNKNOWN -> location+": нет данных"
         }
         alertLabel.text = caption + timeLabel
         alertDot.contentDescription = alert.explanation
@@ -428,7 +428,8 @@ class MainActivity : Activity() {
                     Toast.makeText(this,"Допустимо от 70 до 130%",Toast.LENGTH_LONG).show()
                 } else {
                     NavigatorPrefs(this).obdFactor=value/100.0
-                    State.obdFactor=NavigatorPrefs(this).obdFactor
+                    AirAlerts.initialize(this)
+        State.obdFactor=NavigatorPrefs(this).obdFactor
                     Toast.makeText(this,"OBD × ${"%.1f".format(Locale.getDefault(),value)}% сохранено",
                         Toast.LENGTH_SHORT).show()
                 }
@@ -471,6 +472,25 @@ class MainActivity : Activity() {
         }
         dialog.setOnDismissListener { compassDialogStatus=null }
         dialog.show()
+    }
+
+    private fun showAlertRegionPicker() {
+        val options=AirAlerts.regions
+        val checked=options.indexOfFirst {
+            it.slug==AirAlerts.currentRegion().slug
+        }.coerceAtLeast(0)
+        AlertDialog.Builder(this)
+            .setTitle("Место воздушных тревог")
+            .setSingleChoiceItems(options.map{it.name}.toTypedArray(),checked){dialog,index->
+                AirAlerts.selectRegion(this,options[index].slug)
+                showAlertStatus()
+                Toast.makeText(this,
+                    "Регион тревог: "+options[index].name,
+                    Toast.LENGTH_SHORT).show()
+                dialog.dismiss()
+            }
+            .setNegativeButton("Отмена",null)
+            .show()
     }
 
     private fun showSettingsMenu() {
@@ -543,6 +563,11 @@ class MainActivity : Activity() {
                     State.compassAlignmentText+"\n"+State.directionText+"\n"+
                     State.calibrationText)
                 .setPositiveButton("Закрыть",null).show()
+        }
+
+        section("ВОЗДУШНЫЕ ТРЕВОГИ")
+        item("Место тревог · "+AirAlerts.currentRegion().name) {
+            showAlertRegionPicker()
         }
 
         section("НАВИГАЦИЯ")
