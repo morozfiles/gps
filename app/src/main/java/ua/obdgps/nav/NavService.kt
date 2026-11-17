@@ -645,7 +645,9 @@ class NavService: Service(), LocationListener {
         val realGps=gps?.takeIf{!gpsQuarantined && now-gpsTime<10_000L}
         val heading=manual?.bearing ?:realGps?.takeIf{
             it.hasBearing() && it.hasSpeed() && it.speed>2.0f
-        }?.bearing?.toDouble() ?: motion.compassBearing
+        }?.bearing?.toDouble() ?:lastTrustedHeading?.takeIf{
+            now-lastTrustedHeadingMs<60_000L
+        } ?: motion.compassBearing
         val lat=manual?.lat?:realGps?.latitude
         val lon=manual?.lon?:realGps?.longitude
         if(lat==null||lon==null||heading==null||!heading.isFinite()){
@@ -833,7 +835,7 @@ class NavService: Service(), LocationListener {
             }
             return
         }
-        val currentGps=gps
+        val currentGps=if(gpsQuarantined)null else gps
         if(currentGps!=null && now-gpsTime<7500L) {
             State.navFix=State.NavFix(currentGps.latitude,currentGps.longitude,
                 if(currentGps.hasBearing())currentGps.bearing.toDouble() else null,
@@ -1098,11 +1100,6 @@ class NavService: Service(), LocationListener {
                 (if(kmh!=null && kmh>180.0)" · >180 км/ч" else ""))
             return
         }
-        if(gpsQuarantined && !allowGpsRecovery(location,kmh,now)){
-            State.gpsText=State.gpsSpoofStatus
-            return
-        }
-
         // A sudden >1 km teleport cannot become our new GNSS anchor.
         // Compare against plausible travel over elapsed time so a normal
         // long drive between sparse fixes isn't misclassified.
@@ -1157,11 +1154,19 @@ class NavService: Service(), LocationListener {
                 return
             }
         }
+        // Valid-looking fixes alone never release quarantine. First compare
+        // multiple samples against the independent network/DR anchor.
+        if(gpsQuarantined && !allowGpsRecovery(location,kmh,now)){
+            State.gpsText=State.gpsSpoofStatus
+            return
+        }
         gps=Location(location)
         gpsTime=now
         lastAcceptedGps=now
         State.markRawGpsApproved(now)
         State.gpsText="GPS: точность "+location.accuracy.toInt()+" м"
+        if(!gpsQuarantined)
+            State.gpsSpoofStatus="GPS: приняты только проверенные координаты"
         motion.setGeomagneticDeclination(location)
 
         if(location.hasBearing() && kmh!=null && kmh>=5.0 &&
