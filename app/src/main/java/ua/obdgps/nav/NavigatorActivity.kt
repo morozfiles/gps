@@ -64,6 +64,7 @@ class NavigatorActivity : Activity() {
     private lateinit var alertsView:AirAlertIndicatorsView
     private lateinit var speedValue:TextView
     private lateinit var speedSource:TextView
+    private lateinit var learnedDrButton:Button
     private var selectedDestination:RoutingEngine.Point?=null
     private var manualOrigin:RoutingEngine.Point?=null
     private var plan:RoutingEngine.Route?=null
@@ -127,6 +128,18 @@ class NavigatorActivity : Activity() {
             setPadding(0,0,0,0)
             setOnClickListener{onClick()}
         }
+
+    private fun refreshLearnedDrButton(){
+        if(!::learnedDrButton.isInitialized)return
+        val enabled=State.learnedDrEnabled
+        learnedDrButton.text=if(enabled)"ИИ\\nВКЛ" else "ИИ\\nВЫКЛ"
+        learnedDrButton.contentDescription=if(enabled)
+            "Выключить нейросетевые поправки к инерциальной навигации"
+        else "Включить нейросетевые поправки к инерциальной навигации"
+        (learnedDrButton.background as? GradientDrawable)?.setColor(
+            if(enabled)Color.argb(228,23,99,128)
+            else Color.argb(164,30,39,53))
+    }
 
     private fun label(value:String,size:Float,color:Int=textColor)=TextView(this).apply {
         text=value
@@ -254,6 +267,34 @@ class NavigatorActivity : Activity() {
         speedBadge.contentDescription="Скорость навигатора неизвестна"
         zoom.addView(speedBadge,
             LinearLayout.LayoutParams(dp(45),dp(45)).apply{topMargin=dp(4)})
+        State.learnedDrEnabled=NavigatorPrefs(this).learnedDrEnabled
+        learnedDrButton=mapControl("ИИ\\nВЫКЛ"){
+            val enabled=!State.learnedDrEnabled
+            State.learnedDrEnabled=enabled
+            NavigatorPrefs(this).learnedDrEnabled=enabled
+            refreshLearnedDrButton()
+            Toast.makeText(this,
+                (if(enabled)"ИИ-поправки включены. " else "ИИ-поправки выключены. ")+
+                    State.learnedDrStatus,Toast.LENGTH_LONG).show()
+        }.apply {
+            textSize=11f
+            maxLines=2
+            setOnLongClickListener {
+                AlertDialog.Builder(this@NavigatorActivity)
+                    .setTitle("Профиль обучения GPS / инерциальной системы")
+                    .setMessage(State.learnedDrStatus+"\\n\\n"+
+                        State.learnedDrDetail+
+                        "\\n\\nОбучение идёт только в тесте двух треков. "+
+                        "GPS во время DR не используется для нейросетевых поправок.")
+                    .setPositiveButton("Закрыть",null).show()
+                true
+            }
+        }
+        zoom.addView(learnedDrButton,
+            LinearLayout.LayoutParams(dp(45),dp(45)).apply{
+                topMargin=dp(4)
+            })
+        refreshLearnedDrButton()
         mapContainer.addView(zoom,FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.WRAP_CONTENT,FrameLayout.LayoutParams.WRAP_CONTENT,
             Gravity.RIGHT or Gravity.TOP).apply{setMargins(0,dp(8),dp(7),0)})
@@ -1054,6 +1095,7 @@ class NavigatorActivity : Activity() {
             val speed=speedReading?.kmh
             speedValue.text=speed?.roundToInt()?.toString()?:"—"
             speedSource.text=speedReading?.source?:"нет"
+            refreshLearnedDrButton()
             speedValue.contentDescription=if(speedReading==null)
                 "Скорость недоступна" else
                 "Скорость "+speed!!.roundToInt()+" километров в час, "+
