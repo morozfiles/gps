@@ -57,6 +57,7 @@ class NavService: Service(), LocationListener {
     private val dr = DeadReckoner()
     // Separate test estimate: receives OBD + gyro + direct NETWORK fixes only.
     private val comparisonDr=IndependentNetworkDr()
+    private val gpsConsensus=GpsFixConsensus()
     private var gpsQuarantined=false
     private var quarantineRecoveryCount=0
     private var quarantineRecoveryLast=0L
@@ -688,6 +689,7 @@ class NavService: Service(), LocationListener {
 
     private fun quarantineGps(now:Long,reason:String){
         gpsQuarantined=true
+        gpsConsensus.clear()
         quarantineRecoveryCount=0
         quarantineRecoveryLast=0L
         quarantineRecoverySince=0L
@@ -715,6 +717,7 @@ class NavService: Service(), LocationListener {
         quarantineRecoveryLast=0L
         quarantineRecoverySince=0L
         quarantineCandidate=null
+        gpsConsensus.clear()
         State.gpsSpoofStatus=message
     }
 
@@ -814,7 +817,9 @@ class NavService: Service(), LocationListener {
         if(quarantineRecoveryCount>=gpsCorrectionFixes){
             // Safe-looking short GPS window: use ONLY a tiny soft correction.
             // Never release quarantine solely because of these fixes.
-            correctDrWithTrustedGps(location,kmh,now,0.06,0.35)
+            // Combine only independently corroborated, accepted fixes.
+            val recovered=gpsConsensus.add(location,now)
+            correctDrWithTrustedGps(recovered,kmh,now,0.06,0.35)
             State.markRawGpsApproved(now)
         }
         val stableMs=(now-quarantineRecoverySince).coerceAtLeast(0L)
@@ -1201,6 +1206,34 @@ class NavService: Service(), LocationListener {
         if(location.latitude !in -85.0..85.0 ||
             location.longitude !in -180.0..180.0)return
         State.addRawGps(location.latitude,location.longitude,now)
+        // Filter individual Android-computed GNSS fixes. These are NOT
+        // per-satellite coordinates; satellite-level elimination is not
+        // possible using LocationManager alone.
+        val reportedSpeedKmh=if(location.hasSpeed())
+            location.speed.toDouble()*3.6 else null
+        if(reportedSpeedKmh!=null &&
+            (!reportedSpeedKmh.isFinite() ||
+                reportedSpeedKmh<0.0 ||
+                reportedSpeedKmh>GpsFixConsensus.MAX_GPS_SPEED_KMH)){
+            quarantineGps(now,"GPS: скорость >180 км/ч · точка отклонена")
+            return
+        }
+        // Route checks use the active planned route created from TRUSTED
+        // navigation coordinates, not a spoofed GPS location. Without a
+        // route, the existing OBD/DR plausibility gates remain in force.
+        val road=State.gpsFilterRoutePoints.takeIf{
+            State.activeRouting && it.size>=2
+        }
+        if(road!=null){
+            val deviation=GpsFixConsensus.routeDistanceMeters(
+                location.latitude,location.longitude,road)
+            if(deviation.isFinite() &&
+                deviation>GpsFixConsensus.MAX_ROUTE_DEVIATION_METERS){
+                quarantineGps(now,"GPS: отклонение от маршрута "+
+                    "${deviation.toInt()} м (>500 м) · точка отклонена")
+                return
+            }
+        }
         // This gross geographic anomaly must be rejected even if GNSS
         // advertises poor accuracy or a fabricated low velocity.
         if(GpsSpoofGuard.isLima(location.latitude,location.longitude)){
@@ -1290,11 +1323,17 @@ class NavService: Service(), LocationListener {
             State.gpsText=State.gpsSpoofStatus
             return
         }
-        gps=Location(location)
+        // The GNSS position is derived only from retained validated
+        // samples. A robust motion-compensated rolling estimate removes
+        // remaining isolated outliers without trusting a single GPS fix.
+        val acceptedPosition=gpsConsensus.add(location,now)
+        gps=Location(acceptedPosition)
         gpsTime=now
         lastAcceptedGps=now
         State.markRawGpsApproved(now)
-        State.gpsText="GPS: точность "+location.accuracy.toInt()+" м"
+        State.gpsText="GPS: принятые координаты, усреднение "+
+            "${gpsConsensus.sampleCount} точек; ~"+
+            location.accuracy.toInt()+" м"
         if(!gpsQuarantined)
             State.gpsSpoofStatus="GPS: приняты только проверенные координаты"
         motion.setGeomagneticDeclination(location)
@@ -1343,7 +1382,7 @@ class NavService: Service(), LocationListener {
             }
 
             if(gpsRecoveryCount>=gpsCorrectionFixes){
-                correctDrWithTrustedGps(location,kmh,now,0.08,0.4)
+                correctDrWithTrustedGps(acceptedPosition,kmh,now,0.08,0.4)
                 State.gpsSpoofStatus="DR + мягкая GPS-коррекция; "+
                     "восстановление ${(now-gpsRecoverySince)/1000} с"
             }
