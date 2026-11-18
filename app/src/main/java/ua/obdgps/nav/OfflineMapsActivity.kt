@@ -40,6 +40,7 @@ class OfflineMapsActivity:Activity(){
     private var lastSignature=""
     private var checking=false
     private var lastCheck:OfflineUkraineAssets.Check?=null
+    private var pendingCountryDownload=false
     private val tick=object:Runnable{
         override fun run(){
             if(::downloadStatus.isInitialized)renderDownload()
@@ -105,6 +106,10 @@ class OfflineMapsActivity:Activity(){
                 (if(result.fullyAvailable)
                     "\nОба файла совместимы с этой версией — скачивать снова не нужно."
                 else "\nМожно скачать только недостающий файл.")
+            if(pendingCountryDownload){
+                pendingCountryDownload=false
+                downloadUkraine(OfflineCountryDownloadService.START_ALL)
+            }
             otherStatus.text="Ранее сохранённые областные карты: "+
                 result.otherMaps+" · адресные базы: "+result.otherPois+
                 "\nЭти данные сохранены. Импорт и загрузка областей отключены."+
@@ -262,13 +267,11 @@ class OfflineMapsActivity:Activity(){
         root.addView(button("Готово"){finish()},
             LinearLayout.LayoutParams(-1,dp(47)))
         renderDownload()
+        // Defer a country download request until on-disk assets are checked.
+        // Already downloaded files must never trigger a redundant popup.
+        pendingCountryDownload=intent?.getBooleanExtra(
+            "download_ukraine",false)==true
         checkExistingFiles()
-        if(intent?.getBooleanExtra("download_ukraine",false)==true){
-            // A previous version may have downloaded both parts already.
-            // Do not present a download prompt before the async check.
-            ui.postDelayed({if(!isFinishing && !isDestroyed)
-                downloadUkraine(OfflineCountryDownloadService.START_ALL)},750L)
-        }
     }
 
     @Suppress("DEPRECATION")
