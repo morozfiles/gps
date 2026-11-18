@@ -510,8 +510,9 @@ class OfflineVectorNavigatorActivity:Activity() {
                 val speed=if(obdFresh)State.obdSpeedKmh()
                     else State.gpsSpeedKmh
                 // Route projection never modifies the raw service position.
-                val matched=if(active && State.dr && route!=null)
-                    inertialRouteMatcher.match(fix,route,
+                val planned=route
+                val matched=if(active && State.dr && planned!=null)
+                    inertialRouteMatcher.match(fix,planned,
                         if(obdFresh)State.obdSpeedKmh() else null,now)
                     else {
                         inertialRouteMatcher.reset()
