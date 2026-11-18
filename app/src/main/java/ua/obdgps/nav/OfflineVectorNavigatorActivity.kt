@@ -173,6 +173,9 @@ class OfflineVectorNavigatorActivity:Activity() {
             AndroidGraphicFactory.createInstance(application)
             mapView=MapView(this)
             mapView.setBuiltInZoomControls(false)
+            // Mapsforge 0.25 natively recognizes a two-finger twist while
+            // preserving its pinch zoom, pan and map-feature hit testing.
+            mapView.getTouchGestureHandler().setRotationEnabled(true)
             mapView.getMapScaleBar().setVisible(false)
             mapView.setMapViewCenterY(0.68f)
             val files=OfflineRegionPacks.mapFiles(this)
@@ -211,8 +214,15 @@ class OfflineVectorNavigatorActivity:Activity() {
                 point?.lon?:region?.lon?:30.5234))
             mapView.setZoomLevel(17.toByte())
             mapView.setOnTouchListener{_,event->
-                if(event.actionMasked==MotionEvent.ACTION_DOWN && !picking)
+                if(!picking && (event.actionMasked==MotionEvent.ACTION_DOWN ||
+                    event.actionMasked==MotionEvent.ACTION_POINTER_DOWN)){
+                    // A manual twist must stay in effect instead of being
+                    // overwritten by the heading-up auto-follow refresh.
                     follow=false
+                    manualZoomUntil=SystemClock.elapsedRealtime()+60_000L
+                }
+                // Let Mapsforge's own pinch and rotation detectors receive
+                // the original event. Never consume this callback.
                 false
             }
             frame.addView(mapView,FrameLayout.LayoutParams(-1,-1))
