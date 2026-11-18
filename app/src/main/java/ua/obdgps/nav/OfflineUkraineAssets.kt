@@ -87,8 +87,17 @@ object OfflineUkraineAssets {
         worker.execute{
             val map=OfflineVectorStore.mapFile(app)
             val poi=OfflineVectorStore.poiFile(app)
-            val mapValid=validMapHeader(map)
-            val poiError=validatePois(poi)
+            // These thresholds match the older *nationwide* Mapsforge
+            // download service. A smaller imported Kyiv/oblast file may
+            // still render as a fallback, but is not called "all Ukraine".
+            val mapFormatOk=validMapHeader(map)
+            val mapValid=mapFormatOk && map.length()>=40_000_000L
+            val poiFormatError=validatePois(poi)
+            val poiValid=poiFormatError.isEmpty() &&
+                poi.length()>=8_000_000L
+            val poiError=if(!poiValid && poiFormatError.isEmpty())
+                "База меньше ожидаемого размера базы всей Украины"
+            else poiFormatError
             val regionRoot=File(app.filesDir,"offline-region-packs")
             val otherMaps=regionRoot.listFiles()?.count{
                 it.extension=="map"&&validMapHeader(it)
@@ -98,11 +107,15 @@ object OfflineUkraineAssets {
             }?:0
             val check=Check(
                 mapValid=mapValid,
-                poiValid=poiError.isEmpty(),
+                poiValid=poiValid,
                 mapSize=if(map.isFile)map.length() else 0L,
                 poiSize=if(poi.isFile)poi.length() else 0L,
-                mapError=if(mapValid)"" else if(!map.exists())
-                    "Файл ещё не скачан" else "Не распознана карта Mapsforge",
+                mapError=when{
+                    mapValid->""
+                    !map.exists()->"Файл ещё не скачан"
+                    mapFormatOk->"Найдена карта меньшего размера, чем ожидается для всей Украины"
+                    else->"Не распознана карта Mapsforge"
+                },
                 poiError=if(!poi.exists())"Файл ещё не скачан" else poiError,
                 otherMaps=otherMaps,
                 otherPois=otherPois,
