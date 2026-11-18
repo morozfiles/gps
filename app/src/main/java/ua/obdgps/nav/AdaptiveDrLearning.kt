@@ -51,6 +51,9 @@ internal class AdaptiveDrLearning(context:Context) {
 
     init { load() }
 
+    /** Do not connect examples across a spoof/quarantine or test restart. */
+    fun resetSegment(){lastPair=null}
+
     /** Explainability: how many straight/left/right examples were learned. */
     fun status():String{
         val count=IntArray(3){category->samples[category].sum()}
@@ -65,13 +68,32 @@ internal class AdaptiveDrLearning(context:Context) {
 
     fun detail():String {
         val names=arrayOf("Прямо","Левые повороты","Правые повороты")
-        return (0..2).joinToString("\n"){dir->
+        val bands=arrayOf("до 35","35–70","более 70")
+        val report=ArrayList<String>()
+        for(dir in 0..2){
             val n=samples[dir].sum()
             val err=if(n>0)positionError[dir].sum()/n else 0.0
-            val gain=if(n>0)distanceScaleSum[dir].sum()/n else 1.0
-            "${names[dir]}: $n участков, расхождение "+
-                "${err.roundToInt()} м, длина ${"%.3f".format(java.util.Locale.US,gain)}×"
+            report.add("${names[dir]}: $n участков · среднее "+
+                "расхождение GPS/DR ${err.roundToInt()} м")
+            for(band in 0..2){
+                val k=samples[dir][band]
+                if(k==0)continue
+                val factor=distanceScaleSum[dir][band]/k
+                report.add("  ${bands[band]} км/ч: $k · длина "+
+                    "${"%.3f".format(java.util.Locale.US,factor)}×")
+            }
         }
+        if(speedExamples>=20) {
+            val straight=speedGain(45.0,0.0)
+            report.add("Нейросеть, прямая 45 км/ч: "+
+                "${"%.3f".format(java.util.Locale.US,straight)}× дистанция")
+        }
+        if(yawExamples>=10){
+            val turn=yawGain(45.0,5.0)
+            report.add("Нейросеть, поворот 45 км/ч: "+
+                "${"%.3f".format(java.util.Locale.US,turn)}× угол")
+        }
+        return report.joinToString("\n")
     }
 
     fun speedGain(speedKmh:Double,yawDegPerSec:Double):Double {
