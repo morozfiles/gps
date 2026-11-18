@@ -23,6 +23,11 @@ class NavigatorPrefs(context: Context) {
                 store.edit().putFloat("obdFactor",value.toFloat()).apply()
         }
 
+    /** Off by default: only a deliberate user tap enables learned DR gains. */
+    var learnedDrEnabled: Boolean
+        get()=store.getBoolean("learnedDrEnabled",false)
+        set(value){store.edit().putBoolean("learnedDrEnabled",value).apply()}
+
     var autoEnabled: Boolean
         get()=store.getBoolean("autoEnabled",true)
         set(value){store.edit().putBoolean("autoEnabled",value).apply()}
