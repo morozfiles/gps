@@ -53,7 +53,8 @@ internal object GoogleMapsLinks {
     /** Return the Google URL even when it is embedded in Share text. */
     fun extract(text:String):String? {
         val raw=text.trim()
-        val candidates=listOf(raw)+embeddedUrl.findAll(raw).map{
+        val candidates=(if(raw.any{it.isWhitespace()})emptyList()
+            else listOf(raw))+embeddedUrl.findAll(raw).map{
             it.value.trimEnd('.',',',';',':','!','?',')',']','}','>','\u2026')
         }
         return candidates.firstOrNull{runCatching{
@@ -116,7 +117,8 @@ internal object GoogleMapsLinks {
         // Older share links use !2d longitude + !3d latitude.
         viewCoordinates.find(full)?.let{
             return point(it.groupValues[2].toDoubleOrNull(),
-                it.groupValues[1].toDoubleOrNull(),source)
+                it.groupValues[1].toDoubleOrNull(),
+                "Примерный центр Google Maps",approximate=true)
         }
 
         val segments=uri.pathSegments
@@ -181,8 +183,16 @@ internal object GoogleMapsLinks {
                 if(status!=200)error("Google Maps вернул HTTP $status")
                 // Some short links return a page rather than a redirect.
                 // Never evaluate scripts or load external content.
-                val snippet=conn.inputStream.bufferedReader().use{
-                    it.readText().take(96_000)
+                val snippet=conn.inputStream.bufferedReader().use{reader->
+                    val buffer=CharArray(8192)
+                    val output=StringBuilder()
+                    while(output.length<96_000){
+                        val count=reader.read(buffer,0,
+                            minOf(buffer.size,96_000-output.length))
+                        if(count<=0)break
+                        output.append(buffer,0,count)
+                    }
+                    output.toString()
                 }
                 val normalized=snippet.replace("&amp;","&")
                     .replace("\\/","/")
