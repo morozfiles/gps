@@ -126,15 +126,15 @@ class OfflineVectorNavigatorActivity:Activity() {
         AirAlerts.initialize(this)
         if(OfflineRegionPacks.mapFiles(this).isEmpty()){
             AlertDialog.Builder(this).setTitle("Нужна офлайн-карта")
-                .setMessage("Загрузи подробную карту области или обзор Украины " +
-                    "в разделе «Карты офлайн». Можно также добавить файл .poi " +
-                    "для поиска адресов без интернета.")
+                .setMessage("Карта Украины ещё не найдена. В разделе «Офлайн-карты» " +
+                    "можно проверить сохранённые файлы из прошлой версии " +
+                    "или скачать только недостающую карту и базу адресов.")
                 .setPositiveButton("Скачать Украину"){_,_->
                     startActivity(Intent(this,OfflineMapsActivity::class.java)
                         .putExtra("download_ukraine",true))
                     finish()
                 }
-                .setNeutralButton("Импортировать регион"){_,_->
+                .setNeutralButton("Проверить сохранённое"){_,_->
                     startActivity(Intent(this,OfflineMapsActivity::class.java))
                     finish()
                 }.setNegativeButton("Назад"){_,_->finish()}
@@ -219,7 +219,7 @@ class OfflineVectorNavigatorActivity:Activity() {
         }catch(e:Exception){
             AlertDialog.Builder(this).setTitle("Ошибка векторной карты")
                 .setMessage((e.localizedMessage?:"Не удалось открыть .map")+
-                    "\nВыбери другой файл Mapsforge.")
+                    "\nПроверь сохранённую карту Украины или скачай недостающий файл.")
                 .setPositiveButton("Карты"){_,_->
                     startActivity(Intent(this,OfflineMapsActivity::class.java))
                     finish()
@@ -361,7 +361,7 @@ class OfflineVectorNavigatorActivity:Activity() {
                             AlertDialog.Builder(this)
                                 .setTitle("Адрес не найден офлайн")
                                 .setMessage(if(OfflineRegionPacks.poiFiles(this).isEmpty())
-                                    "Сначала импортируй файл .poi через «Офлайн-карты»."
+                                    "Скачай или восстанови базу адресов Украины (.poi) в «Офлайн-карты»."
                                     else "В базе POI нет этого адреса. "+
                                         "Часть номеров домов отсутствует в OpenStreetMap.")
                                 .setPositiveButton("Карты"){_,_->
