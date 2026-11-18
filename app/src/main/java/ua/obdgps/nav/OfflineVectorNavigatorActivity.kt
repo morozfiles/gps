@@ -463,7 +463,8 @@ class OfflineVectorNavigatorActivity:Activity() {
                 clearRoute()
                 val p=AndroidGraphicFactory.INSTANCE.createPaint().apply{
                     color=Color.rgb(11,132,246)
-                    strokeWidth=dp(8).toFloat()
+                    // Make the built route readable above detailed OSM roads.
+                    strokeWidth=dp(12).toFloat()
                     setStyle(org.mapsforge.core.graphics.Style.STROKE)
                 }
                 routeLine=Polyline(p,AndroidGraphicFactory.INSTANCE).apply{
