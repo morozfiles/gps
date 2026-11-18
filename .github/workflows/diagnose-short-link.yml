@@ -1,0 +1,42 @@
+name: Diagnose Google Maps short link
+on:
+  push:
+    branches: [feature/dr-dual-track-spoof-guard]
+    paths: [.github/workflows/diagnose-short-link.yml]
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Inspect Google Maps redirect chain for provided URL
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import urllib.request, urllib.parse, urllib.error, re
+          url="https://maps.app.goo.gl/DJfyYcTwKddEptMK6?g_st=ic"
+          class NoRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self, req, fp, code, msg, headers, newurl):
+                  return None
+          opener=urllib.request.build_opener(NoRedirect)
+          for i in range(7):
+              try:
+                  req=urllib.request.Request(url,headers={"User-Agent":"Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36", "Accept":"text/html"})
+                  r=opener.open(req,timeout=9)
+              except urllib.error.HTTPError as e:r=e
+              except Exception as e:
+                  print("NETWORK_ERROR",str(e));break
+              print("HOP",i,"status",r.status, "URL",url[:2000], "CONTENT_TYPE",r.headers.get("Content-Type"))
+              loc=r.headers.get("Location")
+              if loc:
+                  url=urllib.parse.urljoin(url,loc)
+                  print("REDIRECT",url[:5000])
+                  continue
+              data=r.read(250000).decode("utf-8","replace")
+              for x in re.findall(r'<meta[^>]+(?:property|name)=["\'](?:og:url|twitter:url|og:title|description)["\'][^>]*>',data,re.I)[:10]:
+                  print("META",x[:700])
+              for x in re.findall(r'(https?[^"\s<]{0,300})',data,re.I)[:15]:
+                  if "maps" in x.lower() or "goo.gl" in x.lower():
+                      print("FOUND",x[:350])
+              print("BODY_BEGINS",re.sub(r"\s+"," ",data[:800]))
+              break
+          PY
