@@ -13,6 +13,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
+import android.speech.tts.TextToSpeech
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
@@ -82,6 +83,11 @@ class OfflineVectorNavigatorActivity:Activity() {
     private var lastAutoZoom=0L
     private var manualZoomUntil=0L
     private var lastReroute=0L
+    private val inertialRouteMatcher=InertialRouteMatcher()
+    private var lastRouteWarning=InertialRouteMatcher.Warning.NONE
+    private var lastWarnedAt=0L
+    private var alertVoice:TextToSpeech?=null
+    private var alertVoiceReady=false
     private var requesting=false
     private var lastTick=0L
 
@@ -201,6 +207,10 @@ class OfflineVectorNavigatorActivity:Activity() {
                     State.navigationDestination=pos.latitude to pos.longitude
                     picking=false
                     route=null
+                    active=false
+                    inertialRouteMatcher.reset()
+                    State.activeRouting=false
+                    State.gpsFilterRoutePoints=emptyList()
                     clearRoute()
                     info.text="Цель выбрана на карте"
                     return true
@@ -301,6 +311,10 @@ class OfflineVectorNavigatorActivity:Activity() {
                     buildRoute(false)
                 }else{
                     active=true
+                    inertialRouteMatcher.reset()
+                    lastRouteWarning=InertialRouteMatcher.Warning.NONE
+                    State.activeRouting=true
+                    State.gpsFilterRoutePoints=route!!.points
                     followCar()
                     info.text="Ведение по маршруту · GPS / OBD / DR"
                 }
@@ -315,6 +329,12 @@ class OfflineVectorNavigatorActivity:Activity() {
             }
         ))
         setContentView(root)
+        alertVoice=TextToSpeech(this){result->
+            if(result==TextToSpeech.SUCCESS){
+                alertVoiceReady=true
+                alertVoice?.language=Locale("ru","RU")
+            }
+        }
     }
 
     private fun adjustZoom(by:Int){
@@ -398,6 +418,11 @@ class OfflineVectorNavigatorActivity:Activity() {
         NavigatorPrefs(this).rememberAddress(NavigatorPrefs.RecentAddress(
             label,coordinate.lat,coordinate.lon))
         route=null
+        active=false
+        inertialRouteMatcher.reset()
+        lastRouteWarning=InertialRouteMatcher.Warning.NONE
+        State.activeRouting=false
+        State.gpsFilterRoutePoints=emptyList()
         clearRoute()
         mapView.setCenter(LatLong(coordinate.lat,coordinate.lon))
         follow=false
@@ -429,6 +454,12 @@ class OfflineVectorNavigatorActivity:Activity() {
             requesting=false
             result.fold(onSuccess={itinerary->
                 route=itinerary
+                inertialRouteMatcher.reset()
+                lastRouteWarning=InertialRouteMatcher.Warning.NONE
+                if(active){
+                    State.activeRouting=true
+                    State.gpsFilterRoutePoints=itinerary.points
+                }
                 clearRoute()
                 val p=AndroidGraphicFactory.INSTANCE.createPaint().apply{
                     color=Color.rgb(11,132,246)
@@ -473,20 +504,29 @@ class OfflineVectorNavigatorActivity:Activity() {
                     it.source.contains("Ручная")
             }
             if(fix!=null){
-                lastGpsPosition=RoutingEngine.Point(fix.lat,fix.lon)
                 val now=SystemClock.elapsedRealtime()
-                val speed=if(State.speedUpdatedElapsedMs>0 &&
-                    now-State.speedUpdatedElapsedMs<3500)
-                    State.obdSpeedKmh()
-                else State.gpsSpeedKmh
+                val obdFresh=State.speedUpdatedElapsedMs>0L &&
+                    now-State.speedUpdatedElapsedMs<3500L
+                val speed=if(obdFresh)State.obdSpeedKmh()
+                    else State.gpsSpeedKmh
+                // Route projection never modifies the raw service position.
+                val matched=if(active && State.dr && route!=null)
+                    inertialRouteMatcher.match(fix,route,
+                        if(obdFresh)State.obdSpeedKmh() else null,now)
+                    else {
+                        inertialRouteMatcher.reset()
+                        null
+                    }
+                val shown=matched?.displayFix?:fix
+                lastGpsPosition=RoutingEngine.Point(shown.lat,shown.lon)
                 if(follow){
                     mapView.setCenter(LatLong(fix.lat,fix.lon))
                     val p=lastGpsPosition!!
                     val course=if(active) {
                         if(speed!=null&&speed>=8.0)
-                            fix.bearing?:shortestCourse(p,route)
-                        else shortestCourse(p,route)?:fix.bearing
-                    }else fix.bearing
+                            shown.bearing?:shortestCourse(p,route)
+                        else shortestCourse(p,route)?:shown.bearing
+                    }else shown.bearing
                     if(course!=null && course.isFinite() &&
                         (speed?:0.0)>=5.0){
                         if(!headingReady){
@@ -534,14 +574,44 @@ class OfflineVectorNavigatorActivity:Activity() {
                     }
                 }
                 if(active && route!=null){
-                    val progress=route!!.progress(RoutingEngine.Point(fix.lat,fix.lon))
-                    guidance.text=String.format(Locale.getDefault(),
-                        "До цели %.1f км · далее: %s",progress.remainingMeters/1000,
-                        progress.nextTurn?.instruction?:"прямо")
+                    val progress=route!!.progress(
+                        RoutingEngine.Point(shown.lat,shown.lon))
+                    val warning=matched?.warning
+                        ?:InertialRouteMatcher.Warning.NONE
+                    if(warning!=InertialRouteMatcher.Warning.NONE){
+                        guidance.text=matched!!.warningText+
+                            " · отклонение "+
+                            matched.rawDeviationMeters.roundToInt()+" м"
+                        guidance.setTextColor(Color.rgb(255,162,111))
+                        info.text=matched.warningText+
+                            ". Не полагайся на привязку к маршруту."
+                        if(warning!=lastRouteWarning ||
+                            now-lastWarnedAt>=45_000L){
+                            Toast.makeText(this@OfflineVectorNavigatorActivity,
+                                matched.warningText,Toast.LENGTH_LONG).show()
+                            if(alertVoiceReady){
+                                alertVoice?.speak(matched.warningText,
+                                    TextToSpeech.QUEUE_FLUSH,null,"route-warning")
+                            }
+                            lastWarnedAt=now
+                        }
+                    }else{
+                        guidance.setTextColor(ink)
+                        guidance.text=String.format(Locale.getDefault(),
+                            "До цели %.1f км · далее: %s",
+                            progress.remainingMeters/1000,
+                            progress.nextTurn?.instruction?:"прямо")+
+                            if(matched?.snapped==true)" · DR по маршруту"
+                            else ""
+                    }
+                    lastRouteWarning=warning
                     if(progress.arrived){
                         active=false
+                        inertialRouteMatcher.reset()
+                        State.activeRouting=false
+                        State.gpsFilterRoutePoints=emptyList()
                         info.text="Вы прибыли"
-                    }else if(progress.lateralMeters>140 &&
+                    }else if(!State.dr && progress.lateralMeters>140 &&
                         now-lastReroute>75_000 && !requesting &&
                         fix.accuracy<70f){
                         lastReroute=now
@@ -578,6 +648,13 @@ class OfflineVectorNavigatorActivity:Activity() {
     }
     override fun onDestroy(){
         handler.removeCallbacks(refresh)
+        inertialRouteMatcher.reset()
+        if(active){
+            State.activeRouting=false
+            State.gpsFilterRoutePoints=emptyList()
+        }
+        alertVoice?.stop()
+        alertVoice?.shutdown()
         if(::mapView.isInitialized){
             runCatching{mapView.destroyAll()}
             runCatching{vectorMap?.close()}
