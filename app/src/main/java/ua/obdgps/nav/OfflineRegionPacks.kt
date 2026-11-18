@@ -114,6 +114,12 @@ object OfflineRegionPacks {
     fun mapFiles(context:Context):List<File> {
         val output=ArrayList<File>()
         val country=OfflineVectorStore.mapFile(context)
+        if(OfflineUkraineAssets.validMapHeader(country) &&
+            country.length()>=40_000_000L){
+            // All-Ukraine vector data is self-contained: do not open
+            // duplicated old oblast maps on top of the nationwide map.
+            return listOf(country)
+        }
         if(OfflineUkraineAssets.validMapHeader(country))output.add(country)
         for(id in listOf(selected(context),OVERVIEW)) {
             val file=file(context,id,"map")
@@ -128,6 +134,12 @@ object OfflineRegionPacks {
     fun poiFiles(context:Context):List<File> {
         val output=ArrayList<File>()
         val country=OfflineVectorStore.poiFile(context)
+        if(OfflineUkraineAssets.validPoiHeader(country) &&
+            country.length()>=8_000_000L){
+            // Prefer the national address database instead of searching
+            // duplicated, potentially obsolete oblast-specific indexes.
+            return listOf(country)
+        }
         if(OfflineUkraineAssets.validPoiHeader(country))output.add(country)
         for(id in listOf(selected(context),OVERVIEW)) {
             val file=file(context,id,"poi")
