@@ -35,20 +35,19 @@ jobs:
           OBDGPS_SIGNING_PASSWORD: ${{ secrets.OBDGPS_SIGNING_PASSWORD }}
         shell: bash
         run: |
-          if [ -z "$OBDGPS_KEYSTORE_B64" ] && [ -z "$OBDGPS_SIGNING_PASSWORD" ]; then
-            echo "::warning title=Temporary APK signing::No permanent signing secrets. This APK cannot update a build signed on a different CI runner."
-            echo "PERMANENT_SIGNING=false" >> "$GITHUB_ENV"
-          elif [ -z "$OBDGPS_KEYSTORE_B64" ] || [ -z "$OBDGPS_SIGNING_PASSWORD" ]; then
-            echo "::error title=Signing configuration incomplete::Set both OBDGPS_KEYSTORE_B64 and OBDGPS_SIGNING_PASSWORD."
+          # Never produce an APK artifact signed with an ephemeral debug key.
+          # An APK without the stable signer cannot update the installed app
+          # while preserving private ML training, maps and user settings.
+          if [ -z "$OBDGPS_KEYSTORE_B64" ] || [ -z "$OBDGPS_SIGNING_PASSWORD" ]; then
+            echo "::error title=Permanent APK signing required::Add BOTH OBDGPS_KEYSTORE_B64 and OBDGPS_SIGNING_PASSWORD in GitHub Settings > Secrets and variables > Actions. Unsigned-by-stable-key APK publishing is disabled to protect installed app data."
             exit 1
-          else
-            umask 077
-            printf '%s' "$OBDGPS_KEYSTORE_B64" | base64 --decode > "$RUNNER_TEMP/obdgps-signing.p12"
-            test -s "$RUNNER_TEMP/obdgps-signing.p12"
-            echo "OBDGPS_SIGNING_STORE_FILE=$RUNNER_TEMP/obdgps-signing.p12" >> "$GITHUB_ENV"
-            echo "PERMANENT_SIGNING=true" >> "$GITHUB_ENV"
-            echo "Permanent APK signing key loaded from GitHub Actions secrets."
           fi
+          umask 077
+          printf '%s' "$OBDGPS_KEYSTORE_B64" | base64 --decode > "$RUNNER_TEMP/obdgps-signing.p12"
+          test -s "$RUNNER_TEMP/obdgps-signing.p12"
+          echo "OBDGPS_SIGNING_STORE_FILE=$RUNNER_TEMP/obdgps-signing.p12" >> "$GITHUB_ENV"
+          echo "PERMANENT_SIGNING=true" >> "$GITHUB_ENV"
+          echo "Permanent APK signing key loaded from GitHub Actions secrets."
       - name: Build debug APK
         env:
           OBDGPS_SIGNING_PASSWORD: ${{ secrets.OBDGPS_SIGNING_PASSWORD }}
@@ -56,10 +55,14 @@ jobs:
       - name: Verify APK signature
         shell: bash
         run: |
-          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --print-certs app/build/outputs/apk/debug/app-debug.apk
-          if [ "$PERMANENT_SIGNING" != "true" ]; then
-            echo "::warning title=One-off signing certificate::Installable APK, but not a compatible in-place update of earlier CI builds."
+          signed_info=$("$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --print-certs app/build/outputs/apk/debug/app-debug.apk)
+          printf '%s\n' "$signed_info"
+          expected="0f97878527a8c268705c3bebbf4570d78034dc26159edb56d78743cfd202784e"
+          if ! printf '%s\n' "$signed_info" | grep -Fiq "Signer #1 certificate SHA-256 digest: $expected"; then
+            echo "::error title=Wrong app signing key::Refusing to publish APK signed with a different certificate."
+            exit 1
           fi
+          echo "Verified permanent signing certificate fingerprint."
       - uses: actions/upload-artifact@v4
         with:
           name: OBD-GPS-Navigator-Parallel-APK
