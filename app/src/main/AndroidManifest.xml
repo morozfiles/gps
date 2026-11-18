@@ -29,8 +29,6 @@
         <activity android:name=".NavigatorActivity" android:exported="false"/>
         <activity android:name=".OfflineMapsActivity" android:exported="false"/>
         <activity android:name=".OfflineVectorNavigatorActivity" android:exported="false"/>
-        <service android:name=".OfflineRegionDownloadService"
-            android:exported="false" android:foregroundServiceType="dataSync"/>
         <service android:name=".OfflineCountryDownloadService"
             android:exported="false" android:foregroundServiceType="dataSync"/>
         <service android:name=".NavService" android:exported="false"
