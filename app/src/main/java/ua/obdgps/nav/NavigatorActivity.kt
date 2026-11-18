@@ -281,7 +281,7 @@ class NavigatorActivity : Activity() {
             startActivity(Intent(this,OfflineMapsActivity::class.java))
         }.apply{
             textSize=23f
-            contentDescription="Сохранённые офлайн-карты и импорт области"
+            contentDescription="Карта Украины и офлайн-база адресов"
         },FrameLayout.LayoutParams(dp(44),dp(44),
             Gravity.TOP or Gravity.LEFT).apply{
             setMargins(dp(7),dp(32),0,0)
