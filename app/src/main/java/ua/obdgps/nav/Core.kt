@@ -210,7 +210,7 @@ object State {
     var reverseSelected = false
     var directionConfirmed = false
     var directionText = "Направление: определяется"
-    var obdFactor = 1.0
+    var obdFactor = 0.97
     fun obdSpeedKmh(): Double? = speed?.times(obdFactor)
 
     var driftMeters = 0.0
