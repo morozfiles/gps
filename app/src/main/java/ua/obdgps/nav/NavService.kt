@@ -662,20 +662,65 @@ class NavService: Service(), LocationListener {
             State.message=State.diagnosticText
             return
         }
-        // A single starting geographic anchor is unavoidable. After this
-        // point the comparisonDr never consumes GPS, Fused, or main DR.
+        // Capture the SAME accepted position shown by the main navigator
+        // (GPS or fresh direct network/Wi-Fi) once, before the GPS-free DR
+        // test begins. Previous code required an internal GPS fix and could
+        // ignore the already available State.navFix when GPS was unavailable.
+        val realGps=gps?.takeIf{
+            !gpsQuarantined && now-gpsTime in 0L..10_000L
+        }
+        val network=State.networkFix?.takeIf{
+            it.source=="Wi-Fi/сеть" &&
+                now-it.elapsedMs in 0L..12_000L &&
+                it.accuracy in 1f..220f &&
+                !GpsSpoofGuard.isLima(it.lat,it.lon)
+        }
+        val navigator=State.navFix?.takeIf{
+            now-it.elapsedMs in 0L..12_000L &&
+                it.accuracy in 1f..250f &&
+                it.lat in -85.0..85.0 && it.lon in -180.0..180.0 &&
+                !GpsSpoofGuard.isLima(it.lat,it.lon) &&
+                (it.source=="Wi-Fi/сеть" ||
+                    (!gpsQuarantined &&
+                        (it.source=="GPS" || it.source=="Fused Android")))
+        }
+        // In quarantine never seed from an old GPS or a fused fix which
+        // may itself incorporate GNSS. Network provider is independent.
+        val live=if(gpsQuarantined)network
+            else navigator ?: realGps?.let{
+                State.NavFix(it.latitude,it.longitude,
+                    if(it.hasBearing())it.bearing.toDouble() else null,
+                    it.accuracy,"GPS",gpsTime)
+            } ?: network
         val manual=State.manualStart
-        val realGps=gps?.takeIf{!gpsQuarantined && now-gpsTime<10_000L}
-        val heading=manual?.bearing ?:realGps?.takeIf{
-            it.hasBearing() && it.hasSpeed() && it.speed>2.0f
-        }?.bearing?.toDouble() ?:lastTrustedHeading?.takeIf{
-            now-lastTrustedHeadingMs<60_000L
-        } ?: motion.compassBearing
-        val lat=manual?.lat?:realGps?.latitude
-        val lon=manual?.lon?:realGps?.longitude
-        if(lat==null || lon==null || heading==null || !heading.isFinite()){
-            State.diagnosticText="Нужна начальная точка и направление: "+
-                "задай их вручную или получи достоверный GPS до теста."
+        val lat=live?.lat?:manual?.lat
+        val lon=live?.lon?:manual?.lon
+        val heading=realGps?.takeIf{
+            live?.source=="GPS" && it.hasBearing() &&
+                it.hasSpeed() && it.speed>=2.0f
+        }?.bearing?.toDouble()
+            ?: lastTrustedHeading?.takeIf{
+                now-lastTrustedHeadingMs in 0L..60_000L
+            }
+            ?: live?.bearing?.takeIf{
+                it.isFinite() && (live.source=="GPS" ||
+                    live.source=="Fused Android") &&
+                    (correctedSpeed()?:0.0)>=5.0
+            }
+            ?: motion.compassBearing
+            ?: manual?.bearing
+        if(lat==null || lon==null){
+            State.diagnosticText="Ожидаю текущие координаты GPS или Wi-Fi/сети. "+
+                "В навигаторе позиция должна обновляться; "+
+                "можно также задать начальную точку вручную."
+            State.message=State.diagnosticText
+            return
+        }
+        if(heading==null || !heading.isFinite()){
+            State.diagnosticText="Начальные координаты найдены, "+
+                "но направление автомобиля неизвестно. "+
+                "Нужен GPS-курс во время движения, калиброванный компас "+
+                "или вручную заданный курс."
             State.message=State.diagnosticText
             return
         }
@@ -683,8 +728,9 @@ class NavService: Service(), LocationListener {
         State.startDiagnostic()
         State.addNetworkDrPoint(lat,lon,heading,correctedSpeed()?:0.0,now)
         State.diagnosticNetworkStatus=comparisonDr.lastNetworkStatus
-        State.message="Два трека запущены. Зелёный: GPS. "+
-            "Синий: OBD + гироскоп + Wi-Fi/сотовая сеть, без GPS."
+        State.message="Два трека запущены от "+
+            (live?.source?:"ручной точки")+
+            ". GPS теперь не используется для синего DR-трека."
     }
 
     private fun quarantineGps(now:Long,reason:String){
