@@ -118,19 +118,21 @@ object State {
         val approved:Boolean=false
     )
     val rawGpsTrail=ArrayList<RawGpsPoint>()
-    val pureSensorTrail=ArrayList<TrailPoint>()
-    var pureSensorPoint:TrailPoint?=null
+    val networkDrTrail=ArrayList<TrailPoint>()
+    var networkDrPoint:TrailPoint?=null
         private set
     var diagnosticRunning=false
     var diagnosticText="Тест двух треков не запущен"
     var gpsSpoofStatus="GPS: ожидание контроля"
+    var diagnosticNetworkStatus="Сетевых поправок пока нет"
 
     fun startDiagnostic(){
         rawGpsTrail.clear()
-        pureSensorTrail.clear()
-        pureSensorPoint=null
+        networkDrTrail.clear()
+        networkDrPoint=null
+        diagnosticNetworkStatus="Сетевых поправок пока нет"
         diagnosticRunning=true
-        diagnosticText="Калибровка акселерометра · стоять 2 с"
+        diagnosticText="Режим GPS заглушён · DR использует OBD и Wi-Fi/сеть"
     }
     fun stopDiagnostic(){
         diagnosticRunning=false
@@ -148,17 +150,17 @@ object State {
         val i=rawGpsTrail.indexOfLast{it.elapsedMs==time}
         if(i>=0)rawGpsTrail[i]=rawGpsTrail[i].copy(approved=true)
     }
-    fun addPureSensorPoint(lat:Double,lon:Double,bearing:Double,
+    fun addNetworkDrPoint(lat:Double,lon:Double,bearing:Double,
                            kmh:Double,time:Long){
         if(!diagnosticRunning || !lat.isFinite() || !lon.isFinite() ||
             !bearing.isFinite() || !kmh.isFinite() ||
             lat !in -85.0..85.0 || lon !in -180.0..180.0)return
         val p=TrailPoint(lat,lon,bearing,kmh,time)
-        val last=pureSensorPoint
-        pureSensorPoint=p
+        val last=networkDrPoint
+        networkDrPoint=p
         if(last!=null && time-last.elapsedMs<950)return
-        pureSensorTrail.add(p)
-        if(pureSensorTrail.size>1500)pureSensorTrail.removeAt(0)
+        networkDrTrail.add(p)
+        if(networkDrTrail.size>1500)networkDrTrail.removeAt(0)
     }
 
     var message = "Ready"
