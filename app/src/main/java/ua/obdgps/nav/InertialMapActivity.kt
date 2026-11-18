@@ -39,6 +39,16 @@ class InertialMapActivity : Activity() {
     private val handler=Handler(Looper.getMainLooper())
     private lateinit var map: InertialTrackMapView
     private lateinit var info: TextView
+    // Preview belongs only to the UI. It never feeds the independent DR.
+    private fun previewFix():State.NavFix? {
+        val candidate=State.navFix?:return null
+        val elapsed=SystemClock.elapsedRealtime()-candidate.elapsedMs
+        if(elapsed<0L || elapsed>15_000L ||
+            candidate.lat !in -85.0..85.0 ||
+            candidate.lon !in -180.0..180.0 ||
+            GpsSpoofGuard.isLima(candidate.lat,candidate.lon))return null
+        return candidate
+    }
     private fun dp(n:Int)=(resources.displayMetrics.density*n+0.5f).toInt()
 
     private fun button(label:String, action:()->Unit): Button = Button(this).apply {
@@ -74,7 +84,8 @@ class InertialMapActivity : Activity() {
             val obdDr=State.networkDrPoint
             val obdDrTrail=State.networkDrTrail.toList()
             val raw=State.rawGpsTrail.toList()
-            map.updateDiagnostic(obdDr,obdDrTrail,raw)
+            val preview=previewFix()
+            map.updateDiagnostic(obdDr,obdDrTrail,raw,preview)
             val lastRaw=raw.lastOrNull()
             val gpsLabel=lastRaw?.let{
                 String.format(Locale.US,"%.5f, %.5f",it.latitude,it.longitude)
@@ -95,7 +106,12 @@ class InertialMapActivity : Activity() {
                     String.format(Locale.getDefault(),"%.1f км",metres/1000.0)
                 else String.format(Locale.getDefault(),"%.0f м",metres)
             } else "—"
+            val previewLabel=preview?.let {
+                String.format(Locale.US,"%.5f, %.5f · %s · ±%.0f м",
+                    it.lat,it.lon,it.source,it.accuracy)
+            } ?: "ожидаю достоверное GPS / Wi-Fi / сеть"
             info.text=State.diagnosticText+
+                "\nТекущая позиция: $previewLabel"+
                 "\nGPS: $gpsLabel · точек: ${raw.size}"+
                 "\nDR без GPS: $obdDrLabel · точек: ${obdDrTrail.size}"+
                 "\nРасхождение GPS / DR: $offset"+
@@ -185,6 +201,7 @@ class InertialMapActivity : Activity() {
             text="● Зелёный — GPS    ● Синий — DR + OBD + сеть (БЕЗ GPS)\n"+
                  "● Оранжевый — отклонённый GPS"+
                  "\nВторой трек: гироскоп, OBD через Bluetooth, Wi-Fi/сотовая сеть"+
+                 "\n● Серый — позиция до запуска теста"+
                  "\nОдна начальная координата и курс · затем GPS запрещён"
             setTextColor(secondary)
             textSize=12f
@@ -279,6 +296,7 @@ internal class InertialTrackMapView(context:Context): View(context) {
     private var markerBearing:Double?=null
     private var history=emptyList<State.TrailPoint>()
     private var diagnosticMode=false
+    private var startupFix:State.NavFix?=null
     private var gpsRawHistory=emptyList<State.RawGpsPoint>()
     private var obdNetworkHistory=emptyList<State.TrailPoint>()
     private var follow=true
@@ -461,15 +479,25 @@ internal class InertialTrackMapView(context:Context): View(context) {
     fun updateDiagnostic(
         sensorPoint:State.TrailPoint?,
         sensorTrail:List<State.TrailPoint>,
-        gpsTrail:List<State.RawGpsPoint>
+        gpsTrail:List<State.RawGpsPoint>,
+        preview:State.NavFix?=null
     ){
         diagnosticMode=true
         obdNetworkHistory=sensorTrail
         gpsRawHistory=gpsTrail
+        // The location shown before the test starts is a separate UI marker.
+        // It is never appended to either GPS or independent DR history.
+        startupFix=preview?.takeIf{
+            !State.diagnosticRunning && sensorTrail.isEmpty()
+        }
         current=sensorPoint
         markerBearing=sensorPoint?.bearing
         if(follow){
+            // Independent DR is always the map anchor after test startup.
+            // Before startup use the same fresh accepted fix as the navigator.
             val anchor=sensorPoint?.let{it.latitude to it.longitude}
+                ?:sensorTrail.lastOrNull()?.let{it.latitude to it.longitude}
+                ?:startupFix?.let{it.lat to it.lon}
                 ?:gpsTrail.lastOrNull{it.approved}?.let{
                     it.latitude to it.longitude
                 }
@@ -477,8 +505,7 @@ internal class InertialTrackMapView(context:Context): View(context) {
                 centerLat=anchor.first
                 centerLon=anchor.second
             }
-            // Keep the test map centered on the GPS-free OBD/network track.
-            // Suspect GPS teleports cannot move the camera.
+            // Spoofed raw GPS points cannot drag the camera across the world.
         }
         invalidate()
     }
@@ -776,6 +803,11 @@ internal class InertialTrackMapView(context:Context): View(context) {
         }
         if(diagnosticMode) {
             drawDiagnosticTraces(canvas)
+            startupFix?.let{
+                val (x,y)=point(it.lat,it.lon)
+                canvas.drawCircle(x,y,13f,initialFixOutline)
+                canvas.drawCircle(x,y,10f,initialFixPaint)
+            }
         } else if(history.size>=2) {
             val line=Path()
             var first=true
@@ -836,6 +868,15 @@ internal class InertialTrackMapView(context:Context): View(context) {
         strokeWidth=8f
         strokeCap=Paint.Cap.ROUND
         strokeJoin=Paint.Join.ROUND
+    }
+    private val initialFixPaint=Paint(Paint.ANTI_ALIAS_FLAG).apply{
+        color=Color.rgb(208,220,236)
+        style=Paint.Style.FILL
+    }
+    private val initialFixOutline=Paint(Paint.ANTI_ALIAS_FLAG).apply{
+        color=Color.rgb(40,52,66)
+        strokeWidth=4f
+        style=Paint.Style.STROKE
     }
     private val rejectedGpsPaint=Paint(Paint.ANTI_ALIAS_FLAG).apply{
         color=Color.rgb(255,172,50)
