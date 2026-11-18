@@ -175,6 +175,7 @@ object State {
     var navFix:NavFix?=null
     var networkFix:NavFix?=null
     var sourceDescription="Нет координат"
+    var offlineUkraineStatus="Карта Украины / адреса: проверка файлов"
     var manualStart:NavigatorPrefs.ManualStart?=null
     var navigationDestination:Pair<Double,Double>?=null
     var activeRouting=false
