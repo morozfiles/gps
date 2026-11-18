@@ -608,6 +608,7 @@ class NavigatorActivity : Activity() {
                 onSuccess={value->
                     plan=value
                     State.activeRouting=active
+                    State.gpsFilterRoutePoints=if(active)value.points else emptyList()
                     pickStatus.text="Маршрут построен. "+(value.lengthKm).roundToInt()+" км"
                     if(active) speak("Маршрут обновлён")
                 },
@@ -658,6 +659,7 @@ class NavigatorActivity : Activity() {
         map.beginRouteGuidance(ahead,fallback)
         active=true
         State.activeRouting=true
+        State.gpsFilterRoutePoints=route.points
         lastVoiceKey=""
         pickStatus.text=if(fix==null)
             "Маршрут впереди. Нет свежих координат — показан старт маршрута"
@@ -668,6 +670,7 @@ class NavigatorActivity : Activity() {
     private fun stopGuidance() {
         active=false
         State.activeRouting=false
+        State.gpsFilterRoutePoints=emptyList()
         map.stopRouteGuidance()
         routeGeneration++
         requestingRoute=false
@@ -693,6 +696,7 @@ class NavigatorActivity : Activity() {
                 lastVoiceKey="arrived"
                 active=false
                 State.activeRouting=false
+                State.gpsFilterRoutePoints=emptyList()
                 map.stopRouteGuidance()
             }
             return
@@ -797,6 +801,12 @@ class NavigatorActivity : Activity() {
         super.onPause()
     }
     override fun onDestroy() {
+        // The UI owns the planned route; never leave a stale route-wide
+        // GPS exclusion corridor in the background service.
+        if(active){
+            State.activeRouting=false
+            State.gpsFilterRoutePoints=emptyList()
+        }
         handler.removeCallbacks(refresh)
         tts?.stop()
         tts?.shutdown()
