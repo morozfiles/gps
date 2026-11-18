@@ -118,6 +118,7 @@ class InertialMapActivity : Activity() {
                 "\nDR без GPS: $obdDrLabel · точек: ${obdDrTrail.size}"+
                 "\nРасхождение GPS / DR: $offset"+
                 "\n"+State.diagnosticNetworkStatus+
+                "\n"+State.learnedDrStatus+
                 "\n"+State.gpsSpoofStatus
             handler.postDelayed(this,1000L)
         }
@@ -177,6 +178,16 @@ class InertialMapActivity : Activity() {
         buttons.addView(button("■ Остановить"){
             startService(Intent(this,NavService::class.java)
                 .setAction(NavService.STOP_DIAGNOSTIC))
+        },LinearLayout.LayoutParams(0,dp(47),1f))
+        buttons.addView(button("Профиль ошибок"){
+            android.app.AlertDialog.Builder(this)
+                .setTitle("Обучение GPS против DR")
+                .setMessage(State.learnedDrStatus+"\n\n"+
+                    State.learnedDrDetail+"\n\n"+
+                    "Сеть обучается только на проверенном GPS и независимом DR. "+
+                    "Поправки используются отдельно и только после включения "+
+                    "кнопкой «ИИ» в навигаторе.")
+                .setPositiveButton("Закрыть",null).show()
         },LinearLayout.LayoutParams(0,dp(47),1f))
         column.addView(buttons)
         val container=FrameLayout(this)
