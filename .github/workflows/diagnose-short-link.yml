@@ -40,3 +40,25 @@ jobs:
               print("BODY_BEGINS",re.sub(r"\s+"," ",data[:800]))
               break
           PY
+      - name: Check address geocoding for the Google short-link destination
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import urllib.parse,urllib.request,json
+          terms=[
+              "Михайловский Златоверхий монастырь, вулиця Трьохсвятительська, 8, Київ, 01601",
+              "Михайловский Златоверхий монастырь, Київ",
+              "вулиця Трьохсвятительська, 8, Київ"
+          ]
+          for term in terms:
+              endpoint="https://photon.komoot.io/api/?"+urllib.parse.urlencode({"q":term,"limit":6})
+              try:
+                  req=urllib.request.Request(endpoint,headers={"User-Agent":"OBD-GPS-Navigator/0.11.2-test (https://github.com/morozfiles/gps)","Accept-Language":"uk,ru"})
+                  with urllib.request.urlopen(req,timeout=12) as response:
+                      result=json.load(response)
+                  f=result.get("features",[])
+                  print("PHOTON",repr(term),"count",len(f))
+                  for item in f[:5]:
+                      print("LOCATION",item.get("geometry",{}).get("coordinates"),str(item.get("properties",{}))[:550])
+              except Exception as e: print("PHOTON_ERROR",repr(term),str(e))
+          PY
