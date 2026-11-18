@@ -213,7 +213,6 @@ class NavigatorActivity : Activity() {
         val speedBadge=LinearLayout(this).apply{
             orientation=LinearLayout.VERTICAL
             gravity=Gravity.CENTER
-            minHeight=0
             minimumHeight=0
             background=GradientDrawable().apply{
                 cornerRadius=dp(11).toFloat()
