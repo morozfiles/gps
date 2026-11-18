@@ -864,6 +864,12 @@ internal class InertialTrackMapView(context:Context): View(context) {
                 canvas.restore()
             }
         }
+        if(diagnosticMode) current?.let {
+            // Draw last so the blue ring is visible around the car arrow
+            // even when GPS and DR currently have identical coordinates.
+            val (x,y)=point(it.latitude,it.longitude)
+            canvas.drawCircle(x,y,40f,diagnosticDrRing)
+        }
         canvas.restore()
     }
 
@@ -880,6 +886,17 @@ internal class InertialTrackMapView(context:Context): View(context) {
         strokeWidth=8f
         strokeCap=Paint.Cap.ROUND
         strokeJoin=Paint.Join.ROUND
+    }
+    // Keep the independent (blue) position visible even before the car
+    // moves or if OBD has temporarily stopped supplying fresh speed.
+    private val diagnosticDrMarker=Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color=Color.rgb(20,146,255)
+        style=Paint.Style.FILL
+    }
+    private val diagnosticDrRing=Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color=Color.rgb(20,146,255)
+        style=Paint.Style.STROKE
+        strokeWidth=5.5f
     }
     private val initialFixPaint=Paint(Paint.ANTI_ALIAS_FLAG).apply{
         color=Color.rgb(208,220,236)
@@ -943,6 +960,19 @@ internal class InertialTrackMapView(context:Context): View(context) {
             lastX=x;lastY=y
         }
         canvas.drawPath(drPath,obdNetworkLine)
+        // A Path with only moveTo() is invisible. Show the blue origin
+        // even at rest, and breadcrumbs so the independent history is clear.
+        obdNetworkHistory.firstOrNull()?.let {
+            val (x,y)=point(it.latitude,it.longitude)
+            canvas.drawCircle(x,y,10f,diagnosticDrMarker)
+        }
+        if(obdNetworkHistory.size>2){
+            for(i in 1 until obdNetworkHistory.size step 8){
+                val sample=obdNetworkHistory[i]
+                val (x,y)=point(sample.latitude,sample.longitude)
+                canvas.drawCircle(x,y,4.5f,diagnosticDrMarker)
+            }
+        }
         gpsRawHistory.lastOrNull{it.approved}?.let{
             val (x,y)=point(it.latitude,it.longitude)
             canvas.drawCircle(x,y,11f,rawGpsLine.apply{
