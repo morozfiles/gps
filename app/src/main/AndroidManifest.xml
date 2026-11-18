@@ -14,7 +14,7 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC"/>
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
     <application android:theme="@android:style/Theme.Material.NoActionBar"
-        android:label="OBD GPS Navigator" android:allowBackup="false">
+        android:label="${appDisplayName}" android:allowBackup="false">
         <activity android:name=".MainActivity" android:exported="true">
           <intent-filter>
             <action android:name="android.intent.action.MAIN"/>
