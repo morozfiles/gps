@@ -55,7 +55,8 @@ class NavService: Service(), LocationListener {
     private var scanCallback: ScanCallback? = null
     private val bt by lazy { getSystemService(BluetoothManager::class.java).adapter }
     private val dr = DeadReckoner()
-    private val pureDr=PureInertialTracker()
+    // Separate test estimate: receives OBD + gyro + direct NETWORK fixes only.
+    private val comparisonDr=IndependentNetworkDr()
     private var gpsQuarantined=false
     private var quarantineRecoveryCount=0
     private var quarantineRecoveryLast=0L
@@ -147,12 +148,17 @@ class NavService: Service(), LocationListener {
             AirAlerts.refreshIfDue()
             updateNavigation(now)
             if(State.diagnosticRunning){
-                pureDr.pose?.let{pose->
-                    if(!pureDr.calibrating)
-                        State.diagnosticText="Чистый DR · только гироскоп и акселерометр"
-                    State.addPureSensorPoint(pose.lat,pose.lon,pose.bearing,
-                        pose.speedMetersPerSecond*3.6,now)
+                val obd=correctedSpeed()?.takeIf{
+                    State.speed!=null && now-speedTime<3500L
                 }
+                comparisonDr.advance(now,obd)?.let{pose->
+                    State.addNetworkDrPoint(pose.lat,pose.lon,pose.bearing,
+                        obd?:0.0,now)
+                }
+                State.diagnosticNetworkStatus=comparisonDr.lastNetworkStatus
+                State.diagnosticText=if(obd==null)
+                    "GPS отключён для DR · нет свежей скорости OBD"
+                else "Имитация отсутствия GPS · DR: OBD + гироскоп + сеть"
             }
             publishActualNavigationPosition(now)
             tickTime=now
@@ -187,14 +193,10 @@ class NavService: Service(), LocationListener {
         hybridLocator = HybridLocator(this) { location,source ->
             acceptNetworkLocation(location,source)
         }
-        motion = MotionSensors(this,
-            onYaw={ yaw, dt ->
-                if(State.dr)dr.turn(yaw,dt)
-                if(State.diagnosticRunning)pureDr.turn(yaw,dt)
-            },
-            onPureAcceleration={ forward,timeNanos ->
-                if(State.diagnosticRunning)pureDr.acceleration(forward,timeNanos)
-            })
+        motion = MotionSensors(this) { yaw, dt ->
+            if(State.dr)dr.turn(yaw,dt)
+            if(State.diagnosticRunning)comparisonDr.onGyroYaw(yaw,dt)
+        }
         motion.start()
         State.navigationMode = "GPS"
         State.manualForced = false
@@ -252,8 +254,7 @@ class NavService: Service(), LocationListener {
             START_DIAGNOSTIC -> startDiagnostic()
             STOP_DIAGNOSTIC -> {
                 State.stopDiagnostic()
-                pureDr.stop()
-                motion.endPureInertialAxis()
+                comparisonDr.stop()
             }
             STOP_DR -> {
                 autoEnabled=false
@@ -639,8 +640,19 @@ class NavService: Service(), LocationListener {
     }
     private fun startDiagnostic(){
         val now=SystemClock.elapsedRealtime()
-        // One-time seed only. The independent inertial estimator never uses
-        // OBD/GPS/network/Bluetooth after this point.
+        if(State.diagnosticRunning){
+            State.message="Два трека уже записываются"
+            return
+        }
+        if(State.speed==null || now-speedTime>=3500L ||
+            correctedSpeed()==null){
+            State.diagnosticText="Нет свежей скорости OBD. Подключи ELM327, "+
+                "чтобы тест DR не использовал GPS-скорость."
+            State.message=State.diagnosticText
+            return
+        }
+        // A single starting geographic anchor is unavoidable. After this
+        // point the comparisonDr never consumes GPS, Fused, or main DR.
         val manual=State.manualStart
         val realGps=gps?.takeIf{!gpsQuarantined && now-gpsTime<10_000L}
         val heading=manual?.bearing ?:realGps?.takeIf{
@@ -650,22 +662,18 @@ class NavService: Service(), LocationListener {
         } ?: motion.compassBearing
         val lat=manual?.lat?:realGps?.latitude
         val lon=manual?.lon?:realGps?.longitude
-        if(lat==null||lon==null||heading==null||!heading.isFinite()){
-            State.diagnosticText="Нет проверенной стартовой точки и курса. "+
-                "Задай старт вручную или дождись надёжного GPS."
+        if(lat==null || lon==null || heading==null || !heading.isFinite()){
+            State.diagnosticText="Нужна начальная точка и направление: "+
+                "задай их вручную или получи достоверный GPS до теста."
             State.message=State.diagnosticText
             return
         }
-        if(!motion.beginPureInertialAxis(heading)){
-            State.diagnosticText="Нет ориентации телефона: проверь датчики и компас"
-            State.message=State.diagnosticText
-            return
-        }
-        pureDr.start(lat,lon,heading)
+        comparisonDr.start(lat,lon,heading,now)
         State.startDiagnostic()
-        State.addPureSensorPoint(lat,lon,heading,0.0,now)
-        State.message="Начат тест: GPS и чистый DR. "+
-            "Для калибровки ускорения стой неподвижно 2 секунды."
+        State.addNetworkDrPoint(lat,lon,heading,correctedSpeed()?:0.0,now)
+        State.diagnosticNetworkStatus=comparisonDr.lastNetworkStatus
+        State.message="Два трека запущены. Зелёный: GPS. "+
+            "Синий: OBD + гироскоп + Wi-Fi/сотовая сеть, без GPS."
     }
 
     private fun quarantineGps(now:Long,reason:String){
@@ -753,6 +761,12 @@ class NavService: Service(), LocationListener {
             location.longitude !in -180.0..180.0)return
 
         val now=SystemClock.elapsedRealtime()
+        // The comparison estimator gets ONLY direct NETWORK_PROVIDER fixes,
+        // even when the main navigator currently uses GPS or Fused.
+        if(State.diagnosticRunning){
+            comparisonDr.onIndependentNetworkLocation(location,provider,now)
+            State.diagnosticNetworkStatus=comparisonDr.lastNetworkStatus
+        }
         val candidate=State.NavFix(location.latitude,location.longitude,
             if(location.hasBearing())location.bearing.toDouble() else null,
             location.accuracy,provider,now)
@@ -1226,7 +1240,7 @@ class NavService: Service(), LocationListener {
         handler.removeCallbacks(loop);stopScan();stopDr()
         disconnectTransport()
         motion.stop()
-        pureDr.stop()
+        comparisonDr.stop()
         State.stopDiagnostic()
         hybridLocator.stop()
         try {lm.removeUpdates(this)} catch(_:Exception){}
