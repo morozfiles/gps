@@ -314,6 +314,13 @@ internal class InertialTrackMapView(context:Context): View(context) {
     private var touchY=0f
     private var multitouchSeen=false
     private var pinchAccumulator=1.0
+    // Two-finger transform: pinch zoom, midpoint panning and twist rotation
+    // may happen in one gesture without re-enabling auto heading-up.
+    private var twoFingerAngle:Double?=null
+    private var twoFingerX=0f
+    private var twoFingerY=0f
+    private var twoFingerRotationStarted=false
+    private var twoFingerRotationAccum=0.0
     private val scaleDetector=ScaleGestureDetector(context,
         object:ScaleGestureDetector.SimpleOnScaleGestureListener() {
             override fun onScaleBegin(detector:ScaleGestureDetector):Boolean {
@@ -598,19 +605,79 @@ internal class InertialTrackMapView(context:Context): View(context) {
             anchorX().toFloat(),anchorY().toFloat())
     }
 
-    /** Keep the geographic point below the fingers fixed while zooming. */
-    private fun zoomAround(targetZoom:Int,focusX:Float,focusY:Float) {
-        if(zoom==targetZoom || width<=0 || height<=0)return
-        val (anchorLat,anchorLon)=geoAt(focusX,focusY)
-        zoom=targetZoom
+    /** Keep the same ground point below the touch centroid after a gesture. */
+    private fun keepGeoUnderFinger(
+        latitude:Double,longitude:Double,focusX:Float,focusY:Float
+    ){
         val world=tilePixelSize*(1 shl zoom)
         val offset=screenOffsets(focusX.toDouble(),focusY.toDouble())
-        val centerWorldX=worldX(anchorLon)-offset.first
-        val centerWorldY=worldY(anchorLat)-offset.second
+        val centerWorldX=worldX(longitude)-offset.first
+        val centerWorldY=worldY(latitude)-offset.second
         centerLon=(((centerWorldX%world)+world)%world)/world*360.0-180.0
         val my=centerWorldY.coerceIn(1.0,world-1.0)
         centerLat=Math.toDegrees(atan(sinh(Math.PI*(1.0-2.0*my/world))))
         invalidate()
+    }
+
+    /** Keep the geographic point below the fingers fixed while zooming. */
+    private fun zoomAround(targetZoom:Int,focusX:Float,focusY:Float) {
+        if(zoom==targetZoom || width<=0 || height<=0)return
+        val (lat,lon)=geoAt(focusX,focusY)
+        zoom=targetZoom
+        keepGeoUnderFinger(lat,lon,focusX,focusY)
+    }
+
+    private fun gestureAngle(event:MotionEvent):Double =
+        Math.toDegrees(atan2(
+            (event.getY(1)-event.getY(0)).toDouble(),
+            (event.getX(1)-event.getX(0)).toDouble()
+        ))
+
+    private fun beginTwoFingerGesture(event:MotionEvent) {
+        if(event.pointerCount<2)return
+        multitouchSeen=true
+        movedDuringTouch=true
+        follow=false
+        manualZoomUntilMs=SystemClock.elapsedRealtime()+60_000L
+        twoFingerAngle=gestureAngle(event)
+        twoFingerX=(event.getX(0)+event.getX(1))*0.5f
+        twoFingerY=(event.getY(0)+event.getY(1))*0.5f
+        twoFingerRotationStarted=false
+        twoFingerRotationAccum=0.0
+    }
+
+    private fun moveTwoFingers(event:MotionEvent){
+        if(event.pointerCount<2)return
+        val angle=gestureAngle(event)
+        val x=(event.getX(0)+event.getX(1))*0.5f
+        val y=(event.getY(0)+event.getY(1))*0.5f
+        val previous=twoFingerAngle
+        if(previous==null){
+            beginTwoFingerGesture(event)
+            return
+        }
+        val delta=deltaAngle(angle,previous)
+        // Keep the geographic point under the initial midpoint when both
+        // fingers move together, including simultaneous pinch and rotation.
+        val (lat,lon)=geoAt(twoFingerX,twoFingerY)
+        twoFingerRotationAccum+=delta
+        // Threshold avoids accidental rotation during straight pinch zoom.
+        if(twoFingerRotationStarted || abs(twoFingerRotationAccum)>=4.0){
+            twoFingerRotationStarted=true
+            headingUp=true
+            headingInitialized=true
+            // Canvas rotates by -cameraHeading, so clockwise finger twist
+            // must decrease cameraHeading to turn the map clockwise.
+            cameraHeading=normalizedCourse(cameraHeading-
+                if(abs(twoFingerRotationAccum)>=4.0)
+                    twoFingerRotationAccum else delta)
+            targetHeading=cameraHeading
+            twoFingerRotationAccum=0.0
+        }
+        keepGeoUnderFinger(lat,lon,x,y)
+        twoFingerAngle=angle
+        twoFingerX=x
+        twoFingerY=y
     }
 
     private fun worldX(lon:Double)=((lon+180.0)/360.0)*tilePixelSize*(1 shl zoom)
@@ -943,13 +1010,14 @@ internal class InertialTrackMapView(context:Context): View(context) {
                 return true
             }
             MotionEvent.ACTION_POINTER_DOWN -> {
-                multitouchSeen=true
-                movedDuringTouch=true
+                beginTwoFingerGesture(event)
                 return true
             }
             MotionEvent.ACTION_POINTER_UP -> {
                 multitouchSeen=true
                 movedDuringTouch=true
+                twoFingerAngle=null
+                twoFingerRotationStarted=false
                 val removed=event.actionIndex
                 val active=if(removed==0)1 else 0
                 if(active<event.pointerCount) {
@@ -959,8 +1027,11 @@ internal class InertialTrackMapView(context:Context): View(context) {
                 return true
             }
             MotionEvent.ACTION_MOVE -> {
-                if(event.pointerCount>1 || scaleDetector.isInProgress)
+                if(event.pointerCount>=2) {
+                    moveTwoFingers(event)
                     return true
+                }
+                if(scaleDetector.isInProgress)return true
                 if(multitouchSeen)return true
                 val dx=event.x-touchX
                 val dy=event.y-touchY
@@ -986,10 +1057,14 @@ internal class InertialTrackMapView(context:Context): View(context) {
                     selectionCallback?.invoke(lat,lon)
                 }
                 multitouchSeen=false
+                twoFingerAngle=null
+                twoFingerRotationStarted=false
                 return true
             }
             MotionEvent.ACTION_CANCEL -> {
                 multitouchSeen=false
+                twoFingerAngle=null
+                twoFingerRotationStarted=false
                 return true
             }
         }
