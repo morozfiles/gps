@@ -71,24 +71,24 @@ class InertialMapActivity : Activity() {
 
     private val refresh=object: Runnable {
         override fun run() {
-            val pure=State.pureSensorPoint
-            val pureTrail=State.pureSensorTrail.toList()
+            val obdDr=State.networkDrPoint
+            val obdDrTrail=State.networkDrTrail.toList()
             val raw=State.rawGpsTrail.toList()
-            map.updateDiagnostic(pure,pureTrail,raw)
+            map.updateDiagnostic(obdDr,obdDrTrail,raw)
             val lastRaw=raw.lastOrNull()
             val gpsLabel=lastRaw?.let{
                 String.format(Locale.US,"%.5f, %.5f",it.latitude,it.longitude)
             }?:"нет точек"
-            val pureLabel=pure?.let{
+            val obdDrLabel=obdDr?.let{
                 String.format(Locale.US,"%.5f, %.5f · %.1f км/ч",
                     it.latitude,it.longitude,it.speedKmh)
             }?:"нет стартовой точки"
-            val offset=if(lastRaw!=null && pure!=null){
+            val offset=if(lastRaw!=null && obdDr!=null){
                 val from=android.location.Location("gps").apply{
                     latitude=lastRaw.latitude;longitude=lastRaw.longitude
                 }
                 val to=android.location.Location("sensor").apply{
-                    latitude=pure.latitude;longitude=pure.longitude
+                    latitude=obdDr.latitude;longitude=obdDr.longitude
                 }
                 val metres=from.distanceTo(to).toDouble()
                 if(metres>=1000.0)
@@ -97,8 +97,9 @@ class InertialMapActivity : Activity() {
             } else "—"
             info.text=State.diagnosticText+
                 "\nGPS: $gpsLabel · точек: ${raw.size}"+
-                "\nЧистый DR: $pureLabel · точек: ${pureTrail.size}"+
+                "\nDR без GPS: $obdDrLabel · точек: ${obdDrTrail.size}"+
                 "\nРасхождение GPS / DR: $offset"+
+                "\n"+State.diagnosticNetworkStatus+
                 "\n"+State.gpsSpoofStatus
             handler.postDelayed(this,1000L)
         }
@@ -128,7 +129,7 @@ class InertialMapActivity : Activity() {
             gravity=Gravity.CENTER_VERTICAL
         }
         titleRow.addView(TextView(this).apply {
-            text="Тестовая карта · DR"
+            text="Тест GPS / DR без GPS"
             textSize=20f
             typeface=Typeface.DEFAULT_BOLD
             setTextColor(primaryTextColor)
@@ -181,9 +182,10 @@ class InertialMapActivity : Activity() {
             LinearLayout.LayoutParams.MATCH_PARENT,0,1f))
 
         val legend=TextView(this).apply {
-            text="● Зелёный — только GPS    ● Синий — чистый DR\n"+
-                 "● Оранжевый — отклонённый GPS · не используется для навигации"+
-                 "\nЧистый DR: старт с места; первые 2 с стоять неподвижно"
+            text="● Зелёный — GPS    ● Синий — DR + OBD + сеть (БЕЗ GPS)\n"+
+                 "● Оранжевый — отклонённый GPS"+
+                 "\nВторой трек: гироскоп, OBD через Bluetooth, Wi-Fi/сотовая сеть"+
+                 "\nОдна начальная координата и курс · затем GPS запрещён"
             setTextColor(secondary)
             textSize=12f
             gravity=Gravity.CENTER
@@ -278,7 +280,7 @@ internal class InertialTrackMapView(context:Context): View(context) {
     private var history=emptyList<State.TrailPoint>()
     private var diagnosticMode=false
     private var gpsRawHistory=emptyList<State.RawGpsPoint>()
-    private var pureHistory=emptyList<State.TrailPoint>()
+    private var obdNetworkHistory=emptyList<State.TrailPoint>()
     private var follow=true
     private var navigation=false
     private var routeGuidanceActive=false
@@ -455,7 +457,7 @@ internal class InertialTrackMapView(context:Context): View(context) {
         gpsTrail:List<State.RawGpsPoint>
     ){
         diagnosticMode=true
-        pureHistory=sensorTrail
+        obdNetworkHistory=sensorTrail
         gpsRawHistory=gpsTrail
         current=sensorPoint
         markerBearing=sensorPoint?.bearing
@@ -468,8 +470,8 @@ internal class InertialTrackMapView(context:Context): View(context) {
                 centerLat=anchor.first
                 centerLon=anchor.second
             }
-            // Sensor-integrated speed is unstable: never automatically
-            // zoom based on an uncorrected accelerometer estimate.
+            // Keep the test map centered on the GPS-free OBD/network track.
+            // Suspect GPS teleports cannot move the camera.
         }
         invalidate()
     }
@@ -761,7 +763,7 @@ internal class InertialTrackMapView(context:Context): View(context) {
         strokeCap=Paint.Cap.ROUND
         strokeJoin=Paint.Join.ROUND
     }
-    private val pureInertialLine=Paint(Paint.ANTI_ALIAS_FLAG).apply{
+    private val obdNetworkLine=Paint(Paint.ANTI_ALIAS_FLAG).apply{
         color=Color.rgb(20,146,255)
         style=Paint.Style.STROKE
         strokeWidth=8f
@@ -774,7 +776,7 @@ internal class InertialTrackMapView(context:Context): View(context) {
     }
 
     private fun drawDiagnosticTraces(canvas:Canvas){
-        // GPS is never blended with the sensor-only track. Suspicious
+        // GPS is never blended with the OBD+network DR track. Suspicious
         // observations are orange, isolated and cannot drag the camera
         // across the world during a spoofing event.
         val gpsPath=Path()
@@ -811,7 +813,7 @@ internal class InertialTrackMapView(context:Context): View(context) {
         var drStarted=false
         var lastX=0f
         var lastY=0f
-        for(sample in pureHistory){
+        for(sample in obdNetworkHistory){
             val (x,y)=point(sample.latitude,sample.longitude)
             if(!drStarted || abs(x-lastX)>width*.8f ||
                 abs(y-lastY)>height*.8f)
@@ -820,7 +822,7 @@ internal class InertialTrackMapView(context:Context): View(context) {
             drStarted=true
             lastX=x;lastY=y
         }
-        canvas.drawPath(drPath,pureInertialLine)
+        canvas.drawPath(drPath,obdNetworkLine)
         gpsRawHistory.lastOrNull{it.approved}?.let{
             val (x,y)=point(it.latitude,it.longitude)
             canvas.drawCircle(x,y,11f,rawGpsLine.apply{
