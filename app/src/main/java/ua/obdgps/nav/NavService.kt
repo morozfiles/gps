@@ -283,6 +283,8 @@ class NavService: Service(), LocationListener {
             STOP_DIAGNOSTIC -> {
                 State.stopDiagnostic()
                 comparisonDr.stop()
+                learnedDr.resetSegment()
+                learnedDr.save()
             }
             STOP_DR -> {
                 autoEnabled=false
@@ -742,6 +744,7 @@ class NavService: Service(), LocationListener {
             return
         }
         comparisonDr.start(lat,lon,heading,now)
+        learnedDr.resetSegment()
         State.startDiagnostic()
         State.addNetworkDrPoint(lat,lon,heading,correctedSpeed()?:0.0,now)
         State.diagnosticNetworkStatus=comparisonDr.lastNetworkStatus
@@ -751,6 +754,9 @@ class NavService: Service(), LocationListener {
     }
 
     private fun quarantineGps(now:Long,reason:String){
+        // Break supervised pairs whenever a GPS sample is quarantined:
+        // learning must never bridge across a spoofing episode.
+        learnedDr.resetSegment()
         gpsQuarantined=true
         gpsConsensus.clear()
         quarantineRecoveryCount=0
