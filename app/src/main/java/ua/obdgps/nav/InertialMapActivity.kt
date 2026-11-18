@@ -253,16 +253,24 @@ internal class InertialTrackMapView(context:Context): View(context) {
     // multiplier is retained as automatic speed-based zoom changes.
     // 384px per OSM tile in 0.9.2 -> 576px in this version.
     private val tilePixelSize=576.0
+    // Track widths are dp, not raw px: the vehicle route must remain
+    // visible on high-density phones and large Android head units.
+    private fun lineDp(value:Float)=value*resources.displayMetrics.density
     private val tilePaint=Paint(Paint.FILTER_BITMAP_FLAG)
     private val gridPaint=Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color=Color.rgb(65,75,87);strokeWidth=1f
     }
     private val routeOutline=Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color=Color.rgb(6,32,44);strokeWidth=11f;style=Paint.Style.STROKE
+        color=Color.rgb(6,32,44);strokeWidth=lineDp(12f);style=Paint.Style.STROKE
         strokeJoin=Paint.Join.ROUND;strokeCap=Paint.Cap.ROUND
     }
+    private val navigationOutline=Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color=Color.rgb(20,36,56);strokeWidth=lineDp(15f)
+        style=Paint.Style.STROKE;strokeJoin=Paint.Join.ROUND
+        strokeCap=Paint.Cap.ROUND
+    }
     private val navigationPaint=Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color=Color.rgb(255,177,58);strokeWidth=10f
+        color=Color.rgb(255,177,58);strokeWidth=lineDp(12f)
         style=Paint.Style.STROKE;strokeJoin=Paint.Join.ROUND
         strokeCap=Paint.Cap.ROUND
     }
@@ -273,7 +281,7 @@ internal class InertialTrackMapView(context:Context): View(context) {
         color=Color.rgb(171,117,242);style=Paint.Style.FILL
     }
     private val routePaint=Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color=Color.rgb(22,207,206);strokeWidth=6f;style=Paint.Style.STROKE
+        color=Color.rgb(22,207,206);strokeWidth=lineDp(9f);style=Paint.Style.STROKE
         strokeJoin=Paint.Join.ROUND;strokeCap=Paint.Cap.ROUND
     }
     private val pinHalo=Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -801,6 +809,8 @@ internal class InertialTrackMapView(context:Context): View(context) {
                 } else path.lineTo(x,y)
                 lastX=x;lastY=y
             }
+            // Dark outer edge separates the thick orange route from roads.
+            canvas.drawPath(path,navigationOutline)
             canvas.drawPath(path,navigationPaint)
         }
         if(navigation) {
@@ -876,14 +886,14 @@ internal class InertialTrackMapView(context:Context): View(context) {
     private val rawGpsLine=Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color=Color.rgb(51,220,119)
         style=Paint.Style.STROKE
-        strokeWidth=7f
+        strokeWidth=lineDp(9f)
         strokeCap=Paint.Cap.ROUND
         strokeJoin=Paint.Join.ROUND
     }
     private val obdNetworkLine=Paint(Paint.ANTI_ALIAS_FLAG).apply{
         color=Color.rgb(20,146,255)
         style=Paint.Style.STROKE
-        strokeWidth=8f
+        strokeWidth=lineDp(10f)
         strokeCap=Paint.Cap.ROUND
         strokeJoin=Paint.Join.ROUND
     }
@@ -896,7 +906,7 @@ internal class InertialTrackMapView(context:Context): View(context) {
     private val diagnosticDrRing=Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color=Color.rgb(20,146,255)
         style=Paint.Style.STROKE
-        strokeWidth=5.5f
+        strokeWidth=lineDp(7f)
     }
     private val initialFixPaint=Paint(Paint.ANTI_ALIAS_FLAG).apply{
         color=Color.rgb(208,220,236)
