@@ -62,6 +62,7 @@ class OfflineVectorNavigatorActivity:Activity() {
     private lateinit var guidance:TextView
     private lateinit var arrow:View
     private lateinit var alerts:AirAlertIndicatorsView
+    private lateinit var learnedButton:Button
     private var vectorMap:MapDataStore?=null
     private var loadedMapSignature=""
     private var loadedRegion=""
@@ -283,6 +284,29 @@ class OfflineVectorNavigatorActivity:Activity() {
             FrameLayout.LayoutParams(dp(45),dp(45),Gravity.TOP or Gravity.RIGHT).apply{
                 topMargin=dp(104);rightMargin=dp(8)
             })
+        State.learnedDrEnabled=NavigatorPrefs(this).learnedDrEnabled
+        learnedButton=button("ИИ"){
+            State.learnedDrEnabled=!State.learnedDrEnabled
+            NavigatorPrefs(this).learnedDrEnabled=State.learnedDrEnabled
+            updateAiButton()
+            Toast.makeText(this,State.learnedDrStatus,
+                Toast.LENGTH_LONG).show()
+        }.apply{
+            setOnLongClickListener{
+                AlertDialog.Builder(this@OfflineVectorNavigatorActivity)
+                    .setTitle("Профиль обучения GPS / DR")
+                    .setMessage(State.learnedDrStatus+"\n\n"+
+                        State.learnedDrDetail)
+                    .setPositiveButton("Закрыть",null).show()
+                true
+            }
+        }
+        frame.addView(learnedButton,
+            FrameLayout.LayoutParams(dp(45),dp(45),
+                Gravity.TOP or Gravity.RIGHT).apply{
+                topMargin=dp(152);rightMargin=dp(8)
+            })
+        updateAiButton()
         frame.addView(label("© OpenStreetMap contributors",10f).apply {
             setTextColor(Color.rgb(56,68,80))
             setBackgroundColor(Color.argb(185,255,255,255))
@@ -335,6 +359,18 @@ class OfflineVectorNavigatorActivity:Activity() {
                 alertVoice?.language=Locale("ru","RU")
             }
         }
+    }
+
+    private fun updateAiButton(){
+        if(!::learnedButton.isInitialized)return
+        learnedButton.text=if(State.learnedDrEnabled)"ИИ\nВКЛ"
+            else "ИИ\nВЫКЛ"
+        learnedButton.contentDescription=if(State.learnedDrEnabled)
+            "Выключить обученные инерциальные поправки"
+        else "Включить обученные инерциальные поправки"
+        (learnedButton.background as? GradientDrawable)?.setColor(
+            if(State.learnedDrEnabled)Color.rgb(23,99,128)
+            else Color.rgb(47,54,65))
     }
 
     private fun adjustZoom(by:Int){
@@ -500,6 +536,7 @@ class OfflineVectorNavigatorActivity:Activity() {
         override fun run(){
             if(!::mapView.isInitialized)return
             alerts.refresh()
+            updateAiButton()
             val fix=State.navFix?.takeIf{
                 SystemClock.elapsedRealtime()-it.elapsedMs<15_000 ||
                     it.source.contains("Ручная")
