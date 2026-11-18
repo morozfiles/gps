@@ -751,22 +751,24 @@ class NavService: Service(), LocationListener {
         // Android Location.isMock prevents feeding our injected position
         // back into the filter as an apparently independent measurement.
         if(location.isMock || !location.hasAccuracy())return
-        if(gpsQuarantined && provider!="Wi-Fi/сеть")return
         if(GpsSpoofGuard.isLima(location.latitude,location.longitude))return
-        val maxAccuracy=if(State.dr)70f else 220f
-        if(location.accuracy<=0f || location.accuracy>maxAccuracy)return
         val age=SystemClock.elapsedRealtimeNanos()-location.elapsedRealtimeNanos
         if(age<0L || age>12_000_000_000L)return
         if(location.latitude !in -85.0..85.0 ||
             location.longitude !in -180.0..180.0)return
-
         val now=SystemClock.elapsedRealtime()
-        // The comparison estimator gets ONLY direct NETWORK_PROVIDER fixes,
-        // even when the main navigator currently uses GPS or Fused.
+
+        // Independent GPS-cut test intentionally sees direct network fixes
+        // before the MAIN navigator's more restrictive accuracy threshold.
+        // The comparison estimator itself validates network age, quality,
+        // and that location.provider is exactly NETWORK_PROVIDER.
         if(State.diagnosticRunning){
             comparisonDr.onIndependentNetworkLocation(location,provider,now)
             State.diagnosticNetworkStatus=comparisonDr.lastNetworkStatus
         }
+        if(gpsQuarantined && provider!="Wi-Fi/сеть")return
+        val maxAccuracy=if(State.dr)70f else 220f
+        if(location.accuracy<=0f || location.accuracy>maxAccuracy)return
         val candidate=State.NavFix(location.latitude,location.longitude,
             if(location.hasBearing())location.bearing.toDouble() else null,
             location.accuracy,provider,now)
