@@ -1104,7 +1104,10 @@ class NavigatorActivity : Activity() {
                         if(warning!=InertialRouteMatcher.Warning.NONE) {
                             instruction.text=matched!!.warningText+
                                 ". Проверь направление и маршрут!"
-                            summary.text="⚠ Сход с маршрута · "+
+                            summary.text=if(warning==
+                                InertialRouteMatcher.Warning.WRONG_WAY)
+                                "⚠ Движение против направления маршрута"
+                            else "⚠ Сход с маршрута · "+
                                 (matched.rawDeviationMeters.roundToInt())+" м"
                             if(warning!=lastRouteWarning ||
                                 now-lastRouteWarningSpokenMs>45_000L){
