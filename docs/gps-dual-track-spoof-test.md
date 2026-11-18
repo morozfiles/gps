@@ -1,36 +1,54 @@
-# Diagnostic dual tracks and Lima GPS-spoof quarantine
+# Сравнение двух треков: GPS и DR при имитации отсутствия GPS
 
-Version 0.10.2-alpha implements two independent test map traces.
+Версия приложения: 0.10.3-alpha.
 
-## Test map
+## Два одновременно отображаемых трека
 
-Open **Тестовая карта · DR** and tap **Начать два трека** while the vehicle is parked with a phone rigidly attached to its holder. The navigation service must have a trustworthy initial position and bearing (manual start or accepted recent GPS/heading). A one-time absolute start is necessary to draw latitude/longitude; no absolute coordinates can be derived from accelerometers alone.
+- **Зелёный** — измерения Android `GPS_PROVIDER`. Достоверные измерения
+  соединяются линией; отклонённые защитой наблюдения остаются оранжевыми точками.
+- **Синий** — совершенно отдельная модель `IndependentNetworkDr`. Её расчёт
+  после начальной привязки использует **только**:
+  1. скорость автомобиля из OBD/ELM327 (Bluetooth BLE либо классический SPP),
+  2. угловую скорость гироскопа телефона (повороты),
+  3. точечные мягкие коррекции по прямым измерениям Android
+     `LocationManager.NETWORK_PROVIDER`, обычно Wi-Fi/сотовая сеть.
 
-- **Green**: only real `LocationManager.GPS_PROVIDER` observations. Rejected GPS readings are shown in **orange**, *never fed into navigation*. Long/implausible segments are broken rather than drawing a straight line from Ukraine to Peru.
-- **Blue**: a separate pure-inertial estimate initialized with the starting coordinate and orientation, and then updated **only** from `TYPE_GYROSCOPE` and `TYPE_LINEAR_ACCELERATION` (gravity determines vertical yaw axis). It does not read live GPS, OBD/Bluetooth speed, Wi-Fi, cellular data, or fused locations after start. It estimates speed by integrating acceleration. The first two seconds must be motionless for bias sampling.
-- The existing OBD-assisted DR with trusted network/GPS corrections is unaffected and remains the primary navigation fallback; it is *not* the blue test trace.
-- Tracks are kept in RAM and reset when starting a new test. No persistent trace export yet.
+Второй трек **никогда не использует после старта** ни GPS-координаты, ни
+GPS-скорость, ни GPS-курс, ни Fused Location, ни текущий трек основного
+навигатора. Первый GPS-трек продолжает обновляться параллельно.
 
-**Limitations:** accelerometer-only speed and heading integration accumulate errors rapidly. The blue line may drift significantly, including when stopped; it is **not** a substitute for OBD speed and validated positioning.
+**Единственное исключение**: для нанесения относительного DR-пути на
+географическую карту необходимы начальная координата и курс. Их можно
+получить из вручную указанной стартовой точки или из последнего ранее
+проверенного GPS до запуска теста. После запуска GPS полностью изолирован
+от синего трека.
 
-## GPS anomaly handling
+## Как проверять
 
-- GPS coordinates within a broad Lima, Peru bounding region are always rejected for navigation. This is a trip-specific heuristic for this Ukraine-oriented app, **not a proof of spoofing**.
-- A physically impossible GPS jump from an earlier accepted fix is quarantined. Existing OBD-vs-GPS speed disagreement checks remain active.
-- Suspicious GPS coordinates are never used to re-seed the live DeadReckoner, correct its position, or align the heading.
-- During quarantine, the primary navigation can switch to OBD-assisted DR if an accepted initial anchor and recent OBD data are available.
-- Corrections use bounded network fixes from Android `NETWORK_PROVIDER`. These typically use Wi-Fi and cellular networks. Bluetooth-based beacon positioning depends on device, platform services and a surveyed beacon database and **cannot be guaranteed**.
-- Fused provider updates are blocked from DR correction during quarantine because they may include spoofed GNSS.
-- A quarantine exit requires reported GPS speed ≤180 km/h, a position outside the Lima region, proximity to a recent independent network/DR anchor and at least **five** spaced, agreeing samples. A speed drop alone never re-enables GPS.
+1. Подключить ELM327 и убедиться, что на экране видна свежая скорость OBD.
+2. Выполнить штатную 5-секундную калибровку гироскопа, неподвижно закрепив
+   телефон в машине.
+3. Получить достоверную стартовую точку и курс, либо задать их вручную.
+4. На первом экране открыть «Тест двух треков · GPS и DR без GPS».
+5. Нажать «Начать два трека», начать поездку. Синий трек начинает с той же
+   точки, но дальше использует только OBD + гироскоп + сеть. Внизу отображаются
+   GPS-координаты, DR-координаты, расхождение и статус сетевой коррекции.
+6. При спуфинге GPS-координаты в Лиме должны быть отклонены, основной навигатор
+   должен переключаться на доверенный DR. Синий диагностический трек при этом
+   не зависит от GPS.
+7. «Остановить» останавливает запись обоих диагностических треков, но не
+   отключает GPS у системы Android.
 
-## Test checklist
+## Ограничения
 
-1. Start the app with GPS and sensor permissions, confirm GPS/OBD or set a manual start point and direction.
-2. Park the vehicle and start both tracks. Stay still 2 seconds.
-3. Drive normally. Blue and green tracks should be independent and separate.
-4. If a physical GPS spoof moves to Lima: its **raw GPS point** appears as rejected, the map must not jump, and the primary navigation should use DR/network if safe inputs exist.
-5. Even if the spoofed speed falls below 180 km/h, Lima fixes must remain rejected.
-6. Leave the quarantine only after several consistent, independently corroborated, non-Lima fixes. Never turn off checks solely based on speed.
-7. Repeat with no OBD available: the system must **not invent a DR track** or seed it from suspicious GNSS.
-
-**Safety:** requires actual stationary and road tests with trace logging. A successful APK compilation does not verify GNSS spoof resistance or route accuracy. Do not depend on this experimental feature alone for critical navigation.
+- NETWORK_PROVIDER может быть недоступен. Сотовая локация часто имеет
+  слишком большую погрешность; такие поправки должны отвергаться.
+- Bluetooth используется для получения **скорости OBD**. Позиционирование
+  по BLE-маякам требует известных координат маяков и поддержки сервисов
+  телефона и не гарантируется самим подключением ELM327.
+- Если данные OBD пропадают, DR не выдумывает скорость и временно
+  не перемещает позицию. После возвращения OBD продолжает расчёт.
+- Угол курса и расстояние постепенно накапливают ошибку. В городе такая
+  модель менее точна, чем GPS; сравнение предназначено для тестирования.
+- Компиляция APK не доказывает устойчивость к реальному спуфингу; необходимы
+  проверки в автомобиле.
