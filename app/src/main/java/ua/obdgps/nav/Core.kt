@@ -178,6 +178,12 @@ object State {
     var manualStart:NavigatorPrefs.ManualStart?=null
     var navigationDestination:Pair<Double,Double>?=null
     var activeRouting=false
+    /**
+     * Current user-selected road geometry for a 500 m GPS quality gate.
+     * Route is never generated from unapproved raw GPS coordinates.
+     * Empty when route guidance is not active.
+     */
+    @Volatile var gpsFilterRoutePoints:List<RoutingEngine.Point> = emptyList()
 
     var gpsSpeedKmh: Double? = null
     var gpsSpeedUpdatedElapsedMs: Long = 0L
