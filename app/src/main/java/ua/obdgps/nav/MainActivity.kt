@@ -258,6 +258,7 @@ class MainActivity : Activity() {
             status.text="Режим: ${State.navigationMode} · Авто: ${if(State.autoEnabled)"вкл" else "выкл"}\n"+
                 "Bluetooth: $bluetooth · GPS: $gps\n"+
                 "Положение: ${State.sourceDescription}\n"+
+                "Офлайн: ${State.offlineUkraineStatus}\n"+
                 "ELM: ${State.deviceName}\n"+
                 "GPS: ${State.gpsText}\n"+
                 "Контроль GPS / DR: ${State.gpsSpoofStatus}\n"+
@@ -725,6 +726,14 @@ class MainActivity : Activity() {
     }
     override fun onResume() {
         super.onResume()
+        State.offlineUkraineStatus="Проверяю карту Украины и базу адресов..."
+        OfflineUkraineAssets.scanAsync(this){found->
+            if(!isDestroyed){
+                val map=if(found.mapValid)"найдена" else "не найдена"
+                val poi=if(found.poiValid)"найдены" else "не найдены"
+                State.offlineUkraineStatus="карта Украины $map · адреса $poi"
+            }
+        }
         monitorGpsSpeed()
         if(hasPermissions()) send(NavService.MONITOR)
         handler.removeCallbacks(refresh)
