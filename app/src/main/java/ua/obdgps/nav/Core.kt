@@ -212,6 +212,11 @@ object State {
     var directionText = "Направление: определяется"
     var obdFactor = 0.97
     fun obdSpeedKmh(): Double? = speed?.times(obdFactor)
+    // Learning compares trusted GNSS only in the two-track test.
+    // Corrections are opt-in; the default is never to alter inertial data.
+    @Volatile var learnedDrEnabled=false
+    @Volatile var learnedDrStatus="ИИ: обучение не начато"
+    @Volatile var learnedDrDetail="Пока нет обучающих участков"
 
     var driftMeters = 0.0
     var position = "—"
