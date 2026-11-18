@@ -606,7 +606,7 @@ class OfflineVectorNavigatorActivity:Activity() {
                             else ""
                     }
                     lastRouteWarning=warning
-                    if(progress.arrived){
+                    if(progress.arrived && warning==InertialRouteMatcher.Warning.NONE){
                         active=false
                         inertialRouteMatcher.reset()
                         State.activeRouting=false
