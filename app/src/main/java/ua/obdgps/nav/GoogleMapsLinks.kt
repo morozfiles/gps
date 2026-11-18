@@ -62,6 +62,44 @@ internal object GoogleMapsLinks {
         }.getOrDefault(false)}
     }
 
+    /**
+     * Google Maps often shares "venue, street, house number, city, postcode".
+     * Photon may return ZERO candidates for the whole phrase even when
+     * "venue, city" resolves the intended POI. Preserve the city to avoid
+     * matching an identically named place in another town.
+     */
+    fun addressVariants(raw:String):List<String>{
+        val full=raw.replace(Regex("""\s+""")," ").trim()
+        if(full.isBlank())return emptyList()
+        val parts=full.split(',').map{it.trim()}.filter{it.isNotBlank()}
+        val variants=ArrayList<String>()
+        variants.add(full)
+        if(parts.size>=3){
+            val cityIndex=parts.indexOfLast{
+                it.any(Char::isLetter) &&
+                    !it.matches(Regex("""\d{4,8}"""))
+            }
+            val city=parts.getOrNull(cityIndex)?.takeIf{
+                cityIndex>=2 && cityIndex<parts.size && it!=parts.first()
+            }
+            if(city!=null){
+                variants.add(parts.first()+", "+city)
+                if(cityIndex>=3) {
+                    variants.add(parts.subList(1,cityIndex).joinToString(", ")+
+                        ", "+city)
+                }else if(cityIndex==2){
+                    variants.add(parts[1]+", "+city)
+                }
+            }
+        }
+        if(parts.size==2){
+            // A simpler place + city name may already be ideal.
+            variants.add(parts.joinToString(", "))
+        }
+        return variants.map{it.trim().take(180)}
+            .filter{it.length>=3}.distinct().take(4)
+    }
+
     private fun point(lat:Double?,lon:Double?,label:String,
                       approximate:Boolean=false):Target.Coordinate? {
         if(lat==null||lon==null||!lat.isFinite()||!lon.isFinite()||
