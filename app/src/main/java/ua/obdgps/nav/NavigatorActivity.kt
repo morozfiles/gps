@@ -72,6 +72,9 @@ class NavigatorActivity : Activity() {
     private var active=false
     private var pickMode="DEST"
     private var lastRerouteMs=0L
+    private val inertialRouteMatcher=InertialRouteMatcher()
+    private var lastRouteWarning=InertialRouteMatcher.Warning.NONE
+    private var lastRouteWarningSpokenMs=0L
     private var lastVoiceKey=""
     private var voiceEnabled=false
     private val speechRequestCode=1638
@@ -897,6 +900,8 @@ class NavigatorActivity : Activity() {
             result.fold(
                 onSuccess={value->
                     plan=value
+                    inertialRouteMatcher.reset()
+                    lastRouteWarning=InertialRouteMatcher.Warning.NONE
                     State.activeRouting=active
                     State.gpsFilterRoutePoints=if(active)value.points else emptyList()
                     pickStatus.text="Маршрут построен. "+(value.lengthKm).roundToInt()+" км"
@@ -948,6 +953,8 @@ class NavigatorActivity : Activity() {
         // restore car-following and face down the planned route immediately.
         map.beginRouteGuidance(ahead,fallback)
         active=true
+        inertialRouteMatcher.reset()
+        lastRouteWarning=InertialRouteMatcher.Warning.NONE
         State.activeRouting=true
         State.gpsFilterRoutePoints=route.points
         lastVoiceKey=""
@@ -959,6 +966,8 @@ class NavigatorActivity : Activity() {
 
     private fun stopGuidance() {
         active=false
+        inertialRouteMatcher.reset()
+        lastRouteWarning=InertialRouteMatcher.Warning.NONE
         State.activeRouting=false
         State.gpsFilterRoutePoints=emptyList()
         map.stopRouteGuidance()
@@ -1049,19 +1058,36 @@ class NavigatorActivity : Activity() {
                 "Скорость недоступна" else
                 "Скорость "+speed!!.roundToInt()+" километров в час, "+
                     speedReading.source
-            val routeProgress=if(route!=null && fix!=null)
-                route.progress(RoutingEngine.Point(fix.lat,fix.lon)) else null
+            val now=SystemClock.elapsedRealtime()
+            // Inertial map matching is DISPLAY ONLY. The raw DR estimator
+            // and GPS anti-spoof checks never receive this route projection.
+            val matched=if(active && State.dr && route!=null && fix!=null)
+                inertialRouteMatcher.match(fix,route,
+                    if(speedReading?.source=="OBD")speed else null,now)
+                else {
+                    inertialRouteMatcher.reset()
+                    null
+                }
+            val displayFix=matched?.displayFix?:fix
+            val routeProgress=if(route!=null && displayFix!=null)
+                route.progress(RoutingEngine.Point(displayFix.lat,displayFix.lon))
+                else null
             val routeDirection=route?.let {
                 upcomingCourse(it,routeProgress?.nearestShapeIndex?:0)
             }
-            map.updateFromNavigation(fix,route?.points?:emptyList(),
+            map.updateFromNavigation(displayFix,route?.points?:emptyList(),
                 selectedDestination,manualOrigin,speed,routeDirection,active)
             source.text=State.sourceDescription+" · "+
-                if(State.dr)"DR + OBD" else "обычное местоположение"
+                (if(State.dr) {
+                    if(matched?.snapped==true)
+                        "DR + OBD · привязка к маршруту"
+                    else "DR + OBD · исходная позиция"
+                }else "обычное местоположение")
             if(route!=null) {
                 if(fix!=null) {
                     val progress=routeProgress
-                        ?:route.progress(RoutingEngine.Point(fix.lat,fix.lon))
+                        ?:route.progress(RoutingEngine.Point(displayFix!!.lat,
+                            displayFix.lon))
                     val distance=if(progress.remainingMeters>=1000)
                         String.format(Locale.getDefault(),"%.1f км",progress.remainingMeters/1000)
                     else progress.remainingMeters.roundToInt().toString()+" м"
@@ -1073,16 +1099,34 @@ class NavigatorActivity : Activity() {
                                 it.instruction
                         }?:"Продолжай движение по маршруту")
                     if(active) {
-                        maybeSpeakManeuver(progress)
-                        val now=SystemClock.elapsedRealtime()
-                        if(progress.lateralMeters>max(120.0,fix.accuracy*2.3) &&
+                        val warning=matched?.warning
+                            ?:InertialRouteMatcher.Warning.NONE
+                        if(warning!=InertialRouteMatcher.Warning.NONE) {
+                            instruction.text=matched!!.warningText+
+                                ". Проверь направление и маршрут!"
+                            summary.text="⚠ Сход с маршрута · "+
+                                (matched.rawDeviationMeters.roundToInt())+" м"
+                            if(warning!=lastRouteWarning ||
+                                now-lastRouteWarningSpokenMs>45_000L){
+                                speak(matched.warningText)
+                                lastRouteWarningSpokenMs=now
+                            }
+                        }else {
+                            maybeSpeakManeuver(progress)
+                        }
+                        lastRouteWarning=warning
+                        // Do not silently rebuild a route during DR. A raw
+                        // inertial departure must remain visible and warn,
+                        // not become a new automatically accepted route.
+                        if(!State.dr &&
+                            progress.lateralMeters>max(120.0,fix.accuracy*2.3) &&
                             now-lastRerouteMs>65_000L && !requestingRoute &&
                             fix.accuracy<=90f && fix.source!="Ручная точка" &&
                             fix.source!="Ручной старт") {
                             lastRerouteMs=now
                             buildRoute(true)
                         }
-                    }
+                    }else lastRouteWarning=InertialRouteMatcher.Warning.NONE
                 } else {
                     instruction.text="Нет свежего положения — маршрут сохранён"
                     summary.text="Ожидаем GPS/Wi-Fi или ручной старт"
