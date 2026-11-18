@@ -57,6 +57,7 @@ class NavService: Service(), LocationListener {
     private val dr = DeadReckoner()
     // Separate test estimate: receives OBD + gyro + direct NETWORK fixes only.
     private val comparisonDr=IndependentNetworkDr()
+    private lateinit var learnedDr:AdaptiveDrLearning
     private val gpsConsensus=GpsFixConsensus()
     private var gpsQuarantined=false
     private var quarantineRecoveryCount=0
@@ -167,6 +168,8 @@ class NavService: Service(), LocationListener {
                         obd?:0.0,now)
                 }
                 State.diagnosticNetworkStatus=comparisonDr.lastNetworkStatus
+                State.learnedDrStatus=learnedDr.status()
+                State.learnedDrDetail=learnedDr.detail()
                 State.diagnosticText=if(obd==null)
                     "GPS отключён для DR · нет свежей скорости OBD"
                 else "Имитация отсутствия GPS · DR: OBD + гироскоп + сеть"
@@ -180,6 +183,10 @@ class NavService: Service(), LocationListener {
         super.onCreate()
         lm = getSystemService(LOCATION_SERVICE) as LocationManager
         settings = NavigatorPrefs(this)
+        learnedDr=AdaptiveDrLearning(this)
+        State.learnedDrEnabled=settings.learnedDrEnabled
+        State.learnedDrStatus=learnedDr.status()
+        State.learnedDrDetail=learnedDr.detail()
         AirAlerts.initialize(this)
         State.obdFactor = settings.obdFactor
         autoEnabled = settings.autoEnabled
@@ -205,7 +212,17 @@ class NavService: Service(), LocationListener {
             acceptNetworkLocation(location,source)
         }
         motion = MotionSensors(this) { yaw, dt ->
-            if(State.dr)dr.turn(yaw,dt)
+            if(State.dr){
+                val fresh=State.speed!=null &&
+                    SystemClock.elapsedRealtime()-speedTime<3500L
+                val kmh=if(fresh)correctedSpeed() else null
+                val scale=if(State.learnedDrEnabled && kmh!=null)
+                    learnedDr.yawGain(kmh,Math.toDegrees(yaw))
+                    else 1.0
+                dr.turn(yaw*scale,dt)
+            }
+            // Training comparison remains COMPLETELY uncorrected. It is
+            // independent of the learned network and of the primary DR.
             if(State.diagnosticRunning)comparisonDr.onGyroYaw(yaw,dt)
         }
         motion.start()
@@ -1092,7 +1109,10 @@ class NavService: Service(), LocationListener {
             }
             val dt=((now-tickTime)/1000.0).coerceIn(0.0,0.45)
             if(dt > 0) {
-                dr.move(obdKmh,dt,reverse)
+                val gain=if(State.learnedDrEnabled)
+                    learnedDr.speedGain(obdKmh,State.yawDegPerSec)
+                    else 1.0
+                dr.move((obdKmh*gain).coerceIn(0.0,260.0),dt,reverse)
                 State.driftMeters += obdKmh/3.6*dt*.045 + .12*dt
                 // Magnetic readings can be distorted by steel and electronics:
                 // apply only a very small bounded correction, never a snap.
@@ -1377,6 +1397,16 @@ class NavService: Service(), LocationListener {
         gpsTime=now
         lastAcceptedGps=now
         State.markRawGpsApproved(now)
+        // Learn ONLY from trusted GPS fixes in the explicit two-track
+        // experiment. These measurements never enter the test DR estimator.
+        if(State.diagnosticRunning && !gpsQuarantined &&
+            State.speed!=null && now-speedTime<3500L) {
+            learnedDr.observeTrustedGps(location,comparisonDr.pose,
+                correctedSpeed(),comparisonDr.correctionCount,
+                gpsConsensus.sampleCount,now)
+            State.learnedDrStatus=learnedDr.status()
+            State.learnedDrDetail=learnedDr.detail()
+        }
         State.gpsText="GPS: принятые координаты, усреднение "+
             "${gpsConsensus.sampleCount} точек; ~"+
             location.accuracy.toInt()+" м"
@@ -1448,6 +1478,7 @@ class NavService: Service(), LocationListener {
         disconnectTransport()
         motion.stop()
         comparisonDr.stop()
+        learnedDr.save()
         State.stopDiagnostic()
         hybridLocator.stop()
         try {lm.removeUpdates(this)} catch(_:Exception){}
