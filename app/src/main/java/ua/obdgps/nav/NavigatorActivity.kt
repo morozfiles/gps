@@ -55,6 +55,8 @@ class NavigatorActivity : Activity() {
     private lateinit var pickStatus:TextView
     private lateinit var voiceButton:Button
     private lateinit var alertsView:AirAlertIndicatorsView
+    private lateinit var speedValue:TextView
+    private lateinit var speedSource:TextView
     private var selectedDestination:RoutingEngine.Point?=null
     private var manualOrigin:RoutingEngine.Point?=null
     private var plan:RoutingEngine.Route?=null
@@ -155,21 +157,8 @@ class NavigatorActivity : Activity() {
             }
         }
 
-        val title=LinearLayout(this).apply {
-            orientation=LinearLayout.HORIZONTAL
-            gravity=Gravity.CENTER_VERTICAL
-        }
-        title.addView(label("Навигатор · OBD GPS",17f).apply {
-            typeface=Typeface.DEFAULT_BOLD
-            isSingleLine=true
-            ellipsize=TextUtils.TruncateAt.END
-        },LinearLayout.LayoutParams(0,LinearLayout.LayoutParams.WRAP_CONTENT,1f))
-        alertsView=AirAlertIndicatorsView(this)
-        title.addView(alertsView,LinearLayout.LayoutParams(
-            dp(168),dp(53)))
-        root.addView(title)
-        updateAlertIndicator()
-
+        // Remove the 53dp title row: the map now occupies its space.
+        // Air-alert status remains accessible as a floating map overlay.
         source=label("Источники координат: ожидание",12f,secondary)
         source.setPadding(dp(2),dp(1),dp(2),dp(2))
         source.maxLines=1
@@ -197,6 +186,17 @@ class NavigatorActivity : Activity() {
         map=InertialTrackMapView(this)
         map.enableNavigationMode{lat,lon->onMapPicked(lat,lon)}
         mapContainer.addView(map)
+        alertsView=AirAlertIndicatorsView(this).apply{
+            background=GradientDrawable().apply{
+                cornerRadius=dp(10).toFloat()
+                setColor(Color.argb(213,27,31,38))
+            }
+        }
+        mapContainer.addView(alertsView,FrameLayout.LayoutParams(
+            dp(168),dp(53),Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply{
+                topMargin=dp(5)
+        })
+        updateAlertIndicator()
         val zoom=LinearLayout(this).apply {
             orientation=LinearLayout.VERTICAL
             setPadding(dp(2),dp(2),dp(2),dp(2))
@@ -206,6 +206,43 @@ class NavigatorActivity : Activity() {
         zoom.addView(mapControl("−"){map.changeZoom(-1)},
             LinearLayout.LayoutParams(dp(45),dp(45)).apply{topMargin=dp(4)})
         zoom.addView(mapControl("◎"){map.followCar()},
+            LinearLayout.LayoutParams(dp(45),dp(45)).apply{topMargin=dp(4)})
+        // Match the map controls' dimensions and outline. This is a
+        // read-only speedometer, not a button: the same speed reading is
+        // passed to the map's camera/automatic zoom on each refresh.
+        val speedBadge=LinearLayout(this).apply{
+            orientation=LinearLayout.VERTICAL
+            gravity=Gravity.CENTER
+            minHeight=0
+            minimumHeight=0
+            background=GradientDrawable().apply{
+                cornerRadius=dp(11).toFloat()
+                setColor(Color.argb(164,30,39,53))
+                setStroke(dp(1),Color.argb(160,210,225,244))
+            }
+            setPadding(0,0,0,0)
+        }
+        speedValue=label("—",18f,Color.WHITE).apply{
+            typeface=Typeface.DEFAULT_BOLD
+            gravity=Gravity.CENTER
+            includeFontPadding=false
+            isSingleLine=true
+        }
+        speedBadge.addView(speedValue,LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,LinearLayout.LayoutParams.WRAP_CONTENT))
+        speedBadge.addView(label("км/ч",8f,Color.rgb(220,233,246)).apply{
+            gravity=Gravity.CENTER
+            includeFontPadding=false
+            isSingleLine=true
+        },LinearLayout.LayoutParams(-1,-2))
+        speedSource=label("нет",8f,Color.rgb(170,191,210)).apply{
+            gravity=Gravity.CENTER
+            includeFontPadding=false
+            isSingleLine=true
+        }
+        speedBadge.addView(speedSource,LinearLayout.LayoutParams(-1,-2))
+        speedBadge.contentDescription="Скорость навигатора неизвестна"
+        zoom.addView(speedBadge,
             LinearLayout.LayoutParams(dp(45),dp(45)).apply{topMargin=dp(4)})
         mapContainer.addView(zoom,FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.WRAP_CONTENT,FrameLayout.LayoutParams.WRAP_CONTENT,
@@ -728,16 +765,20 @@ class NavigatorActivity : Activity() {
         }
     }
 
-    private fun liveCarSpeed():Double? {
+    private data class SpeedReading(val kmh:Double,val source:String)
+
+    private fun liveCarSpeed():SpeedReading? {
         val now=SystemClock.elapsedRealtime()
         // The corrected ELM327/OBD value is the primary speed source.
         val obd=State.obdSpeedKmh()
         if(obd!=null && obd.isFinite() && State.speedUpdatedElapsedMs>0L &&
-            now-State.speedUpdatedElapsedMs<3500L)return obd
-        // Real GPS velocity can drive the camera when OBD is disconnected.
+            now-State.speedUpdatedElapsedMs<3500L)
+            return SpeedReading(obd,"OBD")
+        // Real GPS velocity drives the camera if OBD is not fresh.
         val gps=State.gpsSpeedKmh
         if(gps!=null && gps.isFinite() && State.gpsSpeedUpdatedElapsedMs>0L &&
-            now-State.gpsSpeedUpdatedElapsedMs<6000L)return gps
+            now-State.gpsSpeedUpdatedElapsedMs<6000L)
+            return SpeedReading(gps,"GPS")
         return null
     }
 
@@ -747,7 +788,14 @@ class NavigatorActivity : Activity() {
             updateAlertIndicator()
             val fix=currentFix()
             val route=plan
-            val speed=liveCarSpeed()
+            val speedReading=liveCarSpeed()
+            val speed=speedReading?.kmh
+            speedValue.text=speed?.roundToInt()?.toString()?:"—"
+            speedSource.text=speedReading?.source?:"нет"
+            speedValue.contentDescription=if(speedReading==null)
+                "Скорость недоступна" else
+                "Скорость "+speed!!.roundToInt()+" километров в час, "+
+                    speedReading.source
             val routeProgress=if(route!=null && fix!=null)
                 route.progress(RoutingEngine.Point(fix.lat,fix.lon)) else null
             val routeDirection=route?.let {
