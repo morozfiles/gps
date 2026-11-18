@@ -2,7 +2,37 @@ plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
 }
+// Use ONE permanent signing identity for all CI debug APK updates.
+// Keep the PKCS12 keystore and its password outside the repository.
+// Without credentials Gradle retains its normal ephemeral debug signing,
+// which is NOT compatible across independent GitHub Actions runners.
+val persistentStoreFile = System.getenv("OBDGPS_SIGNING_STORE_FILE")
+    ?.takeIf { it.isNotBlank() }
+val persistentPassword = System.getenv("OBDGPS_SIGNING_PASSWORD")
+    ?.takeIf { it.isNotBlank() }
+if ((persistentStoreFile == null) != (persistentPassword == null)) {
+    throw GradleException("Incomplete permanent signing credentials")
+}
+
 android {
+    signingConfigs {
+        if (persistentStoreFile != null && persistentPassword != null) {
+            create("persistentDebug") {
+                storeFile = file(persistentStoreFile)
+                storePassword = persistentPassword
+                keyAlias = "obdgps"
+                keyPassword = persistentPassword
+                storeType = "PKCS12"
+            }
+        }
+    }
+    buildTypes {
+        getByName("debug") {
+            if (persistentStoreFile != null && persistentPassword != null) {
+                signingConfig = signingConfigs.getByName("persistentDebug")
+            }
+        }
+    }
     namespace = "ua.obdgps.nav"
     compileSdk = 36
     defaultConfig {
