@@ -3,6 +3,7 @@ package ua.obdgps.nav
 import android.app.Activity
 import android.app.AlertDialog
 import android.content.Intent
+import android.location.Geocoder
 import android.net.Uri
 import android.graphics.Color
 import android.graphics.Typeface
@@ -33,6 +34,7 @@ import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Locale
+import java.util.concurrent.Executors
 import kotlin.math.*
 
 /**
@@ -48,6 +50,10 @@ class NavigatorActivity : Activity() {
     private val handler=Handler(Looper.getMainLooper())
     private val engine=RoutingEngine()
     private val placeSearch=PlaceSearch(this)
+    private val googleLinkWorker=Executors.newSingleThreadExecutor { task ->
+        Thread(task,"Google-Maps-Link").apply{isDaemon=true}
+    }
+    private var googleLinkGeneration=0
     private lateinit var map:InertialTrackMapView
     private lateinit var summary:TextView
     private lateinit var instruction:TextView
@@ -179,7 +185,8 @@ class NavigatorActivity : Activity() {
                 pickMode="START"
                 pickStatus.text="Коснись карты: отметить старт автомобиля"
             },
-            styledButton("Поиск адреса") {showAddressSearch()}
+            styledButton("Поиск адреса") {showAddressSearch()},
+            styledButton("Ссылка Maps") {showGoogleMapsLinkDialog()}
         ))
 
         val mapContainer=FrameLayout(this)
@@ -345,6 +352,224 @@ class NavigatorActivity : Activity() {
                 tts?.language=Locale("ru","RU")
             }
         }
+        if(savedInstanceState==null)handleGoogleMapsIntent(intent)
+    }
+
+    /**
+     * Google Maps owns the link domains, so Android 12+ may open links in
+     * Google Maps/browser unless the user explicitly approves our app.
+     * Text sharing and manual paste work without domain verification.
+     */
+    private fun showGoogleMapsLinkDialog() {
+        val field=EditText(this).apply {
+            hint="https://maps.app.goo.gl/... или google.com/maps/..."
+            isSingleLine=false
+            minLines=2
+            maxLines=4
+            textSize=14f
+            inputType=InputType.TYPE_CLASS_TEXT or
+                InputType.TYPE_TEXT_VARIATION_URI
+            setTextColor(textColor)
+            setHintTextColor(secondary)
+            setSelectAllOnFocus(true)
+            setPadding(dp(12),dp(12),dp(12),dp(12))
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Открыть ссылку Google Maps")
+            .setMessage("Вставь ссылку на место или маршрут. "+
+                "Короткие ссылки требуют интернета для раскрытия.")
+            .setView(field)
+            .setPositiveButton("Открыть"){_,_->
+                openGoogleMapsLink(field.text.toString())
+            }
+            .setNegativeButton("Отмена",null).show()
+    }
+
+    private fun handleGoogleMapsIntent(received:Intent?) {
+        if(received==null)return
+        val raw=when(received.action) {
+            Intent.ACTION_VIEW->received.dataString
+            Intent.ACTION_SEND->if(received.type=="text/plain")
+                received.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString()
+                else null
+            else->null
+        }
+        if(!raw.isNullOrBlank())openGoogleMapsLink(raw)
+    }
+
+    override fun onNewIntent(intent:Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleGoogleMapsIntent(intent)
+    }
+
+    private fun openGoogleMapsLink(raw:String) {
+        val found=GoogleMapsLinks.parse(raw)
+        if(found==null) {
+            pickStatus.text="Не удалось определить место из ссылки Google Maps"
+            AlertDialog.Builder(this)
+                .setTitle("Ссылка не распознана")
+                .setMessage("Нужна ссылка Google Maps на место, "+
+                    "координаты или маршрут. Для короткой ссылки можно "+
+                    "использовать «Поделиться» в Google Maps. "+
+                    "Ссылка с одним только идентификатором Place ID "+
+                    "без названия/координат не подходит.")
+                .setPositiveButton("Вставить другую"){_,_->
+                    showGoogleMapsLinkDialog()}
+                .setNegativeButton("Закрыть",null).show()
+            return
+        }
+        val generation=++googleLinkGeneration
+        if(found is GoogleMapsLinks.Target.ShortUrl){
+            pickStatus.text="Раскрываю короткую ссылку Google Maps..."
+            googleLinkWorker.execute{
+                val result=runCatching{GoogleMapsLinks.resolveShort(found.url)}
+                handler.post{
+                    if(generation!=googleLinkGeneration || isFinishing || isDestroyed)
+                        return@post
+                    result.fold(
+                        onSuccess={applyGoogleMapsTarget(it,generation)},
+                        onFailure={
+                            showMapsLinkError("Короткая ссылка не открылась: "+
+                                (it.localizedMessage?:"нет ответа Google Maps"))
+                        }
+                    )
+                }
+            }
+        } else applyGoogleMapsTarget(found,generation)
+    }
+
+    private fun showMapsLinkError(message:String) {
+        pickStatus.text=message.take(200)
+        AlertDialog.Builder(this).setTitle("Google Maps")
+            .setMessage(message+"\n\nПроверь интернет либо вставь полную "+
+                "ссылку с координатами.")
+            .setPositiveButton("Вставить ссылку"){_,_->
+                showGoogleMapsLinkDialog()}
+            .setNegativeButton("Закрыть",null).show()
+    }
+
+    private fun applyGoogleMapsTarget(
+        target:GoogleMapsLinks.Target,generation:Int
+    ){
+        if(generation!=googleLinkGeneration)return
+        when(target) {
+            is GoogleMapsLinks.Target.Coordinate -> {
+                setGoogleMapsDestination(RoutingEngine.Point(target.lat,target.lon),
+                    target.label,target.approximate)
+            }
+            is GoogleMapsLinks.Target.Address -> {
+                lookupGoogleMapsAddress(target.query,generation)
+            }
+            is GoogleMapsLinks.Target.ShortUrl -> {
+                showMapsLinkError("Ссылка не содержит раскрываемого места назначения.")
+            }
+        }
+    }
+
+    private fun lookupGoogleMapsAddress(query:String,generation:Int){
+        if(query.isBlank()) {
+            showMapsLinkError("В ссылке Google Maps нет адреса.")
+            return
+        }
+        pickStatus.text="Определяю место из Google Maps: "+query.take(80)
+        if(PlaceSearch.isAllowedAddress(query)){
+            placeSearch.search(query){result->
+                if(generation!=googleLinkGeneration || isFinishing || isDestroyed)
+                    return@search
+                result.fold(
+                    onSuccess={matches->
+                        chooseGoogleMapsAddress(matches.map{
+                            it.label to it.coordinate
+                        },query)
+                    },
+                    onFailure={e->
+                        showMapsLinkError("Не удалось найти адрес «"+query+"»: "+
+                            (e.localizedMessage?:"нет данных"))
+                    }
+                )
+            }
+        }else{
+            // Google Maps often shares Latin-script place names. Our Cyrillic
+            // PlaceSearch restricts those, so use Android's own geocoder.
+            googleLinkWorker.execute{
+                val result=runCatching{
+                    @Suppress("DEPRECATION")
+                    val addresses=Geocoder(this,Locale("uk","UA"))
+                        .getFromLocationName(query,6).orEmpty()
+                    addresses.filter{
+                        it.latitude in -85.0..85.0 &&
+                            it.longitude in -180.0..180.0
+                    }.map{
+                        (it.getAddressLine(0)?:query) to
+                            RoutingEngine.Point(it.latitude,it.longitude)
+                    }
+                }
+                handler.post{
+                    if(generation!=googleLinkGeneration || isFinishing || isDestroyed)
+                        return@post
+                    result.fold(
+                        onSuccess={chooseGoogleMapsAddress(it,query)},
+                        onFailure={e->showMapsLinkError(
+                            "Не удалось найти «"+query+"»: "+
+                                (e.localizedMessage?:"нет геокодера"))}
+                    )
+                }
+            }
+        }
+    }
+
+    private fun chooseGoogleMapsAddress(
+        places:List<Pair<String,RoutingEngine.Point>>,query:String
+    ){
+        val choices=places.filter{RoutingEngine.valid(it.second)}
+            .distinctBy{it.second.lat to it.second.lon}.take(6)
+        if(choices.isEmpty()){
+            showMapsLinkError("Место «"+query+"» не удалось определить. "+
+                "Нужна полная ссылка с координатами или доступ к поиску адресов.")
+            return
+        }
+        if(choices.size==1) {
+            setGoogleMapsDestination(choices.first().second,
+                choices.first().first,false)
+        }else{
+            AlertDialog.Builder(this)
+                .setTitle("Место из Google Maps")
+                .setMessage("Выбери подходящий адрес")
+                .setItems(choices.map{it.first}.toTypedArray()){_,which->
+                    val selected=choices[which]
+                    setGoogleMapsDestination(selected.second,selected.first,false)
+                }
+                .setNegativeButton("Отмена",null).show()
+        }
+    }
+
+    private fun setGoogleMapsDestination(
+        point:RoutingEngine.Point,label:String,approximate:Boolean
+    ){
+        if(!RoutingEngine.valid(point)) {
+            showMapsLinkError("В ссылке некорректные координаты.")
+            return
+        }
+        // A received link is a new user-selected target. Cancel any old
+        // routing request and active route before importing it.
+        stopGuidance()
+        val cleaned=PlaceSearch.cyrillicLabel(label).take(120)
+        selectedDestination=point
+        State.navigationDestination=point.lat to point.lon
+        pickMode="DEST"
+        map.centerAt(point.lat,point.lon)
+        NavigatorPrefs(this).rememberAddress(NavigatorPrefs.RecentAddress(
+            cleaned,point.lat,point.lon))
+        pickStatus.text=(if(approximate)"Примерный центр карты: "
+            else "Цель из Google Maps: ")+cleaned+
+            " · "+format(point.lat)+", "+format(point.lon)
+        if(approximate)Toast.makeText(this,
+            "Получен центр карты, а не точная метка места. Проверь цель.",
+            Toast.LENGTH_LONG).show()
+        if(currentFix()!=null || manualOrigin!=null)buildRoute(false)
+        else summary.text="Цель открыта. Для маршрута нужна текущая "+
+            "позиция или ручной старт."
     }
 
     private fun onMapPicked(lat:Double,lon:Double) {
@@ -857,6 +1082,8 @@ class NavigatorActivity : Activity() {
         handler.removeCallbacks(refresh)
         tts?.stop()
         tts?.shutdown()
+        googleLinkGeneration++
+        googleLinkWorker.shutdownNow()
         super.onDestroy()
     }
 
