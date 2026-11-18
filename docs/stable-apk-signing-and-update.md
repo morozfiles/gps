@@ -1,3 +1,26 @@
+## Permanent certificate generated on 2026-11-18
+
+The permanent signing identity has already been generated outside the
+GitHub repository and packaged privately for the user. Do **not**
+generate another key when setting up the provided bundle.
+The public SHA-256 signer certificate fingerprint is:
+
+`0F:97:87:85:27:A8:C2:68:70:5C:3B:EB:BF:45:70:D7:80:34:DC:26:15:9E:DB:56:D7:87:43:CF:D2:02:78:4E`
+
+The build workflow pins this **public certificate digest** to prevent
+accidentally publishing updates signed with a DIFFERENT key.
+
+The private key and password are **not** stored in the repository;
+the repo admin must paste the two secret values into
+https://github.com/morozfiles/gps/settings/secrets/actions using the
+private backup archive that was delivered directly to them.
+
+**Do not uninstall the existing app until BOTH secrets are configured,
+a new APK is built with permanent signing, and offline data have been
+backed up or the user agrees to redownload it.**
+
+---
+
 # Android APK upgrades: stable signing and offline-map backup
 
 ## Why the package conflict appears
