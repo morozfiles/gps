@@ -204,7 +204,14 @@ internal object GoogleMapsLinks {
             conn.requestMethod="GET"
             conn.connectTimeout=8500
             conn.readTimeout=8500
-            conn.setRequestProperty("User-Agent","Mozilla/5.0 (Android) OBD-GPS-Navigator")
+            // Google app short links can respond differently to an
+            // obviously non-browser User-Agent. Request the ordinary mobile
+            // redirect instead of the fallback Maps landing page.
+            conn.setRequestProperty("User-Agent",
+                "Mozilla/5.0 (Linux; Android 14; Pixel 7) "+
+                "AppleWebKit/537.36 (KHTML, like Gecko) "+
+                "Chrome/126.0.0.0 Mobile Safari/537.36")
+            conn.setRequestProperty("Accept","text/html,application/xhtml+xml")
             conn.setRequestProperty("Accept-Encoding","identity")
             try{
                 val status=conn.responseCode
