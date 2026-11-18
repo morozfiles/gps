@@ -1,7 +1,9 @@
 package ua.obdgps.nav
 
+import android.Manifest
 import android.app.Activity
 import android.content.Context
+import android.content.pm.PackageManager
 import android.content.Intent
 import android.graphics.*
 import android.net.Uri
@@ -225,6 +227,16 @@ class InertialMapActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        // Launch the same real GPS/network monitor that feeds navigation,
+        // even when the test screen was reopened directly. This does not
+        // start recording either diagnostic track.
+        if(checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)==
+            PackageManager.PERMISSION_GRANTED) {
+            runCatching {
+                startForegroundService(Intent(this,NavService::class.java)
+                    .setAction(NavService.MONITOR))
+            }
+        }
         handler.removeCallbacks(refresh)
         handler.post(refresh)
     }
