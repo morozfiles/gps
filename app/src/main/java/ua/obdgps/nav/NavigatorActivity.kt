@@ -3,6 +3,7 @@ package ua.obdgps.nav
 import android.app.Activity
 import android.app.AlertDialog
 import android.content.Intent
+import android.content.ClipboardManager
 import android.location.Geocoder
 import android.net.Uri
 import android.graphics.Color
@@ -374,6 +375,17 @@ class NavigatorActivity : Activity() {
             setSelectAllOnFocus(true)
             setPadding(dp(12),dp(12),dp(12),dp(12))
         }
+        // Clipboard is accessed only after the user taps "Ссылка Maps",
+        // not silently in the background; prefill when it is a Maps link.
+        val pasted=runCatching {
+            val clipboard=getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
+            clipboard.primaryClip?.takeIf{it.itemCount>0}
+                ?.getItemAt(0)?.coerceToText(this)?.toString()
+        }.getOrNull()
+        pasted?.let{GoogleMapsLinks.extract(it)}?.let{
+            field.setText(it)
+            field.setSelection(field.text.length)
+        }
         AlertDialog.Builder(this)
             .setTitle("Открыть ссылку Google Maps")
             .setMessage("Вставь ссылку на место или маршрут. "+
@@ -472,51 +484,66 @@ class NavigatorActivity : Activity() {
             showMapsLinkError("В ссылке Google Maps нет адреса.")
             return
         }
-        pickStatus.text="Определяю место из Google Maps: "+query.take(80)
-        if(PlaceSearch.isAllowedAddress(query)){
-            placeSearch.search(query){result->
-                if(generation!=googleLinkGeneration || isFinishing || isDestroyed)
-                    return@search
-                result.fold(
-                    onSuccess={matches->
+        // Google Maps q= can contain POI + full address + postcode.
+        // Photon returns no results for many such strings: retry the
+        // shorter "POI, city" and "street, number, city" queries.
+        val variants=GoogleMapsLinks.addressVariants(query)
+        if(variants.isEmpty()){
+            showMapsLinkError("В ссылке Google Maps нет подходящего адреса.")
+            return
+        }
+        fun attempt(index:Int,lastError:String?=null){
+            if(generation!=googleLinkGeneration || isFinishing || isDestroyed)
+                return
+            if(index>=variants.size){
+                showMapsLinkError("Место «"+query+"» не найдено."+
+                    (lastError?.let{" Причина: "+it}.orEmpty()))
+                return
+            }
+            val candidate=variants[index]
+            pickStatus.text="Поиск места из Google Maps ("+
+                (index+1)+"/"+variants.size+"): "+candidate.take(65)
+            if(PlaceSearch.isAllowedAddress(candidate)){
+                placeSearch.search(candidate){result->
+                    if(generation!=googleLinkGeneration || isFinishing ||
+                        isDestroyed)return@search
+                    val matches=result.getOrNull().orEmpty()
+                    if(matches.isNotEmpty())
                         chooseGoogleMapsAddress(matches.map{
                             it.label to it.coordinate
-                        },query)
-                    },
-                    onFailure={e->
-                        showMapsLinkError("Не удалось найти адрес «"+query+"»: "+
-                            (e.localizedMessage?:"нет данных"))
-                    }
-                )
-            }
-        }else{
-            // Google Maps often shares Latin-script place names. Our Cyrillic
-            // PlaceSearch restricts those, so use Android's own geocoder.
-            googleLinkWorker.execute{
-                val result=runCatching{
-                    @Suppress("DEPRECATION")
-                    val addresses=Geocoder(this,Locale("uk","UA"))
-                        .getFromLocationName(query,6).orEmpty()
-                    addresses.filter{
-                        it.latitude in -85.0..85.0 &&
-                            it.longitude in -180.0..180.0
-                    }.map{
-                        (it.getAddressLine(0)?:query) to
-                            RoutingEngine.Point(it.latitude,it.longitude)
-                    }
+                        },candidate)
+                    else attempt(index+1,result.exceptionOrNull()
+                        ?.localizedMessage?:lastError)
                 }
-                handler.post{
-                    if(generation!=googleLinkGeneration || isFinishing || isDestroyed)
-                        return@post
-                    result.fold(
-                        onSuccess={chooseGoogleMapsAddress(it,query)},
-                        onFailure={e->showMapsLinkError(
-                            "Не удалось найти «"+query+"»: "+
-                                (e.localizedMessage?:"нет геокодера"))}
-                    )
+            }else{
+                // Android Geocoder supports Latin and mixed-script names.
+                googleLinkWorker.execute{
+                    val result=runCatching{
+                        @Suppress("DEPRECATION")
+                        val addresses=Geocoder(this,Locale("uk","UA"))
+                            .getFromLocationName(candidate,6).orEmpty()
+                        addresses.filter{
+                            it.hasLatitude() && it.hasLongitude() &&
+                                it.latitude in -85.0..85.0 &&
+                                it.longitude in -180.0..180.0
+                        }.map{
+                            (it.getAddressLine(0)?:candidate) to
+                                RoutingEngine.Point(it.latitude,it.longitude)
+                        }
+                    }
+                    handler.post{
+                        if(generation!=googleLinkGeneration ||
+                            isFinishing || isDestroyed)return@post
+                        val matches=result.getOrNull().orEmpty()
+                        if(matches.isNotEmpty())
+                            chooseGoogleMapsAddress(matches,candidate)
+                        else attempt(index+1,result.exceptionOrNull()
+                            ?.localizedMessage?:lastError)
+                    }
                 }
             }
         }
+        attempt(0)
     }
 
     private fun chooseGoogleMapsAddress(
