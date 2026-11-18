@@ -675,7 +675,7 @@ class MainActivity : Activity() {
         addButton(root,"Векторная офлайн-карта · дороги и адреса") {
             startActivity(Intent(this,OfflineVectorNavigatorActivity::class.java))
         }
-        addButton(root,"Тестовая карта · только расчёт DR") {
+        addButton(root,"Тест двух треков · GPS и DR без GPS") {
             startActivity(Intent(this, InertialMapActivity::class.java))
         }
         addButton(root,"Открыть Google Maps") { openGoogleMaps() }
