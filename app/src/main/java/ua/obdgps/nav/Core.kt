@@ -90,8 +90,11 @@ object State {
             !speedKmh.isFinite() || lat !in -85.0..85.0 ||
             lon !in -180.0..180.0) return
         val p=TrailPoint(lat,lon,bearing,speedKmh,elapsedMs)
-        val last=inertialPoint
+        // Compare against the last RECORDED breadcrumb, not inertialPoint:
+        // inertialPoint is refreshed every 250 ms, so using it here
+        // prevented any second breadcrumb from ever being recorded.
         inertialPoint=p
+        val last=inertialTrail.lastOrNull()
         if(last!=null && elapsedMs-last.elapsedMs < 950L) return
         if(last!=null) {
             val dy=(lat-last.latitude)*111_195.0
@@ -156,8 +159,11 @@ object State {
             !bearing.isFinite() || !kmh.isFinite() ||
             lat !in -85.0..85.0 || lon !in -180.0..180.0)return
         val p=TrailPoint(lat,lon,bearing,kmh,time)
-        val last=networkDrPoint
+        // Current pose updates at 4 Hz; historical points at ~1 Hz.
+        // Never throttle against the live point, or the blue trail only
+        // records its first sample and never becomes a line.
         networkDrPoint=p
+        val last=networkDrTrail.lastOrNull()
         if(last!=null && time-last.elapsedMs<950)return
         networkDrTrail.add(p)
         if(networkDrTrail.size>1500)networkDrTrail.removeAt(0)
