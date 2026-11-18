@@ -1308,12 +1308,18 @@ class NavService: Service(), LocationListener {
 
         val hasCourse=location.hasBearing() && kmh!=null && kmh>=12.0
         if(hasCourse) {
-            val accuracyOk=!location.hasBearingAccuracy() || location.bearingAccuracyDegrees<22f
-            if(accuracyOk) motion.directionFromGps(location.bearing.toDouble(),kmh!!,now)?.let {
-                applyDetectedDirection(it,"GPS + компас")
-            }
-            // Never recalibrate the front-of-car offset from a reverse travel course.
-            if(!reverse && abs(State.yawDegPerSec)<3.0 && accuracyOk)
+            val accuracyOk=!location.hasBearingAccuracy() ||
+                location.bearingAccuracyDegrees<22f
+            // A single valid-looking GPS course during DR must not re-align
+            // the phone or change driving direction. Wait for corroborated
+            // repeated samples, just as with the position correction.
+            val confirmedCourse=accuracyOk &&
+                (!State.dr || gpsRecoveryCount>=gpsCorrectionFixes)
+            if(confirmedCourse)
+                motion.directionFromGps(location.bearing.toDouble(),kmh!!,now)?.let {
+                    applyDetectedDirection(it,"проверенный GPS + компас")
+                }
+            if(!reverse && abs(State.yawDegPerSec)<3.0 && confirmedCourse)
                 motion.alignToGps(location.bearing.toDouble(),kmh!!,true)
         }
 
