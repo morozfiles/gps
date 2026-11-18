@@ -53,8 +53,18 @@ jobs:
       - name: Verify APK signature
         shell: bash
         run: |
-          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --print-certs app/build/outputs/apk/debug/app-debug.apk
-          if [ "$PERMANENT_SIGNING" != "true" ]; then
+          signed_info=$("$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --print-certs app/build/outputs/apk/debug/app-debug.apk)
+          printf '%s\n' "$signed_info"
+          if [ "$PERMANENT_SIGNING" = "true" ]; then
+            # Non-secret public fingerprint of the newly generated permanent
+            # certificate. Refuse an accidental different signing key.
+            expected="0f97878527a8c268705c3bebbf4570d78034dc26159edb56d78743cfd202784e"
+            if ! printf '%s\n' "$signed_info" | grep -Fiq "Signer #1 certificate SHA-256 digest: $expected"; then
+              echo "::error title=Wrong app signing key::This keystore is not the expected permanent signing identity."
+              exit 1
+            fi
+            echo "Verified the permanent signing certificate fingerprint."
+          else
             echo "::warning title=One-off signing certificate::Installable APK, but not a compatible in-place update of earlier CI builds."
           fi
       - uses: actions/upload-artifact@v4
