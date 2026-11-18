@@ -132,7 +132,7 @@ class NavigatorActivity : Activity() {
     private fun refreshLearnedDrButton(){
         if(!::learnedDrButton.isInitialized)return
         val enabled=State.learnedDrEnabled
-        learnedDrButton.text=if(enabled)"ИИ\\nВКЛ" else "ИИ\\nВЫКЛ"
+        learnedDrButton.text=if(enabled)"ИИ\nВКЛ" else "ИИ\nВЫКЛ"
         learnedDrButton.contentDescription=if(enabled)
             "Выключить нейросетевые поправки к инерциальной навигации"
         else "Включить нейросетевые поправки к инерциальной навигации"
@@ -268,7 +268,7 @@ class NavigatorActivity : Activity() {
         zoom.addView(speedBadge,
             LinearLayout.LayoutParams(dp(45),dp(45)).apply{topMargin=dp(4)})
         State.learnedDrEnabled=NavigatorPrefs(this).learnedDrEnabled
-        learnedDrButton=mapControl("ИИ\\nВЫКЛ"){
+        learnedDrButton=mapControl("ИИ\nВЫКЛ"){
             val enabled=!State.learnedDrEnabled
             State.learnedDrEnabled=enabled
             NavigatorPrefs(this).learnedDrEnabled=enabled
@@ -282,9 +282,9 @@ class NavigatorActivity : Activity() {
             setOnLongClickListener {
                 AlertDialog.Builder(this@NavigatorActivity)
                     .setTitle("Профиль обучения GPS / инерциальной системы")
-                    .setMessage(State.learnedDrStatus+"\\n\\n"+
+                    .setMessage(State.learnedDrStatus+"\n\n"+
                         State.learnedDrDetail+
-                        "\\n\\nОбучение идёт только в тесте двух треков. "+
+                        "\n\nОбучение идёт только в тесте двух треков. "+
                         "GPS во время DR не используется для нейросетевых поправок.")
                     .setPositiveButton("Закрыть",null).show()
                 true
