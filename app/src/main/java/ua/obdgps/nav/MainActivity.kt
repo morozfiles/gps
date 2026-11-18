@@ -11,7 +11,6 @@ import android.location.LocationManager
 import android.os.SystemClock
 import java.util.Locale
 import android.content.Intent
-import android.content.ActivityNotFoundException
 import android.net.Uri
 import android.content.pm.PackageManager
 import android.os.Bundle
@@ -680,49 +679,11 @@ class MainActivity : Activity() {
         addButton(root,"Тест двух треков · GPS и DR без GPS") {
             startActivity(Intent(this, InertialMapActivity::class.java))
         }
-        addButton(root,"Открыть Google Maps") { openGoogleMaps() }
         addButton(root,"Остановить мониторинг") { send(NavService.EXIT) }
         handler.post {showStartupPermissionsIfMissing()}
         // Offline maps are checked on the offline screen, and are never
         // downloaded from a user-configured oblast HTTPS server at startup.
         // Existing Ukraine map/address files survive APK updates.
-    }
-    private fun openGoogleMaps() {
-        val mapsPackage = "com.google.android.apps.maps"
-
-        // Android 11+ package visibility: declared in AndroidManifest <queries>.
-        // Prefer launching Maps normally, without forcing a destination.
-        try {
-            val launch = packageManager.getLaunchIntentForPackage(mapsPackage)
-            if (launch != null) {
-                startActivity(launch)
-                return
-            }
-        } catch (_: Exception) {
-            // Fall through to a verified ACTION_VIEW intent.
-        }
-
-        try {
-            val mapsLink = Intent(Intent.ACTION_VIEW, Uri.parse("https://www.google.com/maps/"))
-                .setPackage(mapsPackage)
-            startActivity(mapsLink)
-            return
-        } catch (_: ActivityNotFoundException) {
-            // Maps may be missing or disabled. Try a browser instead.
-        } catch (_: SecurityException) {
-            // The package may reject the intent; try the browser instead.
-        }
-
-        try {
-            val browser = Intent(Intent.ACTION_VIEW, Uri.parse("https://www.google.com/maps/"))
-                .addCategory(Intent.CATEGORY_BROWSABLE)
-            startActivity(browser)
-            State.message = "Google Maps открылся через браузер"
-        } catch (e: Exception) {
-            val error = "Не удалось открыть Google Maps: ${e.localizedMessage ?: "нет подходящего приложения"}"
-            State.message = error
-            Toast.makeText(this, error, Toast.LENGTH_LONG).show()
-        }
     }
     override fun onResume() {
         super.onResume()
