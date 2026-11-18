@@ -1,3 +1,44 @@
+## Existing key backup: do not regenerate
+
+A permanent private PKCS12 key was prepared and delivered directly
+to the owner in the private `OBD-GPS-permanent-signing-BACKUP.zip`
+archive. **Use that archive, not the generation helper, for GitHub
+Secrets.** Its public certificate fingerprint matches the pinned
+SHA-256 in both APK workflows. The key and password must never be
+committed, pasted into a public issue, or sent to another person.
+
+To configure from Xiaomi 13T without a PC:
+
+1. Download the PRIVATE archive and store it safely.
+2. Open `OBD-GPS-GitHub-secret-KEYSTORE_B64.txt` with a text editor,
+   select and copy the **entire single-line text**.
+3. Go to
+   https://github.com/morozfiles/gps/settings/secrets/actions
+   while logged in as repository owner. Choose **New repository secret**,
+   name `OBDGPS_KEYSTORE_B64` and paste that text, then save.
+4. Repeat for `OBDGPS_SIGNING_PASSWORD` using only the password from
+   `OBD-GPS-signing-password.txt` (no spaces/newline).
+5. Under **Actions**, run **Build Android debug APK** on branch
+   `feature/dr-dual-track-spoof-guard`. Confirm log entries
+   `Permanent APK signing key loaded from GitHub Actions secrets.`
+   and `Verified the permanent signing certificate fingerprint.`.
+   Download the artifact named `OBD-GPS-Navigator-APK` and check
+   the APK version/package.
+6. Back up the private key and password securely, in more than one
+   reliable place. Do not rotate the key.
+
+**Existing installations signed by old ephemeral debug certificates
+are NOT upgrade-compatible with this permanent certificate.** A one-time
+reinstallation may be necessary, and Android will erase app-private
+offline maps, POI files, preferences and learned neural corrections
+on uninstall. Do not uninstall until you have confirmed a reliable
+data migration/backup plan, or are willing to recreate that data.
+Once a permanently signed APK is installed, later APKs with the
+same package (`ua.obdgps.nav`), same certificate and increasing
+versionCode update in place while preserving private data.
+
+---
+
 ## Permanent certificate generated on 2026-11-18
 
 The permanent signing identity has already been generated outside the
@@ -67,10 +108,12 @@ The build now supports a permanent Android PKCS12 signing key for the
    APK as long as the package ID stays `ua.obdgps.nav` and
    the `versionCode` increases.
 
-If no secrets are set, the build remains installable, but logs a
-warning: **temporary signature, no guaranteed updates**.
-If only one secret is set, the workflow fails instead of silently
-producing a differently signed APK.
+**APK publication is now fail-closed.** If the permanent signing
+secrets are missing or incomplete, the GitHub Actions build FAILS
+instead of publishing an APK with a different temporary certificate.
+Both the ordinary and side-by-side workflows validate the permanent
+certificate SHA-256 before uploading any downloadable artifact.
+This is intentional and protects future app data.
 
 **Important:** the very FIRST permanently signed APK still cannot
 update an existing APK signed by the earlier temporary key. Plan one
