@@ -560,9 +560,11 @@ class NavigatorActivity : Activity() {
             setGoogleMapsDestination(choices.first().second,
                 choices.first().first,false)
         }else{
+            // Android AlertDialog cannot display setMessage() and setItems()
+            // together: the message view takes precedence and hides the list.
+            // Use a descriptive title and a real visible list of choices.
             AlertDialog.Builder(this)
-                .setTitle("Место из Google Maps")
-                .setMessage("Выбери подходящий адрес")
+                .setTitle("Выбери подходящий адрес")
                 .setItems(choices.map{it.first}.toTypedArray()){_,which->
                     val selected=choices[which]
                     setGoogleMapsDestination(selected.second,selected.first,false)
