@@ -260,6 +260,7 @@ class MainActivity : Activity() {
                 "Положение: ${State.sourceDescription}\n"+
                 "ELM: ${State.deviceName}\n"+
                 "GPS: ${State.gpsText}\n"+
+                "Контроль GPS / DR: ${State.gpsSpoofStatus}\n"+
                 "Протокол: ${State.modeLabel}\n"+
                 "OBD: ${"%.1f".format(Locale.getDefault(),State.obdFactor*100)}% от ЭБУ\n"+
                 "Статус: ${State.message}\n"+
