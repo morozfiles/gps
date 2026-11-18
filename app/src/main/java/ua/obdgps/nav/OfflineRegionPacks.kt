@@ -106,28 +106,36 @@ object OfflineRegionPacks {
         return m||p
     }
 
-    /** First match wins; detail is placed ahead of lower-resolution overview. */
+    /**
+     * Upgrade compatibility: nationwide files saved in older APKs have
+     * priority. Existing region files remain readable as optional fallback,
+     * but downloading/importing oblast packs is no longer offered in the UI.
+     */
     fun mapFiles(context:Context):List<File> {
-        val chosen=selected(context)
         val output=ArrayList<File>()
-        for(id in listOf(chosen,OVERVIEW)) {
-            val f=file(context,id,"map")
-            if(f.isFile&&f.length()>1024)output.add(f)
+        val country=OfflineVectorStore.mapFile(context)
+        if(OfflineUkraineAssets.validMapHeader(country))output.add(country)
+        for(id in listOf(selected(context),OVERVIEW)) {
+            val file=file(context,id,"map")
+            if(OfflineUkraineAssets.validMapHeader(file) &&
+                output.none{it.absolutePath==file.absolutePath})
+                output.add(file)
         }
-        // Existing installation remains readable after upgrading.
-        if(OfflineVectorStore.hasMap(context))
-            output.add(OfflineVectorStore.mapFile(context))
         return output
     }
 
-    /** Prefer addresses of the chosen region; fall back to existing country POIs. */
+    /** Country-wide POI from the old version first, then saved legacy packs. */
     fun poiFiles(context:Context):List<File> {
-        val files=ArrayList<File>()
-        val detailed=file(context,selected(context),"poi")
-        if(detailed.isFile&&detailed.length()>1024)files.add(detailed)
-        val legacy=OfflineVectorStore.poiFile(context)
-        if(legacy.isFile&&legacy.length()>1024)files.add(legacy)
-        return files
+        val output=ArrayList<File>()
+        val country=OfflineVectorStore.poiFile(context)
+        if(OfflineUkraineAssets.validPoiHeader(country))output.add(country)
+        for(id in listOf(selected(context),OVERVIEW)) {
+            val file=file(context,id,"poi")
+            if(OfflineUkraineAssets.validPoiHeader(file) &&
+                output.none{it.absolutePath==file.absolutePath})
+                output.add(file)
+        }
+        return output
     }
 
     fun needsDefaultPacks(context:Context):Boolean =
