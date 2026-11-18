@@ -14,6 +14,10 @@ if ((persistentStoreFile == null) != (persistentPassword == null)) {
     throw GradleException("Incomplete permanent signing credentials")
 }
 
+// A separately installable migration build. It never overwrites
+// ua.obdgps.nav or its downloaded offline maps.
+val parallelInstall = providers.gradleProperty("parallelInstall").orNull == "true"
+
 android {
     signingConfigs {
         if (persistentStoreFile != null && persistentPassword != null) {
@@ -36,7 +40,10 @@ android {
     namespace = "ua.obdgps.nav"
     compileSdk = 36
     defaultConfig {
-        applicationId = "ua.obdgps.nav"
+        applicationId = if (parallelInstall) "ua.obdgps.nav.parallel"
+            else "ua.obdgps.nav"
+        manifestPlaceholders["appDisplayName"] = if (parallelInstall)
+            "OBD GPS Navigator 2" else "OBD GPS Navigator"
         minSdk = 31
         targetSdk = 35
         versionCode = 35
