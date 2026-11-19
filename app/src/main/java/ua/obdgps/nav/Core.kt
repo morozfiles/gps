@@ -195,6 +195,15 @@ object State {
     var gpsSpeedKmh: Double? = null
     var gpsSpeedUpdatedElapsedMs: Long = 0L
     var gpsText = "Нет достоверного GPS"
+    // FYT: external USB receiver arrives through another app's Android mock
+    // provider. This application only CONSUMES it, never injects positions.
+    var gpsActiveSource="Нет координат"
+    var gpsInternalStatus="Ожидание"
+    var gpsExternalStatus="Ожидание GM906BT"
+    var gpsInternalUpdateMs=0L
+    var gpsExternalUpdateMs=0L
+    var gpsWakeStatus="Мониторинг запущен"
+
     var navigationMode = "GPS"
     var autoEnabled = true
     var manualForced = false
