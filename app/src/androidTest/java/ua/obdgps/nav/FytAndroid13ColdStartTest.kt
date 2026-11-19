@@ -84,7 +84,8 @@ class FytAndroid13ColdStartTest {
                 assertFalse("Navigator should not finish during first frame",
                     activity.isFinishing)
                 val content=activity.findViewById<View>(android.R.id.content)
-                assertTrue("Navigator content must be drawn",content.childCount>0)
+                assertTrue("Navigator content must be drawn",
+                    (content as ViewGroup).childCount>0)
                 val text=buttons(content).map{it.text.toString()}
                 assertTrue("Route controls must be available",
                     text.any{it.contains("Маршрут")})
