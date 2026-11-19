@@ -48,7 +48,8 @@ class FytHeadUnitInstrumentedTest {
                 }.get(activity) as android.widget.TextView
                 assertTrue(gps.text.toString().contains("GM906BT"))
                 assertTrue(gps.text.toString().contains("Встроенный GNSS"))
-                assertTrue(all.any{it.text.contains("ВЕКТОРНАЯ КАРТА")})
+                assertTrue(all.any{it.text.startsWith("ВЕКТОРНАЯ")})
+                assertTrue(all.any{it.text.contains("ТЕСТ GPS / DR")})
                 assertTrue(all.any{it.text.contains("VGATE")})
             }
         }
