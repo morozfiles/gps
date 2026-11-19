@@ -42,7 +42,6 @@ class FytHeadUnitActivity:Activity(){
     private lateinit var obdText:TextView
     private lateinit var infoText:TextView
     private lateinit var monitorButton:Button
-    private lateinit var preview:FytRoutePreviewView
     private var alerts:AirAlertIndicatorsView?=null
     private var permissionRequestPending=false
     private var lastMonitorStart=0L
@@ -312,6 +311,21 @@ class FytHeadUnitActivity:Activity(){
             }.show()
     }
 
+    private fun showLearningProfile(){
+        AlertDialog.Builder(this)
+            .setTitle("ИИ · обучение GPS / DR")
+            .setMessage(State.learnedDrStatus+"\\n\\n"+
+                State.learnedDrDetail+"\\n\\n"+
+                "Для набора примеров открой «ТЕСТ GPS / DR», подключи "+
+                "Vgate и начни запись двух треков. "+
+                "Внешний GM906BT должен передавать проверенные координаты "+
+                "через другое приложение. ИИ обучается только после "+
+                "принятия достоверных GPS-позиций.")
+            .setPositiveButton("Открыть тест"){_,_->
+                startActivity(Intent(this,InertialMapActivity::class.java))
+            }.setNegativeButton("Закрыть",null).show()
+    }
+
     private fun render(){
         val root=LinearLayout(this).apply{
             orientation=LinearLayout.VERTICAL
@@ -326,59 +340,52 @@ class FytHeadUnitActivity:Activity(){
             }
         }
         setContentView(root)
-        val header=LinearLayout(this).apply{
-            orientation=LinearLayout.HORIZONTAL;gravity=Gravity.CENTER_VERTICAL
-        }
-        val headerTitle=text("OBD GPS  •  FYT 7870",23f,true)
-        header.addView(headerTitle,LinearLayout.LayoutParams(0,dp(55),1f))
-        val sub=text("Android "+Build.VERSION.RELEASE+"  •  2000×1200",
-            13f).apply{setTextColor(secondary)}
-        header.addView(sub,LinearLayout.LayoutParams(-2,dp(55)))
-        root.addView(header)
-
-        // Width is based on dp, not raw 2000px; works at ROM density values
-        // 160, 240, 320 and with larger accessibility fonts.
-        val widthDp=resources.configuration.screenWidthDp
-        val rightDp=(widthDp*.34f).toInt().coerceIn(305,490)
-            .coerceAtMost((widthDp*.50f).toInt())
+        // FYT 2000x1200: no decorative title row or route-preview pane.
+        // Only a narrow navigation rail at left; the data dashboard gets
+        // the remaining width and scales with the unit's configured density.
+        val screenDp=resources.configuration.screenWidthDp
+        val leftDp=(screenDp*.18f).toInt().coerceIn(180,240)
+            .coerceAtMost((screenDp*.34f).toInt())
         val main=LinearLayout(this).apply{orientation=LinearLayout.HORIZONTAL}
         root.addView(main,LinearLayout.LayoutParams(-1,0,1f))
-
-        val mapColumn=LinearLayout(this).apply{
+        val railScroll=ScrollView(this).apply{
+            isFillViewport=true
+            overScrollMode=View.OVER_SCROLL_IF_CONTENT_SCROLL
+        }
+        main.addView(railScroll,LinearLayout.LayoutParams(dp(leftDp),-1))
+        val rail=LinearLayout(this).apply{
             orientation=LinearLayout.VERTICAL
-            setPadding(0,0,dp(6),0)
+            background=shape(Color.rgb(25,36,50))
+            setPadding(dp(6),dp(8),dp(6),dp(8))
         }
-        main.addView(mapColumn,LinearLayout.LayoutParams(0,-1,1f))
-        val subTitle=text("МАРШРУТ И НАВИГАЦИЯ",14f,true).apply{
-            setTextColor(blue);setPadding(dp(5),dp(4),0,dp(6))
-        }
-        mapColumn.addView(subTitle)
-        preview=FytRoutePreviewView(this).apply{
-            isClickable=true
-            contentDescription="Предпросмотр маршрута. Нажми, чтобы открыть векторную карту"
-            setOnClickListener{openVector()}
-        }
-        mapColumn.addView(preview,LinearLayout.LayoutParams(-1,0,1f).apply{
-            setMargins(dp(3),0,dp(3),dp(6))
-        })
-        twin(mapColumn,71,
-            button("ВЕКТОРНАЯ КАРТА\nИ МАРШРУТ"){openVector()},
-            button("ПРОДОЛЖИТЬ\nВЕДЕНИЕ"){openVector()})
-        twin(mapColumn,58,
-            button("НАВИГАТОР"){openStandard()},
-            button("СКАЧАТЬ ОФЛАЙН-КАРТЫ"){
-                startActivity(Intent(this,OfflineMapsActivity::class.java))
+        railScroll.addView(rail)
+        fun railButton(label:String,height:Int=59,click:()->Unit){
+            rail.addView(button(label,click).apply{
+                textSize=14f
+                maxLines=2
+            },LinearLayout.LayoutParams(-1,dp(height)).apply{
+                setMargins(dp(1),dp(3),dp(1),dp(3))
             })
-
+        }
+        railButton("ВЕКТОРНАЯ\nКАРТА"){openVector()}
+        railButton("ПРОДОЛЖИТЬ\nМАРШРУТ"){openVector()}
+        railButton("НАВИГАТОР"){openStandard()}
+        railButton("ТЕСТ GPS / DR"){startActivity(Intent(this,
+            InertialMapActivity::class.java))}
+        railButton("ОФЛАЙН-КАРТЫ"){startActivity(Intent(this,
+            OfflineMapsActivity::class.java))}
+        railButton("ПРОФИЛЬ ИИ"){showLearningProfile()}
         val scroll=ScrollView(this).apply{
             isFillViewport=false
-            overScrollMode=View.OVER_SCROLL_IF_CONTENT_SCROLLS
+            overScrollMode=View.OVER_SCROLL_IF_CONTENT_SCROLL
             background=shape(Color.rgb(24,35,49))
         }
-        main.addView(scroll,LinearLayout.LayoutParams(dp(rightDp),-1))
+        main.addView(scroll,LinearLayout.LayoutParams(0,-1,1f).apply{
+            leftMargin=dp(7)
+        })
         val side=LinearLayout(this).apply{
             orientation=LinearLayout.VERTICAL
-            setPadding(dp(8),dp(7),dp(8),dp(9))
+            setPadding(dp(9),dp(4),dp(9),dp(9))
         }
         scroll.addView(side)
         side.addView(title("ИНЕРЦИАЛЬНЫЕ ДАТЧИКИ"))
@@ -461,7 +468,6 @@ class FytHeadUnitActivity:Activity(){
                 State.obdSpeedKmh()?:0.0) else "нет свежих данных")+"\n"+
             "Режим: "+State.modeLabel
         val session=FytRouteStore.load(this)
-        preview.update(session,State.navFix)
         monitorButton.text=if(monitoringEnabled())"ОСТАНОВИТЬ\nМОНИТОРИНГ"
             else "ВКЛЮЧИТЬ\nМОНИТОРИНГ"
         infoText.text="GPS: "+(if(hasLocation())"разрешён" else "нет разрешения")+
