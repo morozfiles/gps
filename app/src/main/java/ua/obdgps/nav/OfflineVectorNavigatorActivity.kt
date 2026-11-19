@@ -2,6 +2,9 @@ package ua.obdgps.nav
 
 import android.app.Activity
 import android.app.AlertDialog
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.content.Intent
 import android.graphics.Canvas
 import android.graphics.Color
@@ -90,6 +93,56 @@ class OfflineVectorNavigatorActivity:Activity() {
     private var alertVoiceReady=false
     private var requesting=false
     private var lastTick=0L
+    private var previousCrashHandler:Thread.UncaughtExceptionHandler?=null
+    private var vectorCrashHandler:Thread.UncaughtExceptionHandler?=null
+
+    private fun captureCrashReports(){
+        if(vectorCrashHandler!=null)return
+        val previous=Thread.getDefaultUncaughtExceptionHandler()
+        previousCrashHandler=previous
+        val recorder=Thread.UncaughtExceptionHandler{thread,error->
+            try {
+                getSharedPreferences("vector_diagnostics",MODE_PRIVATE)
+                    .edit().putString("last","Экран: векторная карта\\n"+
+                        "Поток: "+thread.name+"\\n"+
+                        android.util.Log.getStackTraceString(error).take(12000))
+                    .commit()
+            }catch(_:Throwable){}
+            if(previous!=null)previous.uncaughtException(thread,error)
+            else android.os.Process.killProcess(android.os.Process.myPid())
+        }
+        vectorCrashHandler=recorder
+        Thread.setDefaultUncaughtExceptionHandler(recorder)
+    }
+    private fun stopCrashReports(){
+        val recorder=vectorCrashHandler?:return
+        if(Thread.getDefaultUncaughtExceptionHandler()===recorder)
+            Thread.setDefaultUncaughtExceptionHandler(previousCrashHandler)
+        vectorCrashHandler=null
+        previousCrashHandler=null
+    }
+    private fun reportError(stage:String,error:Throwable){
+        val detail=stage+"\\n"+android.util.Log.getStackTraceString(error).take(8000)
+        android.util.Log.e("VectorNavigator",stage,error)
+        getSharedPreferences("vector_diagnostics",MODE_PRIVATE).edit()
+            .putString("last",detail).apply()
+    }
+    private fun showDiagnostic(){
+        val detail=getSharedPreferences("vector_diagnostics",MODE_PRIVATE)
+            .getString("last","Ошибки не зарегистрированы")
+            ?:"Ошибки не зарегистрированы"
+        AlertDialog.Builder(this)
+            .setTitle("Диагностика векторной карты")
+            .setMessage(detail)
+            .setPositiveButton("Закрыть",null)
+            .setNeutralButton("Копировать"){_,_->
+                val clipboard=getSystemService(Context.CLIPBOARD_SERVICE)
+                    as ClipboardManager
+                clipboard.setPrimaryClip(ClipData.newPlainText(
+                    "Ошибка векторной карты",detail))
+                Toast.makeText(this,"Отчёт скопирован",Toast.LENGTH_SHORT).show()
+            }.show()
+    }
 
     private fun dp(x:Int)=(resources.displayMetrics.density*x+0.5f).toInt()
     private fun button(s:String,click:()->Unit):Button=Button(this).apply{
@@ -126,6 +179,7 @@ class OfflineVectorNavigatorActivity:Activity() {
 
     override fun onCreate(savedInstanceState:Bundle?){
         super.onCreate(savedInstanceState)
+        captureCrashReports()
         window.statusBarColor=bg
         window.navigationBarColor=bg
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -281,7 +335,10 @@ class OfflineVectorNavigatorActivity:Activity() {
                     while(i<planned.points.size){
                         val node=planned.points[i]
                         val xy=screenPoint(node)
-                        if(xy!=null){
+                        // Avoid sending enormous offscreen coordinates to
+                        // the Android graphics rasterizer at high zoom levels.
+                        if(xy!=null && xy.first in -width.toFloat()..(2f*width) &&
+                            xy.second in -height.toFloat()..(2f*height)){
                             if(!started){path.moveTo(xy.first,xy.second);started=true}
                             else path.lineTo(xy.first,xy.second)
                         } else started=false
@@ -289,8 +346,11 @@ class OfflineVectorNavigatorActivity:Activity() {
                     }
                     val last=planned.points.last()
                     screenPoint(last)?.let{xy->
-                        if(started)path.lineTo(xy.first,xy.second)
-                        else path.moveTo(xy.first,xy.second)
+                        if(xy.first in -width.toFloat()..(2f*width) &&
+                            xy.second in -height.toFloat()..(2f*height)){
+                            if(started)path.lineTo(xy.first,xy.second)
+                            else path.moveTo(xy.first,xy.second)
+                        }
                     }
                     c.drawPath(path,roadBorder)
                     c.drawPath(path,roadFill)
@@ -334,7 +394,7 @@ class OfflineVectorNavigatorActivity:Activity() {
                             selectDestination(p,"Точка на карте",true)
                         }
                     }catch(ex:Exception){
-                        android.util.Log.e("VectorNavigator","Select map point",ex)
+                        reportError("Выбор точки на карте",ex)
                         info.text="Ошибка выбора точки: "+
                             (ex.localizedMessage?:"неизвестная ошибка")
                         Toast.makeText(this@OfflineVectorNavigatorActivity,
@@ -435,7 +495,8 @@ class OfflineVectorNavigatorActivity:Activity() {
             },
             button("Офлайн-карты"){
                 startActivity(Intent(this,OfflineMapsActivity::class.java))
-            }
+            },
+            button("Диагностика"){showDiagnostic()}
         ))
         setContentView(root)
         alertVoice=TextToSpeech(this){result->
@@ -664,6 +725,7 @@ class OfflineVectorNavigatorActivity:Activity() {
                 if(reroute)info.text="Маршрут перестроен"
                 else info.text="Маршрут готов. Нажми «Начать ведение»."
             },onFailure={e->
+                reportError("Сервер маршрутизации",e)
                 info.text="Маршрут не построен. Цель сохранена на карте"
                 guidance.text="Маршрутизация требует интернет: "+
                     (e.localizedMessage?:"сервер недоступен").take(90)
@@ -826,6 +888,7 @@ class OfflineVectorNavigatorActivity:Activity() {
 
     override fun onResume(){
         super.onResume()
+        captureCrashReports()
         if(::mapView.isInitialized){
             val newFiles=OfflineRegionPacks.mapFiles(this)
             if(loadedRegion!=OfflineRegionPacks.selected(this) ||
@@ -839,10 +902,12 @@ class OfflineVectorNavigatorActivity:Activity() {
     }
     override fun onPause(){
         handler.removeCallbacks(refresh)
+        stopCrashReports()
         super.onPause()
     }
     override fun onDestroy(){
         handler.removeCallbacks(refresh)
+        stopCrashReports()
         routeGeneration++
         inertialRouteMatcher.reset()
         if(active){
