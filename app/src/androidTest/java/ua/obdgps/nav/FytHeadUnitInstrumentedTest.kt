@@ -38,16 +38,27 @@ class FytHeadUnitInstrumentedTest {
                 val accel=all.firstOrNull {it.text.startsWith("АКСЕЛЕРОМЕТР")}
                 assertNotNull("Gyroscope calibration button missing",gyro)
                 assertNotNull("Accelerometer calibration button missing",accel)
+                val gps=all.firstOrNull{it.text.startsWith("GPS ")}
+                val obd=all.firstOrNull{it.text.startsWith("OBD ")}
+                assertNotNull("GPS speed gauge missing",gps)
+                assertNotNull("OBD speed gauge missing",obd)
                 assertSame("Sensors must share a horizontal row",gyro!!.parent,accel!!.parent)
+                assertSame("GPS speed must share sensor row",gyro.parent,gps!!.parent)
+                assertSame("OBD speed must share sensor row",gyro.parent,obd!!.parent)
                 val row=gyro.parent as LinearLayout
                 assertEquals(LinearLayout.HORIZONTAL,row.orientation)
+                assertEquals("Four equal horizontally placed gauge cards",4,row.childCount)
+                assertTrue(all.any{it.text.startsWith("ОБЫЧНАЯ")})
+                val firstNavigation=all.first{it.text.startsWith("ОБЫЧНАЯ")}
+                val firstRail=(firstNavigation.parent as LinearLayout).getChildAt(0) as Button
+                assertSame("Standard map is the first action",firstNavigation,firstRail)
                 assertFalse("Head unit must not show compass",
                     all.any{it.text.startsWith("Компас")})
-                val gps=activity.javaClass.getDeclaredField("gpsText").apply{
+                val gpsPanel=activity.javaClass.getDeclaredField("gpsText").apply{
                     isAccessible=true
                 }.get(activity) as android.widget.TextView
-                assertTrue(gps.text.toString().contains("GM906BT"))
-                assertTrue(gps.text.toString().contains("Встроенный GNSS"))
+                assertTrue(gpsPanel.text.toString().contains("GM906BT"))
+                assertTrue(gpsPanel.text.toString().contains("Встроенный GNSS"))
                 assertTrue(all.any{it.text.startsWith("ВЕКТОРНАЯ")})
                 assertTrue(all.any{it.text.contains("ТЕСТ GPS / DR")})
                 assertTrue(all.any{it.text.contains("VGATE")})
