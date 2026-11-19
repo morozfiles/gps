@@ -886,6 +886,9 @@ class NavService: Service(), LocationListener {
         // learning must never bridge across a spoofing episode.
         learnedDr.resetSegment()
         gpsQuarantined=true
+        // No "green GPS speed" while a spoofed fix is quarantined.
+        State.gpsSpeedKmh=null
+        State.gpsSpeedUpdatedElapsedMs=0L
         gpsConsensus.clear()
         quarantineRecoveryCount=0
         quarantineRecoveryLast=0L
@@ -1466,13 +1469,8 @@ class NavService: Service(), LocationListener {
             return
         }
         val kmh=if(location.hasSpeed()) location.speed*3.6 else null
-        if(kmh!=null && kmh in 0.0..350.0) {
-            State.gpsSpeedKmh=kmh
-            State.gpsSpeedUpdatedElapsedMs=now
-        } else {
-            State.gpsSpeedKmh=null
-            State.gpsSpeedUpdatedElapsedMs=0L
-        }
+        // Do not publish GPS speed here: this candidate could still fail
+        // the spoof, physical-jump, route, OBD and quarantine checks below.
         val freshObd=State.speed!=null && now-speedTime<3500L
         val obd=if(freshObd)correctedSpeed()?:0.0 else 0.0
         // A sudden >1 km teleport cannot become our new GNSS anchor.
@@ -1551,6 +1549,10 @@ class NavService: Service(), LocationListener {
             "USB GM906BT / фиктивный Android GPS" else "Встроенный GNSS FYT"
         gpsTime=now
         lastAcceptedGps=now
+        // A green GPS-speed gauge requires an accepted GNSS sample with
+        // a plausible speed, not merely the arrival of a raw/mock fix.
+        State.gpsSpeedKmh=kmh?.takeIf{it.isFinite() && it in 0.0..180.0}
+        State.gpsSpeedUpdatedElapsedMs=if(State.gpsSpeedKmh!=null)now else 0L
         State.markRawGpsApproved(now)
         // Learn ONLY from trusted GPS fixes in the explicit two-track
         // experiment. These measurements never enter the test DR estimator.
