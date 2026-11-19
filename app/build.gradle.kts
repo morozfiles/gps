@@ -44,9 +44,9 @@ android {
         applicationId = "ua.obdgps.nav.fyt7870"
         manifestPlaceholders["appDisplayName"] = "OBD GPS · FYT 7870"
         minSdk = 31
-        targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0-fyt"
+        targetSdk = 33
+        versionCode = 2
+        versionName = "0.2.0-fyt"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
     compileOptions {
@@ -57,7 +57,6 @@ android {
 }
 
 dependencies {
-    implementation("com.google.android.gms:play-services-location:21.4.0")
     implementation("org.mapsforge:mapsforge-map-android:0.25.0")
     implementation("org.mapsforge:mapsforge-map-reader:0.25.0")
     implementation("org.mapsforge:mapsforge-themes:0.25.0")
