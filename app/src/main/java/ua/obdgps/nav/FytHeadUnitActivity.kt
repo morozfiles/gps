@@ -113,7 +113,18 @@ class FytHeadUnitActivity:Activity(){
         requestCode:Int,permissions:Array<out String>,grantResults:IntArray
     ){
         super.onRequestPermissionsResult(requestCode,permissions,grantResults)
-        if(requestCode==70 && hasPermissions())launchService(NavService.MONITOR)
+        if(requestCode==70){
+            permissionRequested=false
+            if(hasPermissions()){
+                getSharedPreferences("fyt_unit",MODE_PRIVATE).edit()
+                    .putBoolean("auto_monitor",true).apply()
+                launchService(NavService.MONITOR)
+            } else {
+                Toast.makeText(this,
+                    "Для GPS и Vgate нужны разрешения геолокации и Bluetooth",
+                    Toast.LENGTH_LONG).show()
+            }
+        }
     }
 
     private val uiUpdate=object:Runnable{
