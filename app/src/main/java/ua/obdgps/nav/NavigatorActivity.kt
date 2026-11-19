@@ -193,19 +193,6 @@ class NavigatorActivity : Activity() {
         pickStatus.maxLines=2
         root.addView(pickStatus)
 
-        root.addView(row(
-            styledButton("Цель на карте") {
-                pickMode="DEST"
-                pickStatus.text="Коснись карты: выбрать пункт назначения"
-            },
-            styledButton("Старт на карте") {
-                pickMode="START"
-                pickStatus.text="Коснись карты: отметить старт автомобиля"
-            },
-            styledButton("Поиск адреса") {showAddressSearch()},
-            styledButton("Ссылка Maps") {showGoogleMapsLinkDialog()}
-        ))
-
         val mapContainer=FrameLayout(this)
         map=InertialTrackMapView(this)
         map.enableNavigationMode{lat,lon->onMapPicked(lat,lon)}
@@ -298,8 +285,43 @@ class NavigatorActivity : Activity() {
         mapContainer.addView(zoom,FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.WRAP_CONTENT,FrameLayout.LayoutParams.WRAP_CONTENT,
             Gravity.RIGHT or Gravity.TOP).apply{setMargins(0,dp(8),dp(7),0)})
-        root.addView(mapContainer,LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT,0,1f))
+        // Wide automotive map with a fixed right-hand touch sidebar.
+        val workspace=LinearLayout(this).apply{
+            orientation=LinearLayout.HORIZONTAL
+        }
+        workspace.addView(mapContainer,LinearLayout.LayoutParams(0,-1,1f))
+        val sideScroll=ScrollView(this).apply{
+            setBackgroundColor(Color.rgb(33,41,50))
+        }
+        workspace.addView(sideScroll,LinearLayout.LayoutParams(dp(195),-1))
+        val sideActions=LinearLayout(this).apply{
+            orientation=LinearLayout.VERTICAL
+            setPadding(dp(5),dp(5),dp(5),dp(5))
+        }
+        sideScroll.addView(sideActions)
+        fun sideAction(title:String,click:()->Unit){
+            sideActions.addView(styledButton(title,click).apply{
+                textSize=13f
+                setPadding(dp(5),dp(4),dp(5),dp(4))
+            },LinearLayout.LayoutParams(-1,dp(50)).apply{
+                setMargins(dp(1),dp(2),dp(1),dp(2))
+            })
+        }
+        sideActions.addView(label("МАРШРУТ",13f,textColor).apply{
+            typeface=Typeface.DEFAULT_BOLD
+            setPadding(dp(7),0,0,dp(4))
+        })
+        sideAction("Цель на карте"){
+            pickMode="DEST"
+            pickStatus.text="Коснись карты: выбрать пункт назначения"
+        }
+        sideAction("Старт на карте"){
+            pickMode="START"
+            pickStatus.text="Коснись карты: отметить старт автомобиля"
+        }
+        sideAction("Поиск адреса"){showAddressSearch()}
+        sideAction("Ссылка Maps"){showGoogleMapsLinkDialog()}
+        root.addView(workspace,LinearLayout.LayoutParams(-1,0,1f))
 
         // Status overlays the bottom of the map instead of taking up a
         // separate full-height block. This leaves more vertical room for roads.
@@ -328,21 +350,19 @@ class NavigatorActivity : Activity() {
                 setMargins(dp(5),0,dp(5),dp(5))
             })
 
-        root.addView(row(
-            styledButton("Маршрут"){buildRoute(false)},
-            styledButton("Начать ведение"){startGuidance()},
-            styledButton("Сброс"){stopGuidance()}
-        ))
+        sideAction("Маршрут"){buildRoute(false)}
+        sideAction("Начать ведение"){startGuidance()}
+        sideAction("Сброс"){stopGuidance()}
+        sideAction("Ведение по датчикам"){sendService(NavService.START_DR)}
+        sideAction("Вернуться к GPS"){sendService(NavService.STOP_DR)}
         voiceButton=styledButton("Голос: выкл"){
             voiceEnabled=!voiceEnabled
             voiceButton.text=if(voiceEnabled)"Голос: вкл" else "Голос: выкл"
             if(!voiceEnabled)tts?.stop()
-        }
-        root.addView(row(
-            styledButton("Ведение по датчикам"){sendService(NavService.START_DR)},
-            styledButton("Вернуться к GPS"){sendService(NavService.STOP_DR)},
-            voiceButton
-        ))
+        }.apply{textSize=13f}
+        sideActions.addView(voiceButton,LinearLayout.LayoutParams(-1,dp(50)).apply{
+            setMargins(dp(1),dp(2),dp(1),dp(2))
+        })
         // Attribution is kept on the map itself for OSM license compliance;
         // the former full-width copyright footer no longer consumes map height.
         val credit=TextView(this).apply {
