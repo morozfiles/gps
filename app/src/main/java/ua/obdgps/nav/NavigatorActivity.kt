@@ -385,6 +385,29 @@ class NavigatorActivity : Activity() {
         })
         setContentView(root)
 
+        // Same persisted route as the vector navigator: either screen may
+        // resume GPS/OBD/DR guidance after process recreation or FYT wake.
+        FytRouteStore.load(this)?.let {saved->
+            selectedDestination=saved.destination
+            plan=saved.route
+            active=saved.active && plan!=null
+            State.navigationDestination=saved.destination.lat to saved.destination.lon
+            State.activeRouting=active
+            State.gpsFilterRoutePoints=if(active)plan?.points?:emptyList()
+                else emptyList()
+            pickStatus.text=if(active)"Ведение восстановлено после сна"
+                else "Цель восстановлена из памяти"
+            if(active){
+                val route=plan!!
+                val candidate=currentFix()?.let{
+                    RoutingEngine.Point(it.lat,it.lon)
+                }?:route.points.first()
+                val ahead=upcomingCourse(route,
+                    route.progress(candidate).nearestShapeIndex)
+                map.beginRouteGuidance(ahead,candidate)
+            }
+        }
+
         NavigatorPrefs(this).manualStart?.let {
             State.manualStart=it
             manualOrigin=RoutingEngine.Point(it.lat,it.lon)
@@ -629,6 +652,7 @@ class NavigatorActivity : Activity() {
         stopGuidance()
         val cleaned=PlaceSearch.cyrillicLabel(label).take(120)
         selectedDestination=point
+        FytRouteStore.saveDestination(this,point)
         State.navigationDestination=point.lat to point.lon
         pickMode="DEST"
         map.centerAt(point.lat,point.lon)
@@ -676,6 +700,7 @@ class NavigatorActivity : Activity() {
             }
             else -> {
                 selectedDestination=point
+        FytRouteStore.saveDestination(this,point)
                 State.navigationDestination=lat to lon
                 map.centerAt(lat,lon)
                 pickStatus.text="Цель выбрана: "+format(lat)+", "+format(lon)
@@ -691,6 +716,7 @@ class NavigatorActivity : Activity() {
         NavigatorPrefs(this).rememberAddress(
             NavigatorPrefs.RecentAddress(label,p.lat,p.lon))
         selectedDestination=p
+        FytRouteStore.saveDestination(this,p)
         State.navigationDestination=p.lat to p.lon
         map.centerAt(p.lat,p.lon)
         pickMode="DEST"
@@ -941,6 +967,7 @@ class NavigatorActivity : Activity() {
             result.fold(
                 onSuccess={value->
                     plan=value
+                    FytRouteStore.saveRoute(this,value,active)
                     inertialRouteMatcher.reset()
                     lastRouteWarning=InertialRouteMatcher.Warning.NONE
                     State.activeRouting=active
@@ -994,6 +1021,7 @@ class NavigatorActivity : Activity() {
         // restore car-following and face down the planned route immediately.
         map.beginRouteGuidance(ahead,fallback)
         active=true
+        FytRouteStore.setActive(this,true)
         inertialRouteMatcher.reset()
         lastRouteWarning=InertialRouteMatcher.Warning.NONE
         State.activeRouting=true
@@ -1006,6 +1034,7 @@ class NavigatorActivity : Activity() {
     }
 
     private fun stopGuidance() {
+        FytRouteStore.clear(this)
         active=false
         inertialRouteMatcher.reset()
         lastRouteWarning=InertialRouteMatcher.Warning.NONE
