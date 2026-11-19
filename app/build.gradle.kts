@@ -63,6 +63,7 @@ dependencies {
     implementation("org.mapsforge:mapsforge-map-reader:0.25.0")
     implementation("org.mapsforge:mapsforge-themes:0.25.0")
     testImplementation("junit:junit:4.13.2")
+    androidTestImplementation("androidx.test:core:1.6.1")
     androidTestImplementation("androidx.test:runner:1.6.2")
     androidTestImplementation("androidx.test:rules:1.6.1")
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
