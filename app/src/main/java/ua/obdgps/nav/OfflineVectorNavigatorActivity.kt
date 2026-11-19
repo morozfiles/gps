@@ -497,10 +497,11 @@ class OfflineVectorNavigatorActivity:Activity() {
             strokeWidth=dp(3).toFloat()
             setStyle(org.mapsforge.core.graphics.Style.STROKE)
         }
-        destinationMarker=FixedPixelCircle(
+        val marker=FixedPixelCircle(
             LatLong(coordinate.lat,coordinate.lon),dp(11).toFloat(),
             fill,border)
-        mapView.getLayerManager().getLayers().add(destinationMarker)
+        destinationMarker=marker
+        mapView.getLayerManager().getLayers().add(marker)
         info.text="Цель: "+label.take(55)
         // Auto-build after a map tap. The search workflow still lets the
         // driver confirm the address before pressing «Маршрут».
