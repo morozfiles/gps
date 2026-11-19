@@ -16,7 +16,8 @@ if ((persistentStoreFile == null) != (persistentPassword == null)) {
 
 // A separately installable migration build. It never overwrites
 // ua.obdgps.nav or its downloaded offline maps.
-val parallelInstall = providers.gradleProperty("parallelInstall").orNull == "true"
+// Dedicated head-unit package; does not replace the phone build.
+val parallelInstall = false
 
 android {
     signingConfigs {
@@ -40,14 +41,12 @@ android {
     namespace = "ua.obdgps.nav"
     compileSdk = 36
     defaultConfig {
-        applicationId = if (parallelInstall) "ua.obdgps.nav.parallel"
-            else "ua.obdgps.nav"
-        manifestPlaceholders["appDisplayName"] = if (parallelInstall)
-            "OBD GPS Navigator 2" else "OBD GPS Navigator"
+        applicationId = "ua.obdgps.nav.fyt7870"
+        manifestPlaceholders["appDisplayName"] = "OBD GPS · FYT 7870"
         minSdk = 31
         targetSdk = 35
-        versionCode = 42
-        versionName = "0.12.0-alpha"
+        versionCode = 1
+        versionName = "0.1.0-fyt"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
     compileOptions {
