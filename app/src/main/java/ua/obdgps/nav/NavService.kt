@@ -96,6 +96,22 @@ class NavService: Service(), LocationListener {
     private var reverse = false
     private var autoEnabled = true
     private var connected = false
+    private var lastReconnectAttemptMs=0L
+    private var lastWakeRefreshMs=0L
+    private var lastLoopObservedMs=0L
+    private var previousInteractive=true
+    private var lastDrResumeAttempt=0L
+    private val power by lazy {getSystemService(POWER_SERVICE) as PowerManager}
+    private val screenReceiver=object:BroadcastReceiver(){
+        override fun onReceive(context:Context,intent:Intent){
+            if(intent.action==Intent.ACTION_SCREEN_OFF){
+                previousInteractive=false
+                State.gpsWakeStatus="Экран спит · мониторинг сохранён"
+            }else if(intent.action==Intent.ACTION_SCREEN_ON){
+                handler.postDelayed({recoverAfterWake()},2500L)
+            }
+        }
+    }
     private val responseBuffer = StringBuilder()
     private val commands = listOf("ATZ", "ATE0", "ATL0", "ATS0", "ATH0", "ATAT1", "ATST96")
     // Experimental Mitsubishi MUT-II K-line startup. Requires ELM firmware
@@ -140,6 +156,21 @@ class NavService: Service(), LocationListener {
     private val loop = object: Runnable {
         override fun run() {
             val now = SystemClock.elapsedRealtime()
+            val interactive=power.isInteractive
+            if(interactive && (!previousInteractive ||
+                    lastLoopObservedMs>0L && now-lastLoopObservedMs>8000L)){
+                recoverAfterWake()
+            }
+            previousInteractive=interactive
+            lastLoopObservedMs=now
+            if(interactive)recoverStaleVgate(now)
+            if(interactive && !State.dr &&
+                getSharedPreferences("fyt_unit",MODE_PRIVATE)
+                    .getBoolean("dr_requested",false) &&
+                now-lastDrResumeAttempt>5000L){
+                lastDrResumeAttempt=now
+                startDr(force=true)
+            }
             if (connected && uartReady && (tx != null || sppOutput != null)) {
                 // Never send another ELM command until the preceding prompt (>) arrives.
                 // Initializing ISO9141 / KWP can take several seconds.
@@ -226,6 +257,11 @@ class NavService: Service(), LocationListener {
             if(State.diagnosticRunning)comparisonDr.onGyroYaw(yaw,dt)
         }
         motion.start()
+        previousInteractive=power.isInteractive
+        registerReceiver(screenReceiver,IntentFilter().apply{
+            addAction(Intent.ACTION_SCREEN_ON)
+            addAction(Intent.ACTION_SCREEN_OFF)
+        })
         State.navigationMode = "GPS"
         State.manualForced = false
         State.dr = false
@@ -278,7 +314,11 @@ class NavService: Service(), LocationListener {
                 State.manualStart=null
                 State.message="Ручная стартовая точка удалена"
             }
-            START_DR -> startDr(force=true)
+            START_DR -> {
+                getSharedPreferences("fyt_unit",MODE_PRIVATE).edit()
+                    .putBoolean("dr_requested",true).apply()
+                startDr(force=true)
+            }
             START_DIAGNOSTIC -> startDiagnostic()
             STOP_DIAGNOSTIC -> {
                 State.stopDiagnostic()
@@ -287,6 +327,8 @@ class NavService: Service(), LocationListener {
                 learnedDr.save()
             }
             STOP_DR -> {
+                getSharedPreferences("fyt_unit",MODE_PRIVATE).edit()
+                    .putBoolean("dr_requested",false).apply()
                 autoEnabled=false
                 State.autoEnabled=false
                 settings.autoEnabled=false
@@ -316,15 +358,75 @@ class NavService: Service(), LocationListener {
             MONITOR -> {
                 val key=settings.adapterKey
                 if(key!=null && !connected &&
+                    SystemClock.elapsedRealtime()-lastReconnectAttemptMs>2500L &&
                     checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT)==PackageManager.PERMISSION_GRANTED &&
                     bt.isEnabled) {
-                    State.message="Подключение к сохранённому ELM327..."
+                    State.message="Подключение к сохранённому Vgate..."
                     connectChoice(key,save=false)
                 } else if(!connected) State.message="Мониторинг датчиков запущен"
             }
             EXIT -> { stopSelf(); return START_NOT_STICKY }
         }
-        return START_NOT_STICKY
+        // Stay eligible for service recreation after vendor Android sleep.
+        // Never restart the foreground service after explicit EXIT.
+        return START_STICKY
+    }
+
+    /**
+     * Vendor suspend may invalidate USB GNSS events, sensor listeners and
+     * Bluetooth GATT/SPP even while Android retains the foreground service.
+     */
+    private fun recoverAfterWake(){
+        val now=SystemClock.elapsedRealtime()
+        if(!power.isInteractive || now-lastWakeRefreshMs<4000L)return
+        lastWakeRefreshMs=now
+        lastLoopObservedMs=now
+        tickTime=now
+        State.gpsWakeStatus="Пробуждение: восстанавливаю GPS, IMU и Vgate"
+        gps=null
+        gpsTime=0L
+        State.gpsSpeedKmh=null
+        State.gpsSpeedUpdatedElapsedMs=0L
+        gpsConsensus.clear()
+        motion.stop()
+        motion.start()
+        try{lm.removeUpdates(this)}catch(_:Exception){}
+        if(checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)==
+            PackageManager.PERMISSION_GRANTED){
+            try{lm.requestLocationUpdates(LocationManager.GPS_PROVIDER,
+                1000L,0f,this,Looper.getMainLooper())}catch(_:Exception){}
+        }
+        hybridLocator.stop()
+        hybridLocator.start()
+        val key=settings.adapterKey
+        if(key!=null){
+            disconnectTransport()
+            lastReconnectAttemptMs=now
+            handler.postDelayed({
+                if(power.isInteractive &&
+                    checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT)==
+                        PackageManager.PERMISSION_GRANTED && bt.isEnabled){
+                    connectChoice(key,save=false)
+                }
+            },3000L)
+        }
+        handler.postDelayed({
+            State.gpsWakeStatus="Мониторинг восстановлен · ожидаю новые измерения"
+        },5000L)
+    }
+
+    private fun recoverStaleVgate(now:Long){
+        val key=settings.adapterKey?:return
+        if(checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT)!=
+            PackageManager.PERMISSION_GRANTED)return
+        if(!bt.isEnabled)return
+        val noSpeed=State.speedUpdatedElapsedMs<=0L ||
+            now-State.speedUpdatedElapsedMs>22000L
+        if(noSpeed && now-lastReconnectAttemptMs>25000L){
+            lastReconnectAttemptMs=now
+            State.gpsWakeStatus="Повторное подключение к Vgate"
+            connectChoice(key,save=false)
+        }
     }
     private fun changeProtocol(mode:String) {
         if(mode !in setOf("AUTO","CAN","KLINE","MUT")) return
@@ -413,6 +515,7 @@ class NavService: Service(), LocationListener {
         State.speedUpdatedElapsedMs=0L
     }
     private fun connectChoice(choice:String, save:Boolean=true) {
+        lastReconnectAttemptMs=SystemClock.elapsedRealtime()
         val selectedName=State.devices[choice] ?: settings.adapterName ?: choice
         if(save) {
             settings.adapterKey=choice
@@ -1502,6 +1605,7 @@ class NavService: Service(), LocationListener {
     }
     override fun onBind(i:Intent?):IBinder?=null
     override fun onDestroy() {
+        runCatching{unregisterReceiver(screenReceiver)}
         handler.removeCallbacks(loop);stopScan();stopDr()
         disconnectTransport()
         motion.stop()
