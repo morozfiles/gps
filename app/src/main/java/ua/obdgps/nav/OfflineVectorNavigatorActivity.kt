@@ -392,6 +392,8 @@ class OfflineVectorNavigatorActivity:Activity() {
                             picking=false
                             visibility=View.GONE
                             selectDestination(p,"Точка на карте",true)
+                            Toast.makeText(this@OfflineVectorNavigatorActivity,
+                                "Точка назначения установлена",Toast.LENGTH_SHORT).show()
                         }
                     }catch(ex:Exception){
                         reportError("Выбор точки на карте",ex)
@@ -605,34 +607,29 @@ class OfflineVectorNavigatorActivity:Activity() {
     }
 
     /** Common safe path for an address and a tap on the vector map. */
-    /** Pixel -> coordinate, accounting for Mapsforge's map rotation. */
+    /**
+     * Mapsforge's projection takes coordinates in MapView's own local
+     * coordinate system, including its current rotation and view centre.
+     * Do not apply rotation or offsets a second time.
+     */
     private fun pointAtScreen(x:Float,y:Float):RoutingEngine.Point?{
-        if(mapView.width<=0 || mapView.height<=0 ||
+        if(!::mapView.isInitialized || mapView.width<=0 || mapView.height<=0 ||
             !x.isFinite() || !y.isFinite() ||
             x<0f || y<0f || x>mapView.width || y>mapView.height)return null
-        var pixel=org.mapsforge.core.model.Point(x.toDouble(),y.toDouble())
-            .offset(-mapView.getOffsetX().toDouble(),
-                -mapView.getOffsetY().toDouble())
-        val rotation=mapView.getMapRotation()
-        if(!Rotation.noRotation(rotation))pixel=rotation.rotate(pixel)
-        val point=mapView.getMapViewProjection()
-            .fromPixels(pixel.x,pixel.y)?:return null
-        return RoutingEngine.Point(point.latitude,point.longitude)
+        val geo=mapView.getMapViewProjection()
+            .fromPixels(x.toDouble(),y.toDouble())?:return null
+        return RoutingEngine.Point(geo.latitude,geo.longitude)
             .takeIf{RoutingEngine.valid(it)}
     }
 
-    /** Coordinate -> visible pixels for the route/pin Android overlay. */
+    /** Coordinate -> visible pixels, following the map's rotation. */
     private fun screenPoint(point:RoutingEngine.Point):Pair<Float,Float>?{
         if(!RoutingEngine.valid(point) || !::mapView.isInitialized ||
             mapView.width<=0 || mapView.height<=0)return null
-        var pixels=mapView.getMapViewProjection().toPixels(
-            LatLong(point.lat,point.lon))?:return null
-        val rotation=mapView.getMapRotation()
-        if(!Rotation.noRotation(rotation))pixels=rotation.rotate(pixels,true)
-        val px=pixels.x+mapView.getOffsetX()
-        val py=pixels.y+mapView.getOffsetY()
-        if(!px.isFinite()||!py.isFinite())return null
-        return px.toFloat() to py.toFloat()
+        val pixels=mapView.getMapViewProjection().toPixels(
+            LatLong(point.lat,point.lon),true)?:return null
+        if(!pixels.x.isFinite() || !pixels.y.isFinite())return null
+        return pixels.x.toFloat() to pixels.y.toFloat()
     }
 
     private fun selectDestination(
