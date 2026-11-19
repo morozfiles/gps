@@ -1,9 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-    <uses-feature android:name="android.hardware.bluetooth_le" android:required="true" />
+    <uses-feature android:name="android.hardware.bluetooth_le" android:required="false" />
     <uses-permission android:name="android.permission.INTERNET"/>
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
-    <uses-permission android:name="android.permission.ACCESS_MOCK_LOCATION"/>
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/>
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/>
     <uses-permission android:name="android.permission.BLUETOOTH_SCAN"/>
@@ -13,20 +12,25 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE"/>
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC"/>
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
     <application android:theme="@android:style/Theme.Material.NoActionBar"
         android:label="${appDisplayName}" android:allowBackup="false">
-        <activity android:name=".MainActivity" android:exported="true">
+        <activity android:name=".FytHeadUnitActivity" android:exported="true"
+            android:launchMode="singleTop" android:screenOrientation="landscape">
           <intent-filter>
             <action android:name="android.intent.action.MAIN"/>
             <category android:name="android.intent.category.LAUNCHER"/>
           </intent-filter>
         </activity>
-        <activity android:name=".InertialMapActivity" android:exported="false"/>
+        <activity android:name=".MainActivity" android:exported="false"
+            android:screenOrientation="landscape"/>
+        <activity android:name=".InertialMapActivity" android:exported="false"
+            android:screenOrientation="landscape"/>
         <!-- URLs are unverified Google-owned domains: on Android 12+ a
              user may need to approve supported links manually. ACTION_SEND
              remains a reliable option from Google Maps > Share. -->
         <activity android:name=".NavigatorActivity" android:exported="true"
-            android:launchMode="singleTop">
+            android:launchMode="singleTop" android:screenOrientation="landscape">
           <intent-filter>
             <action android:name="android.intent.action.SEND"/>
             <category android:name="android.intent.category.DEFAULT"/>
@@ -55,11 +59,19 @@
                 android:pathPrefix="/maps/"/>
           </intent-filter>
         </activity>
-        <activity android:name=".OfflineMapsActivity" android:exported="false"/>
-        <activity android:name=".OfflineVectorNavigatorActivity" android:exported="false"/>
+        <activity android:name=".OfflineMapsActivity" android:exported="false"
+            android:screenOrientation="landscape"/>
+        <activity android:name=".OfflineVectorNavigatorActivity" android:exported="false"
+            android:screenOrientation="landscape"/>
         <service android:name=".OfflineCountryDownloadService"
             android:exported="false" android:foregroundServiceType="dataSync"/>
         <service android:name=".NavService" android:exported="false"
             android:foregroundServiceType="location|connectedDevice"/>
+        <receiver android:name=".FytBootReceiver" android:exported="false">
+          <intent-filter>
+            <action android:name="android.intent.action.BOOT_COMPLETED"/>
+            <action android:name="android.intent.action.MY_PACKAGE_REPLACED"/>
+          </intent-filter>
+        </receiver>
     </application>
 </manifest>
