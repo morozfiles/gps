@@ -269,8 +269,8 @@ class NavService: Service(), LocationListener {
         reverse = false
         val channel = NotificationChannel("nav","OBD GPS Navigator",NotificationManager.IMPORTANCE_LOW)
         (getSystemService(NOTIFICATION_SERVICE) as NotificationManager).createNotificationChannel(channel)
-        val intent = PendingIntent.getActivity(this,0,Intent(this,MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
-        val n = Notification.Builder(this,"nav").setContentTitle("OBD GPS Navigator").setContentText("GPS/OBD monitoring")
+        val intent = PendingIntent.getActivity(this,0,Intent(this,FytHeadUnitActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
+        val n = Notification.Builder(this,"nav").setContentTitle("OBD GPS · FYT 7870").setContentText("GM906BT / GPS / Vgate: мониторинг")
             .setSmallIcon(android.R.drawable.ic_menu_mylocation).setContentIntent(intent).build()
         startForeground(1,n,android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION or android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
         if(checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)==PackageManager.PERMISSION_GRANTED) {
@@ -1214,7 +1214,7 @@ class NavService: Service(), LocationListener {
             }
             if(!State.directionConfirmed && obdKmh>=2.0) {
                 State.navigationMode="DR: направление не определено"
-                State.message="Направление не определено: нужна калибровка компаса и данные датчиков"
+                State.message="Направление неизвестно: нужен курс GPS/GM906BT при движении либо ручной курс на карте"
                 tickTime=now
                 return
             }
