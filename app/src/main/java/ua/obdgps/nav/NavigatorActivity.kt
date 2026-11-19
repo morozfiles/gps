@@ -293,24 +293,21 @@ class NavigatorActivity : Activity() {
         val sideScroll=ScrollView(this).apply{
             setBackgroundColor(Color.rgb(33,41,50))
         }
-        workspace.addView(sideScroll,LinearLayout.LayoutParams((resources.configuration.screenWidthDp*.23f).toInt().coerceIn(230,320).let{dp(it)},-1))
+        workspace.addView(sideScroll,LinearLayout.LayoutParams((resources.configuration.screenWidthDp*.165f).toInt().coerceIn(168,220).let{dp(it)},-1))
         val sideActions=LinearLayout(this).apply{
             orientation=LinearLayout.VERTICAL
-            setPadding(dp(5),dp(5),dp(5),dp(5))
+            setPadding(dp(3),dp(2),dp(3),dp(2))
         }
         sideScroll.addView(sideActions)
         fun sideAction(title:String,click:()->Unit){
             sideActions.addView(styledButton(title,click).apply{
-                textSize=16f
-                setPadding(dp(5),dp(4),dp(5),dp(4))
-            },LinearLayout.LayoutParams(-1,dp(61)).apply{
-                setMargins(dp(1),dp(2),dp(1),dp(2))
+                textSize=13f
+                setPadding(dp(3),dp(1),dp(3),dp(1))
+            },LinearLayout.LayoutParams(-1,dp(43)).apply{
+                setMargins(dp(1),dp(1),dp(1),dp(1))
             })
         }
-        sideActions.addView(label("МАРШРУТ",13f,textColor).apply{
-            typeface=Typeface.DEFAULT_BOLD
-            setPadding(dp(7),0,0,dp(4))
-        })
+        // Entire action rail fits in the FYT landscape viewport at 2000x1200.
         sideAction("Цель на карте"){
             pickMode="DEST"
             pickStatus.text="Коснись карты: выбрать пункт назначения"
@@ -355,13 +352,16 @@ class NavigatorActivity : Activity() {
         sideAction("Сброс"){stopGuidance()}
         sideAction("Ведение по датчикам"){sendService(NavService.START_DR)}
         sideAction("Вернуться к GPS"){sendService(NavService.STOP_DR)}
+        sideAction("Тест GPS / DR"){
+            startActivity(Intent(this,InertialMapActivity::class.java))
+        }
         voiceButton=styledButton("Голос: выкл"){
             voiceEnabled=!voiceEnabled
             voiceButton.text=if(voiceEnabled)"Голос: вкл" else "Голос: выкл"
             if(!voiceEnabled)tts?.stop()
         }.apply{textSize=13f}
-        sideActions.addView(voiceButton,LinearLayout.LayoutParams(-1,dp(50)).apply{
-            setMargins(dp(1),dp(2),dp(1),dp(2))
+        sideActions.addView(voiceButton,LinearLayout.LayoutParams(-1,dp(43)).apply{
+            setMargins(dp(1),dp(1),dp(1),dp(1))
         })
         // Attribution is kept on the map itself for OSM license compliance;
         // the former full-width copyright footer no longer consumes map height.
