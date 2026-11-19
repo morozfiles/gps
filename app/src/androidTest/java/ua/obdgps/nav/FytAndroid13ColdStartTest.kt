@@ -47,16 +47,19 @@ class FytAndroid13ColdStartTest {
                     activity.isFinishing)
                 val content=activity.findViewById<View>(android.R.id.content)
                 val buttons=buttons(content)
-                assertTrue(buttons.any{it.text.contains("ВЕКТОРНАЯ КАРТА")})
+                assertTrue(buttons.any{it.text.startsWith("ВЕКТОРНАЯ")})
+                assertTrue(buttons.any{it.text.contains("ТЕСТ GPS / DR")})
+                assertTrue(buttons.any{it.text.contains("ПРОФИЛЬ ИИ")})
                 assertTrue(buttons.any{it.text.contains("VGATE")})
                 assertTrue(buttons.any{it.text.startsWith("ГИРОСКОП")})
                 assertTrue(buttons.any{it.text.startsWith("АКСЕЛЕРОМЕТР")})
                 assertFalse(buttons.any{it.text.startsWith("Компас")})
-                val preview=activity.javaClass.getDeclaredField("preview").apply{
-                    isAccessible=true
-                }.get(activity) as FytRoutePreviewView
-                assertTrue("Route preview should be laid out",preview.width>0)
-                assertTrue("Route preview should be visible",preview.height>0)
+                val leftButton=buttons.first{it.text.startsWith("ВЕКТОРНАЯ")}
+                val leftRail=(leftButton.parent as android.view.View).parent as View
+                assertTrue("Left navigation rail must be narrow",
+                    leftRail.width < content.width/3)
+                assertTrue("No route preview takes up the first screen",
+                    buttons.none{it.text.contains("МАРШРУТ И НАВИГАЦИЯ")})
                 val gps=activity.javaClass.getDeclaredField("gpsText").apply{
                     isAccessible=true
                 }.get(activity) as TextView
@@ -78,10 +81,8 @@ class FytAndroid13ColdStartTest {
             scenario.recreate()
             InstrumentationRegistry.getInstrumentation().waitForIdleSync()
             scenario.onActivity {activity->
-                val preview=activity.javaClass.getDeclaredField("preview").apply{
-                    isAccessible=true
-                }.get(activity) as FytRoutePreviewView
-                assertTrue(preview.isAttachedToWindow)
+                val rail=buttons(activity.findViewById(android.R.id.content))
+                assertTrue(rail.any{it.text.contains("ТЕСТ GPS / DR")})
                 assertEquals(end,FytRouteStore.load(activity)?.destination)
                 assertEquals(true,FytRouteStore.load(activity)?.active)
             }
