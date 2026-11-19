@@ -30,7 +30,6 @@ import java.util.concurrent.Executors
 import kotlin.math.*
 
 import org.mapsforge.core.model.LatLong
-import org.mapsforge.core.model.Point
 import org.mapsforge.core.model.Rotation
 import org.mapsforge.map.android.graphics.AndroidGraphicFactory
 import org.mapsforge.map.android.util.AndroidUtil
@@ -215,13 +214,13 @@ class OfflineVectorNavigatorActivity:Activity() {
             mapView.setOnTouchListener{_,event->
                 if(!picking && (event.actionMasked==MotionEvent.ACTION_DOWN ||
                     event.actionMasked==MotionEvent.ACTION_POINTER_DOWN)){
-                    // A manual twist must stay in effect instead of being
-                    // overwritten by the heading-up auto-follow refresh.
                     follow=false
                     manualZoomUntil=SystemClock.elapsedRealtime()+60_000L
                 }
-                // Let Mapsforge's own pinch and rotation detectors receive
-                // the original event. Never consume this callback.
+                // Keep line/pin in step with pan/zoom without modifying
+                // the renderer's layer list during gesture processing.
+                if(::arrow.isInitialized && event.actionMasked==MotionEvent.ACTION_MOVE)
+                    arrow.invalidate()
                 false
             }
             frame.addView(mapView,FrameLayout.LayoutParams(-1,-1))
@@ -545,6 +544,33 @@ class OfflineVectorNavigatorActivity:Activity() {
     }
 
     /** Common safe path for an address and a tap on the vector map. */
+    /** Pixel -> coordinate, accounting for Mapsforge's map rotation. */
+    private fun pointAtScreen(x:Float,y:Float):RoutingEngine.Point?{
+        if(!x.isFinite() || !y.isFinite() ||
+            x<0f || y<0f || x>mapView.width || y>mapView.height)return null
+        var pixel=org.mapsforge.core.model.Point(x.toDouble(),y.toDouble())
+            .offset(-mapView.getOffsetX(),-mapView.getOffsetY())
+        val rotation=mapView.getMapRotation()
+        if(!Rotation.noRotation(rotation))pixel=rotation.rotate(pixel)
+        val point=mapView.getMapViewProjection()
+            .fromPixels(pixel.x,pixel.y)?:return null
+        return RoutingEngine.Point(point.latitude,point.longitude)
+            .takeIf{RoutingEngine.valid(it)}
+    }
+
+    /** Coordinate -> visible pixels for the route/pin Android overlay. */
+    private fun screenPoint(point:RoutingEngine.Point):Pair<Float,Float>?{
+        if(!RoutingEngine.valid(point) || !::mapView.isInitialized)return null
+        var pixels=mapView.getMapViewProjection().toPixels(
+            LatLong(point.lat,point.lon))?:return null
+        val rotation=mapView.getMapRotation()
+        if(!Rotation.noRotation(rotation))pixels=rotation.rotate(pixels,true)
+        val px=pixels.x+mapView.getOffsetX()
+        val py=pixels.y+mapView.getOffsetY()
+        if(!px.isFinite()||!py.isFinite())return null
+        return px.toFloat() to py.toFloat()
+    }
+
     private fun selectDestination(
         coordinate:RoutingEngine.Point,label:String,buildImmediately:Boolean
     ){
@@ -557,6 +583,7 @@ class OfflineVectorNavigatorActivity:Activity() {
         dest=coordinate
         State.navigationDestination=coordinate.lat to coordinate.lon
         picking=false
+        if(::selectionOverlay.isInitialized)selectionOverlay.visibility=View.GONE
         route=null
         active=false
         // Do not jump the view back to the vehicle while the user is
@@ -567,23 +594,9 @@ class OfflineVectorNavigatorActivity:Activity() {
         State.activeRouting=false
         State.gpsFilterRoutePoints=emptyList()
         clearRoute()
-        destinationMarker?.let {
-            mapView.getLayerManager().getLayers().remove(it)
-        }
-        val fill=AndroidGraphicFactory.INSTANCE.createPaint().apply{
-            color=Color.rgb(247,83,91)
-            setStyle(org.mapsforge.core.graphics.Style.FILL)
-        }
-        val border=AndroidGraphicFactory.INSTANCE.createPaint().apply{
-            color=Color.WHITE
-            strokeWidth=dp(3).toFloat()
-            setStyle(org.mapsforge.core.graphics.Style.STROKE)
-        }
-        val marker=FixedPixelCircle(
-            LatLong(coordinate.lat,coordinate.lon),dp(11).toFloat(),
-            fill,border)
-        destinationMarker=marker
-        mapView.getLayerManager().getLayers().add(marker)
+        // A regular Android View draws the destination. Mapsforge's
+        // renderer layer list is never changed after map initialization.
+        arrow.invalidate()
         info.text="Цель: "+label.take(55)
         // Auto-build after a map tap. The search workflow still lets the
         // driver confirm the address before pressing «Маршрут».
@@ -595,10 +608,7 @@ class OfflineVectorNavigatorActivity:Activity() {
     }
 
     private fun clearRoute(){
-        routeLine?.let{
-            mapView.getLayerManager().getLayers().remove(it)
-        }
-        routeLine=null
+        if(::arrow.isInitialized)arrow.invalidate()
     }
 
     private fun buildRoute(reroute:Boolean){
@@ -645,22 +655,9 @@ class OfflineVectorNavigatorActivity:Activity() {
                     State.activeRouting=true
                     State.gpsFilterRoutePoints=itinerary.points
                 }
+                // The static Android overlay renders both the route and
+                // red destination circle. No dynamic Mapsforge overlays.
                 clearRoute()
-                val p=AndroidGraphicFactory.INSTANCE.createPaint().apply{
-                    color=Color.rgb(11,132,246)
-                    // Make the built route readable above detailed OSM roads.
-                    strokeWidth=dp(12).toFloat()
-                    setStyle(org.mapsforge.core.graphics.Style.STROKE)
-                }
-                routeLine=Polyline(p,AndroidGraphicFactory.INSTANCE).apply{
-                    addPoints(itinerary.points.map{it->LatLong(it.lat,it.lon)})
-                }
-                mapView.getLayerManager().getLayers().add(routeLine)
-                // Draw the red destination pin above the new route line.
-                destinationMarker?.let{marker->
-                    mapView.getLayerManager().getLayers().remove(marker)
-                    mapView.getLayerManager().getLayers().add(marker)
-                }
                 guidance.text="Маршрут: "+
                     String.format(Locale.getDefault(),"%.1f км",itinerary.lengthKm)
                 if(reroute)info.text="Маршрут перестроен"
@@ -814,6 +811,7 @@ class OfflineVectorNavigatorActivity:Activity() {
                 }
                 arrow.invalidate()
             }else {
+                arrow.invalidate()
                 info.text=if(dest!=null)
                     "Цель сохранена · жду GPS/сеть или ручную стартовую точку"
                 else "Ожидание GPS, сети или координат OBD/DR"
