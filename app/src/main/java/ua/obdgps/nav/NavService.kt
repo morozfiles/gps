@@ -65,6 +65,9 @@ class NavService: Service(), LocationListener {
     private var quarantineCandidate:Location?=null
     private var gps: Location? = null
     private var gpsTime = 0L
+    private var gpsFromExternal=false
+    private var lastExternalAcceptedMs=0L
+    private var lastExternalSampleNanos=0L
     private var speedTime = 0L
     private var tickTime = 0L
     private var lastDrStart = 0L
@@ -1023,8 +1026,10 @@ class NavService: Service(), LocationListener {
         if(currentGps!=null && now-gpsTime<7500L) {
             State.navFix=State.NavFix(currentGps.latitude,currentGps.longitude,
                 if(currentGps.hasBearing())currentGps.bearing.toDouble() else null,
-                currentGps.accuracy,"GPS",now)
-            State.sourceDescription="GPS · точность ~${currentGps.accuracy.toInt()} м"
+                currentGps.accuracy,
+                if(gpsFromExternal)"GM906BT USB" else "GPS",now)
+            State.sourceDescription=State.gpsActiveSource+
+                " · точность ~${currentGps.accuracy.toInt()} м"
             return
         }
         val net=State.networkFix?.takeIf{
@@ -1248,13 +1253,47 @@ class NavService: Service(), LocationListener {
         State.message="Ведение по GPS (инерциальный режим выключен)"
     }
 
-    override fun onLocationChanged(location: Location) {
-        if(location.isMock || location.provider != LocationManager.GPS_PROVIDER) return
+    override fun onLocationChanged(location:Location) {
+        if(!location.isMock && location.provider!=LocationManager.GPS_PROVIDER)return
+        acceptGpsLocation(location)
+    }
+
+    /**
+     * GM906BT's companion app may mock GPS_PROVIDER directly or may publish
+     * through the fused Android provider. Both paths reach this same vetted
+     * GNSS intake, without this app ever writing a mock position.
+     */
+    private fun acceptExternalMockLocation(location:Location){
+        if(location.isMock)acceptGpsLocation(location)
+    }
+
+    private fun acceptGpsLocation(location:Location) {
         val now=SystemClock.elapsedRealtime()
         val ageNanos=SystemClock.elapsedRealtimeNanos()-location.elapsedRealtimeNanos
         if(ageNanos<0L || ageNanos>8_000_000_000L) return
         if(location.latitude !in -85.0..85.0 ||
             location.longitude !in -180.0..180.0)return
+        val external=location.isMock
+        if(external){
+            State.gpsExternalUpdateMs=now
+            State.gpsExternalStatus="Данные есть · ~"+
+                (if(location.hasAccuracy())location.accuracy.toInt().toString()
+                    else "?")+" м"
+            // The fused and GPS_PROVIDER callbacks often repeat the same
+            // injected fix. Never count identical samples twice.
+            if(lastExternalSampleNanos>0L &&
+                kotlin.math.abs(lastExternalSampleNanos -
+                    location.elapsedRealtimeNanos)<300_000_000L)return
+            lastExternalSampleNanos=location.elapsedRealtimeNanos
+        }else{
+            State.gpsInternalUpdateMs=now
+            State.gpsInternalStatus="Данные есть · ~"+
+                (if(location.hasAccuracy())location.accuracy.toInt().toString()
+                    else "?")+" м"
+            // Prefer a recent accepted USB fix, otherwise automatically
+            // fall back to the head unit's internal GNSS.
+            if(now-lastExternalAcceptedMs in 0L..6500L)return
+        }
         State.addRawGps(location.latitude,location.longitude,now)
         // Filter individual Android-computed GNSS fixes. These are NOT
         // per-satellite coordinates; satellite-level elimination is not
@@ -1376,8 +1415,13 @@ class NavService: Service(), LocationListener {
         // The GNSS position is derived only from retained validated
         // samples. A robust motion-compensated rolling estimate removes
         // remaining isolated outliers without trusting a single GPS fix.
+        if(gps!=null && gpsFromExternal!=external)gpsConsensus.clear()
         val acceptedPosition=gpsConsensus.add(location,now)
         gps=Location(acceptedPosition)
+        gpsFromExternal=external
+        if(external)lastExternalAcceptedMs=now
+        State.gpsActiveSource=if(external)
+            "USB GM906BT / фиктивный Android GPS" else "Встроенный GNSS FYT"
         gpsTime=now
         lastAcceptedGps=now
         State.markRawGpsApproved(now)
@@ -1391,8 +1435,8 @@ class NavService: Service(), LocationListener {
             State.learnedDrStatus=learnedDr.status()
             State.learnedDrDetail=learnedDr.detail()
         }
-        State.gpsText="GPS: принятые координаты, усреднение "+
-            "${gpsConsensus.sampleCount} точек; ~"+
+        State.gpsText=State.gpsActiveSource+
+            ": приняты ${gpsConsensus.sampleCount} точек; ~"+
             location.accuracy.toInt()+" м"
         if(!gpsQuarantined)
             State.gpsSpoofStatus="GPS: приняты только проверенные координаты"
