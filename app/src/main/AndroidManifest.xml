@@ -67,10 +67,12 @@
             android:exported="false" android:foregroundServiceType="dataSync"/>
         <service android:name=".NavService" android:exported="false"
             android:foregroundServiceType="location"/>
-        <receiver android:name=".FytBootReceiver" android:exported="false">
+        <receiver android:name=".FytBootReceiver" android:exported="true">
           <intent-filter>
             <action android:name="android.intent.action.BOOT_COMPLETED"/>
             <action android:name="android.intent.action.MY_PACKAGE_REPLACED"/>
+            <action android:name="com.fyt.boot.ACCON"/>
+            <action android:name="com.fyt.boot.ACCOFF"/>
           </intent-filter>
         </receiver>
     </application>
