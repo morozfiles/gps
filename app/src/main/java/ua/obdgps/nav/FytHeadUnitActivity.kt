@@ -34,9 +34,12 @@ class FytHeadUnitActivity:Activity(){
     private val secondary=Color.rgb(168,190,210)
     private val blue=Color.rgb(94,181,246)
     private val green=Color.rgb(72,204,142)
+    private val inactiveBorder=Color.rgb(92,108,123)
     private val handler=Handler(Looper.getMainLooper())
     private lateinit var gyroButton:Button
     private lateinit var accelButton:Button
+    private lateinit var gpsSpeedButton:Button
+    private lateinit var obdSpeedButton:Button
     private lateinit var sensorHelp:TextView
     private lateinit var gpsText:TextView
     private lateinit var obdText:TextView
@@ -329,6 +332,28 @@ class FytHeadUnitActivity:Activity(){
             }.setNegativeButton("Закрыть",null).show()
     }
 
+    private fun showSpeedDetails(which:String){
+        val now=SystemClock.elapsedRealtime()
+        val gps=FytSpeedIndicators.gpsStatus(
+            State.gpsSpeedKmh,State.gpsSpeedUpdatedElapsedMs,now)
+        val obd=FytSpeedIndicators.obdStatus(
+            State.obdSpeedKmh(),State.speedUpdatedElapsedMs,now)
+        val status=if(which=="GPS")gps else obd
+        val desc=if(which=="GPS")
+            "Источник: "+State.gpsActiveSource+"\\n"+
+                "В панели зелёным отмечается только свежая GPS-скорость "+
+                "из координат, принятых фильтрами навигации."
+            else "Адаптер: "+State.deviceName+"\\n"+
+                "Скорость поступает от Vgate / ELM327 по OBD."
+        AlertDialog.Builder(this)
+            .setTitle("Скорость "+which)
+            .setMessage((if(status.valid)
+                String.format(Locale.US,"%.0f км/ч",status.speedKmh)
+                else "Нет свежей подтверждённой скорости")+
+                "\\n\\n"+desc)
+            .setPositiveButton("OK",null).show()
+    }
+
     private fun render(){
         val root=LinearLayout(this).apply{
             orientation=LinearLayout.VERTICAL
@@ -370,9 +395,11 @@ class FytHeadUnitActivity:Activity(){
                 setMargins(dp(1),dp(3),dp(1),dp(3))
             })
         }
+        // Standard OSM tile map is the primary navigator for FYT.
+        // Vector map stays available as a secondary, optional mode.
+        railButton("ОБЫЧНАЯ\nКАРТА"){openStandard()}
+        railButton("ПРОДОЛЖИТЬ\nМАРШРУТ"){openStandard()}
         railButton("ВЕКТОРНАЯ\nКАРТА"){openVector()}
-        railButton("ПРОДОЛЖИТЬ\nМАРШРУТ"){openVector()}
-        railButton("НАВИГАТОР"){openStandard()}
         railButton("ТЕСТ GPS / DR"){startActivity(Intent(this,
             InertialMapActivity::class.java))}
         railButton("ОФЛАЙН-КАРТЫ"){startActivity(Intent(this,
@@ -391,10 +418,25 @@ class FytHeadUnitActivity:Activity(){
             setPadding(dp(9),dp(4),dp(9),dp(9))
         }
         scroll.addView(side)
-        side.addView(title("ИНЕРЦИАЛЬНЫЕ ДАТЧИКИ"))
+        side.addView(title("ДАТЧИКИ / СКОРОСТЬ"))
         gyroButton=button("ГИРОСКОП"){calibrate("gyro")}
         accelButton=button("АКСЕЛЕРОМЕТР"){calibrate("accel")}
-        twin(side,84,gyroButton,accelButton)
+        gpsSpeedButton=button("GPS\n— км/ч"){showSpeedDetails("GPS")}
+        obdSpeedButton=button("OBD\n— км/ч"){showSpeedDetails("OBD")}
+        // Four equal horizontal gauges: two motion sensors and two
+        // independent speed sources, no map/route area wasted.
+        val sensorRow=LinearLayout(this).apply{
+            orientation=LinearLayout.HORIZONTAL
+        }
+        for(b in listOf(gyroButton,accelButton,gpsSpeedButton,obdSpeedButton)){
+            b.textSize=13f
+            b.maxLines=3
+            b.setPadding(dp(3),dp(2),dp(3),dp(2))
+            sensorRow.addView(b,LinearLayout.LayoutParams(0,dp(84),1f).apply{
+                setMargins(dp(3),dp(3),dp(3),dp(3))
+            })
+        }
+        side.addView(sensorRow)
         sensorHelp=text("Калибровка: ожидаю данные Vgate и датчиков",12.5f)
             .apply{setTextColor(secondary);setPadding(dp(10),dp(7),dp(10),dp(11))}
         side.addView(sensorHelp)
@@ -439,12 +481,30 @@ class FytHeadUnitActivity:Activity(){
             (if(accelFresh && State.linearAccelerationMps2.isFinite())
                 String.format(Locale.US,"%.2f м/с²",
                     State.linearAccelerationMps2) else "Нет сигнала")
+        // Green = qualified, recent and (for motion) calibrated.
+        // Gray = not yet verified, stale, absent or invalid.
         (gyroButton.background as? GradientDrawable)?.setStroke(
-            dp(if(selectedSensor=="gyro")2 else 1),
-            if(gyroCheck)green else blue)
+            dp(if(selectedSensor=="gyro")3 else 2),
+            if(gyroCheck)green else inactiveBorder)
         (accelButton.background as? GradientDrawable)?.setStroke(
-            dp(if(selectedSensor=="accel")2 else 1),
-            if(accelCheck)green else blue)
+            dp(if(selectedSensor=="accel")3 else 2),
+            if(accelCheck)green else inactiveBorder)
+        val gpsSpeed=FytSpeedIndicators.gpsStatus(
+            State.gpsSpeedKmh,State.gpsSpeedUpdatedElapsedMs,now)
+        val obdSpeed=FytSpeedIndicators.obdStatus(
+            State.obdSpeedKmh(),State.speedUpdatedElapsedMs,now)
+        gpsSpeedButton.text="GPS "+(if(gpsSpeed.valid)"✓" else "")+"\\n"+
+            (if(gpsSpeed.valid)
+                String.format(Locale.US,"%.0f км/ч",gpsSpeed.speedKmh)
+                else "— км/ч")
+        obdSpeedButton.text="OBD "+(if(obdSpeed.valid)"✓" else "")+"\\n"+
+            (if(obdSpeed.valid)
+                String.format(Locale.US,"%.0f км/ч",obdSpeed.speedKmh)
+                else "— км/ч")
+        (gpsSpeedButton.background as? GradientDrawable)?.setStroke(
+            dp(2),if(gpsSpeed.valid)green else inactiveBorder)
+        (obdSpeedButton.background as? GradientDrawable)?.setStroke(
+            dp(2),if(obdSpeed.valid)green else inactiveBorder)
         sensorHelp.text=when{
             State.stationaryCalibrationRunning->
                 "Идёт калибровка (5 секунд): машина неподвижна, OBD = 0 км/ч."
@@ -464,11 +524,10 @@ class FytHeadUnitActivity:Activity(){
             else "○ ожидание")+"\n"+
             "Источник: "+State.gpsActiveSource+"\n"+
             State.sourceDescription
-        val obdNow=State.speedUpdatedElapsedMs>0L &&
-            now-State.speedUpdatedElapsedMs in 0L..4500L
         obdText.text="Адаптер: "+State.deviceName+"\n"+
-            "Скорость: "+(if(obdNow)String.format(Locale.US,"%.0f км/ч",
-                State.obdSpeedKmh()?:0.0) else "нет свежих данных")+"\n"+
+            "Скорость: "+(if(obdSpeed.valid)
+                String.format(Locale.US,"%.0f км/ч",obdSpeed.speedKmh)
+                else "нет свежих данных")+"\n"+
             "Режим: "+State.modeLabel
         val session=FytRouteStore.load(this)
         monitorButton.text=if(monitoringEnabled())"ОСТАНОВИТЬ\nМОНИТОРИНГ"
