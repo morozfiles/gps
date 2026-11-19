@@ -606,7 +606,7 @@ class OfflineVectorNavigatorActivity:Activity() {
         }
         NavigatorPrefs(this).rememberAddress(NavigatorPrefs.RecentAddress(
             label,coordinate.lat,coordinate.lon))
-        selectDestination(coordinate,label,false)
+        selectDestination(coordinate,label,false,centerOnDestination=true)
     }
 
     /**
@@ -668,7 +668,8 @@ class OfflineVectorNavigatorActivity:Activity() {
     }
 
     private fun selectDestination(
-        coordinate:RoutingEngine.Point,label:String,buildImmediately:Boolean
+        coordinate:RoutingEngine.Point,label:String,buildImmediately:Boolean,
+        centerOnDestination:Boolean=false
     ){
         if(!RoutingEngine.valid(coordinate)){
             info.text="Некорректная точка назначения"
@@ -695,11 +696,13 @@ class OfflineVectorNavigatorActivity:Activity() {
         info.text="Цель: "+label.take(55)
         // Auto-build after a map tap. The search workflow still lets the
         // driver confirm the address before pressing «Маршрут».
-        if(buildImmediately)buildRoute(false)
-        else{
+        if(centerOnDestination){
+            // Center only for text/address search. Tapping directly on the
+            // map must leave the selected pin exactly under the finger.
             mapView.setCenter(LatLong(coordinate.lat,coordinate.lon))
             follow=false
         }
+        if(buildImmediately)buildRoute(false)
     }
 
     private fun clearRoute(){
