@@ -329,7 +329,11 @@ class FytHeadUnitActivity:Activity(){
 
     override fun onResume(){
         super.onResume()
-        if(hasPermissions())launchService(NavService.MONITOR)
+        if(hasPermissions()){
+            getSharedPreferences("fyt_unit",MODE_PRIVATE).edit()
+                .putBoolean("auto_monitor",true).apply()
+            launchService(NavService.MONITOR)
+        }
         tick.removeCallbacks(uiUpdate)
         tick.post(uiUpdate)
     }
