@@ -1384,9 +1384,8 @@ class NavService: Service(), LocationListener {
                     else "?")+" м"
             // The fused and GPS_PROVIDER callbacks often repeat the same
             // injected fix. Never count identical samples twice.
-            if(lastExternalSampleNanos>0L &&
-                kotlin.math.abs(lastExternalSampleNanos -
-                    location.elapsedRealtimeNanos)<300_000_000L)return
+            if(FytGpsPriority.duplicateMockNanos(
+                    location.elapsedRealtimeNanos,lastExternalSampleNanos))return
             lastExternalSampleNanos=location.elapsedRealtimeNanos
         }else{
             State.gpsInternalUpdateMs=now
@@ -1395,7 +1394,7 @@ class NavService: Service(), LocationListener {
                     else "?")+" м"
             // Prefer a recent accepted USB fix, otherwise automatically
             // fall back to the head unit's internal GNSS.
-            if(now-lastExternalAcceptedMs in 0L..6500L)return
+            if(FytGpsPriority.externalPreferred(now,lastExternalAcceptedMs))return
         }
         State.addRawGps(location.latitude,location.longitude,now)
         // Filter individual Android-computed GNSS fixes. These are NOT
