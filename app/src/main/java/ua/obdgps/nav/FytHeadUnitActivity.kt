@@ -246,7 +246,7 @@ class FytHeadUnitActivity:Activity(){
 
     override fun onCreate(savedInstanceState:Bundle?){
         super.onCreate(savedInstanceState)
-        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        // FYT's ACC/sleep controller owns display power; do not override standby.
         window.statusBarColor=bg;window.navigationBarColor=bg
         val root=LinearLayout(this).apply {
             orientation=LinearLayout.VERTICAL
