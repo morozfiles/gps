@@ -14,7 +14,9 @@ import kotlin.math.*
  * Learns ONLY while the independent GPS-vs-DR comparison is running.
  * GPS data must already have passed NavService spoof/jump checks, and each
  * training pair is additionally screened for age, precision, movement and
- * agreement with OBD. The network never receives raw GPS during navigation.
+ * agreement with OBD. On FYT, the external GM906BT is another app's mock
+ * provider; only accepted, explicitly marked external fixes may train.
+ * The network never receives raw GPS during navigation.
  *
  * IMPORTANT: this calibrates two systematic gains. It is not a GNSS
  * replacement, and cannot detect a sophisticated consistent GPS spoof.
@@ -113,14 +115,19 @@ internal class AdaptiveDrLearning(context:Context) {
     fun observeTrustedGps(
         gps:Location, dr:DeadReckoner.Pose?,
         obdKmh:Double?, networkCorrections:Int,
-        gpsSampleCount:Int, now:Long=SystemClock.elapsedRealtime()
+        gpsSampleCount:Int, now:Long=SystemClock.elapsedRealtime(),
+        trustedExternalMock:Boolean=false
     ){
         if(dr==null || !gps.hasAccuracy() || gps.accuracy>12f ||
             gps.accuracy<=0f || gpsSampleCount<3 ||
             !gps.hasSpeed() || gps.speed*3.6f !in 12f..130f ||
             obdKmh==null || obdKmh !in 12.0..130.0 ||
             abs(gps.speed*3.6-obdKmh)>max(9.0,obdKmh*0.23) ||
-            gps.isMock || GpsSpoofGuard.isLima(gps.latitude,gps.longitude)){
+            // GM906BT's companion publishes Android mock GPS. Allow it
+            // ONLY after NavService's spoof/route/jump/OBD checks accepted
+            // this fix and explicitly identified the external input.
+            (gps.isMock && !trustedExternalMock) ||
+            GpsSpoofGuard.isLima(gps.latitude,gps.longitude)){
             lastPair=null
             return
         }
