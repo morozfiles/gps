@@ -41,6 +41,7 @@ class FytAndroid13ColdStartTest {
             .putBoolean("auto_monitor",false).commit()
         FytRouteStore.clear(context)
         ActivityScenario.launch(FytHeadUnitActivity::class.java).use{scenario->
+            instrumentation.waitForIdleSync()
             scenario.onActivity{activity->
                 assertFalse("FYT app should not request sensor permissions on cold launch",
                     activity.isFinishing)
@@ -75,6 +76,7 @@ class FytAndroid13ColdStartTest {
         val scenario=ActivityScenario.launch(FytHeadUnitActivity::class.java)
         try {
             scenario.recreate()
+            InstrumentationRegistry.getInstrumentation().waitForIdleSync()
             scenario.onActivity {activity->
                 val preview=activity.javaClass.getDeclaredField("preview").apply{
                     isAccessible=true
