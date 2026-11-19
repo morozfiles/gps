@@ -10,7 +10,6 @@ import android.widget.Toast
 import android.view.View
 import android.text.TextUtils
 import java.time.Instant
-import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 
 /**
@@ -21,7 +20,7 @@ import java.time.format.DateTimeFormatter
 class AirAlertIndicatorsView(context:Context):LinearLayout(context) {
     private val colorText=Color.rgb(191,205,218)
     private val clock=DateTimeFormatter.ofPattern("HH:mm")
-        .withZone(ZoneId.of("Europe/Kyiv"))
+        .withZone(KyivTimeZone.resolve())
     private fun dp(v:Int)=(v*resources.displayMetrics.density+.5f).toInt()
     private data class Indicator(val dot:View,val name:TextView)
     private val oblast:Indicator
