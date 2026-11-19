@@ -1,6 +1,8 @@
 package ua.obdgps.nav
 
 import android.Manifest
+import android.hardware.Sensor
+import android.hardware.SensorManager
 import android.app.Activity
 import android.app.AlertDialog
 import android.bluetooth.BluetoothAdapter
@@ -50,6 +52,7 @@ class MainActivity : Activity() {
     private var gpsSpeedKmh: Double? = null
     private var gpsSpeedUpdatedElapsedMs = 0L
     private val locationManager by lazy { getSystemService(LocationManager::class.java) }
+    private val sensorManager by lazy { getSystemService(SensorManager::class.java) }
     private val bluetoothManager by lazy { getSystemService(BluetoothManager::class.java) }
     private val gpsSpeedListener = object : LocationListener {
         override fun onLocationChanged(location: Location) {
@@ -280,16 +283,31 @@ class MainActivity : Activity() {
     private fun sensorSnapshot():SensorCalibrationSnapshot {
         val now=SystemClock.elapsedRealtime()
         fun fresh(at:Long)=at>0L && now-at in 0L..3500L
+        // The hardware can be present even before the navigation service
+        // starts (e.g. while Bluetooth/location permissions are pending).
+        fun available(type:Int)=sensorManager.getDefaultSensor(type)!=null
+        val motionPrefs=getSharedPreferences("motion",MODE_PRIVATE)
+        val gyroPresent=available(Sensor.TYPE_GYROSCOPE)
+        val accelPresent=available(Sensor.TYPE_ACCELEROMETER)
+        val linearPresent=available(Sensor.TYPE_LINEAR_ACCELERATION)
+        val gravityPresent=available(Sensor.TYPE_GRAVITY)||accelPresent
+        val compassPresent=available(Sensor.TYPE_MAGNETIC_FIELD) &&
+            available(Sensor.TYPE_ROTATION_VECTOR)
+        val savedGyro=motionPrefs.contains("yawBias") &&
+            motionPrefs.getFloat("yawBias",0f).isFinite()
+        val savedAccel=motionPrefs.contains("accelBias") &&
+            motionPrefs.getFloat("accelBias",0f).isFinite()
         return SensorCalibrationSnapshot(
-            gyroAvailable=State.sensorGyroAvailable,
-            accelAvailable=State.sensorAccelAvailable,
-            linearAccelAvailable=State.sensorLinearAccelAvailable,
-            gravityAvailable=State.sensorGravityAvailable,
-            compassAvailable=State.sensorCompassAvailable,
-            gyroCalibrated=State.gyroCalibrated,
-            accelCalibrated=State.accelCalibrated,
-            compassCheckPassed=State.compassMagnetCheckPassed,
-            compassAligned=State.compassAligned,
+            gyroAvailable=gyroPresent,
+            accelAvailable=accelPresent,
+            linearAccelAvailable=linearPresent,
+            gravityAvailable=gravityPresent,
+            compassAvailable=compassPresent,
+            gyroCalibrated=State.gyroCalibrated || savedGyro,
+            accelCalibrated=State.accelCalibrated || savedAccel,
+            compassCheckPassed=State.compassMagnetCheckPassed ||
+                motionPrefs.getBoolean("compassCheckPassed",false),
+            compassAligned=State.compassAligned || motionPrefs.contains("carOffset"),
             compassReliable=State.compassReliableNow,
             gyroFresh=fresh(State.gyroSampleMs),
             accelFresh=fresh(State.accelSampleMs),
