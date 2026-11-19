@@ -183,7 +183,7 @@ class OfflineVectorNavigatorActivity:Activity() {
         captureCrashReports()
         window.statusBarColor=bg
         window.navigationBarColor=bg
-        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        // FYT's ACC/sleep controller owns display power; do not override standby.
         AirAlerts.initialize(this)
         if(OfflineRegionPacks.mapFiles(this).isEmpty()){
             AlertDialog.Builder(this).setTitle("Нужна офлайн-карта")
