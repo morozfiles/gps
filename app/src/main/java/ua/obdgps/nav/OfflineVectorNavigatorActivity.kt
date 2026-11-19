@@ -489,6 +489,7 @@ class OfflineVectorNavigatorActivity:Activity() {
                     lastRouteWarning=InertialRouteMatcher.Warning.NONE
                     State.activeRouting=true
                     State.gpsFilterRoutePoints=route!!.points
+                    FytRouteStore.setActive(this,true)
                     followCar()
                     info.text="Ведение по маршруту · GPS / OBD / DR"
                 }
@@ -501,9 +502,43 @@ class OfflineVectorNavigatorActivity:Activity() {
             button("Офлайн-карты"){
                 startActivity(Intent(this,OfflineMapsActivity::class.java))
             },
+            button("Завершить маршрут"){
+                FytRouteStore.clear(this)
+                dest=null
+                route=null
+                active=false
+                State.navigationDestination=null
+                State.activeRouting=false
+                State.gpsFilterRoutePoints=emptyList()
+                follow=false
+                arrow.invalidate()
+                guidance.text="Маршрут завершён · выбери новую цель"
+                info.text="Маршрут удалён из памяти"
+            },
             button("Диагностика"){showDiagnostic()}
         ))
         setContentView(root)
+        // Restore destination and exact road geometry after FYT deep sleep
+        // or Android process recreation, without needing internet.
+        FytRouteStore.load(this)?.let{saved->
+            dest=saved.destination
+            State.navigationDestination=dest?.let{it.lat to it.lon}
+            route=saved.route
+            active=saved.active && route!=null
+            State.activeRouting=active
+            State.gpsFilterRoutePoints=if(active)
+                route?.points?:emptyList() else emptyList()
+            follow=active
+            info.text=if(active)"Маршрут восстановлен после сна · ведение активно"
+                else "Цель восстановлена из памяти"
+            guidance.text=when{
+                route!=null -> String.format(Locale.getDefault(),
+                    "Сохранённый маршрут %.1f км · ${if(active)"ведение включено" else "нажми Начать ведение"}",
+                    route!!.lengthKm)
+                else -> "Цель сохранена; нажми «Маршрут», когда появится GPS"
+            }
+            arrow.invalidate()
+        }
         alertVoice=TextToSpeech(this){result->
             if(result==TextToSpeech.SUCCESS){
                 alertVoiceReady=true
@@ -678,6 +713,7 @@ class OfflineVectorNavigatorActivity:Activity() {
         // Invalidate an unfinished network request for any previous goal.
         routeGeneration++
         dest=coordinate
+        FytRouteStore.saveDestination(this,coordinate)
         State.navigationDestination=coordinate.lat to coordinate.lon
         picking=false
         route=null
@@ -747,6 +783,7 @@ class OfflineVectorNavigatorActivity:Activity() {
             requesting=false
             result.fold(onSuccess={itinerary->
                 route=itinerary
+                FytRouteStore.saveRoute(this,itinerary,active)
                 inertialRouteMatcher.reset()
                 lastRouteWarning=InertialRouteMatcher.Warning.NONE
                 if(active){
@@ -897,6 +934,7 @@ class OfflineVectorNavigatorActivity:Activity() {
                     lastRouteWarning=warning
                     if(progress.arrived && warning==InertialRouteMatcher.Warning.NONE){
                         active=false
+                        FytRouteStore.setActive(this@OfflineVectorNavigatorActivity,false)
                         inertialRouteMatcher.reset()
                         State.activeRouting=false
                         State.gpsFilterRoutePoints=emptyList()
