@@ -1,0 +1,65 @@
+name: FYT Android 13 AOSP 2000x1200 cold start
+on:
+  push:
+    branches: ['feature/fyt-7870-headunit']
+  workflow_dispatch:
+jobs:
+  cold-start:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.13'
+      - name: Enable KVM
+        run: |
+          if [ -e /dev/kvm ]; then sudo chmod 666 /dev/kvm; fi
+      - name: Android 13 without Google Apps, 2000x1200 landscape, cold-start regression
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 33
+          target: default
+          arch: x86_64
+          profile: pixel_6
+          disable-animations: true
+          emulator-options: -no-window -noaudio -no-boot-anim -gpu swiftshader_indirect -no-snapshot
+          script: |
+            set -euxo pipefail
+            adb shell wm size 2000x1200
+            adb shell wm density 240
+            adb shell settings put system accelerometer_rotation 0
+            adb shell settings put system user_rotation 1
+            adb shell wm size
+            adb shell wm density
+            gradle --no-daemon :app:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=ua.obdgps.nav.FytAndroid13ColdStartTest
+            mkdir -p app/build/outputs/fyt-diagnostics
+            adb shell am force-stop ua.obdgps.nav.fyt7870
+            adb shell pm revoke ua.obdgps.nav.fyt7870 android.permission.ACCESS_FINE_LOCATION || true
+            adb logcat -c || true
+            adb shell am start -W -n ua.obdgps.nav.fyt7870/ua.obdgps.nav.FytHeadUnitActivity
+            sleep 3
+            adb shell dumpsys activity activities > app/build/outputs/fyt-diagnostics/activity.txt
+            grep -q "ua.obdgps.nav.fyt7870" app/build/outputs/fyt-diagnostics/activity.txt
+            adb shell screencap -p /sdcard/fyt-dashboard.png
+            adb pull /sdcard/fyt-dashboard.png app/build/outputs/fyt-diagnostics/fyt-2000x1200.png
+            adb logcat -d -v threadtime > app/build/outputs/fyt-diagnostics/logcat.txt
+            if grep -A 10 "FATAL EXCEPTION" app/build/outputs/fyt-diagnostics/logcat.txt | grep -q "ua.obdgps.nav.fyt7870"; then
+              echo "::error::FYT dashboard crashed during cold-start test"
+              exit 1
+            fi
+      - name: Upload screenshot and startup diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: FYT-Android13-2000x1200-screenshot
+          path: |
+            app/build/outputs/fyt-diagnostics/
+            app/build/reports/androidTests/
+          if-no-files-found: ignore
