@@ -37,6 +37,7 @@ import org.mapsforge.map.android.util.AndroidUtil
 import org.mapsforge.map.android.view.MapView
 import org.mapsforge.map.layer.renderer.TileRendererLayer
 import org.mapsforge.map.layer.overlay.Polyline
+import org.mapsforge.map.layer.overlay.FixedPixelCircle
 import org.mapsforge.map.reader.MapFile
 import org.mapsforge.map.datastore.MapDataStore
 import org.mapsforge.map.datastore.MultiMapDataStore
@@ -67,6 +68,8 @@ class OfflineVectorNavigatorActivity:Activity() {
     private var loadedMapSignature=""
     private var loadedRegion=""
     private var routeLine:Polyline?=null
+    private var destinationMarker:FixedPixelCircle?=null
+    private var routeGeneration=0
     private var route:RoutingEngine.Route?=null
     private var dest:RoutingEngine.Point?=null
     private var follow=true
@@ -204,16 +207,20 @@ class OfflineVectorNavigatorActivity:Activity() {
                 mapView.getModel().mapViewPosition,AndroidGraphicFactory.INSTANCE){
                 override fun onTap(pos:LatLong,layerXY:Point,tapXY:Point):Boolean {
                     if(!picking)return false
-                    dest=RoutingEngine.Point(pos.latitude,pos.longitude)
-                    State.navigationDestination=pos.latitude to pos.longitude
+                    val tapped=RoutingEngine.Point(pos.latitude,pos.longitude)
+                    if(!RoutingEngine.valid(tapped)){
+                        info.text="Не удалось определить координаты на карте"
+                        return true
+                    }
+                    // Mapsforge is currently dispatching a tap through its
+                    // layer list. Never remove/add a route layer here: that
+                    // can invalidate the layer iteration and crash the map.
                     picking=false
-                    route=null
-                    active=false
-                    inertialRouteMatcher.reset()
-                    State.activeRouting=false
-                    State.gpsFilterRoutePoints=emptyList()
-                    clearRoute()
-                    info.text="Цель выбрана на карте"
+                    handler.post {
+                        if(!isFinishing && !isDestroyed && ::mapView.isInitialized){
+                            selectDestination(tapped,"Точка на карте",true)
+                        }
+                    }
                     return true
                 }
             }
@@ -449,10 +456,28 @@ class OfflineVectorNavigatorActivity:Activity() {
     }
 
     private fun selectAddress(label:String,coordinate:RoutingEngine.Point){
-        dest=coordinate
-        State.navigationDestination=coordinate.lat to coordinate.lon
+        if(!RoutingEngine.valid(coordinate)){
+            info.text="Некорректные координаты выбранного адреса"
+            return
+        }
         NavigatorPrefs(this).rememberAddress(NavigatorPrefs.RecentAddress(
             label,coordinate.lat,coordinate.lon))
+        selectDestination(coordinate,label,false)
+    }
+
+    /** Common safe path for an address and a tap on the vector map. */
+    private fun selectDestination(
+        coordinate:RoutingEngine.Point,label:String,buildImmediately:Boolean
+    ){
+        if(!RoutingEngine.valid(coordinate)){
+            info.text="Некорректная точка назначения"
+            return
+        }
+        // Invalidate an unfinished network request for any previous goal.
+        routeGeneration++
+        dest=coordinate
+        State.navigationDestination=coordinate.lat to coordinate.lon
+        picking=false
         route=null
         active=false
         inertialRouteMatcher.reset()
@@ -460,9 +485,30 @@ class OfflineVectorNavigatorActivity:Activity() {
         State.activeRouting=false
         State.gpsFilterRoutePoints=emptyList()
         clearRoute()
-        mapView.setCenter(LatLong(coordinate.lat,coordinate.lon))
-        follow=false
-        info.text="Цель: "+label.take(60)
+        destinationMarker?.let {
+            mapView.getLayerManager().getLayers().remove(it)
+        }
+        val fill=AndroidGraphicFactory.INSTANCE.createPaint().apply{
+            color=Color.rgb(247,83,91)
+            setStyle(org.mapsforge.core.graphics.Style.FILL)
+        }
+        val border=AndroidGraphicFactory.INSTANCE.createPaint().apply{
+            color=Color.WHITE
+            strokeWidth=dp(3).toFloat()
+            setStyle(org.mapsforge.core.graphics.Style.STROKE)
+        }
+        destinationMarker=FixedPixelCircle(
+            LatLong(coordinate.lat,coordinate.lon),dp(11).toFloat(),
+            fill,border)
+        mapView.getLayerManager().getLayers().add(destinationMarker)
+        info.text="Цель: "+label.take(55)
+        // Auto-build after a map tap. The search workflow still lets the
+        // driver confirm the address before pressing «Маршрут».
+        if(buildImmediately)buildRoute(false)
+        else{
+            mapView.setCenter(LatLong(coordinate.lat,coordinate.lon))
+            follow=false
+        }
     }
 
     private fun clearRoute(){
@@ -478,15 +524,35 @@ class OfflineVectorNavigatorActivity:Activity() {
             info.text="Выбери пункт назначения"
             return
         }
-        val fix=State.navFix
-        if(fix==null){
+        // Never try to plan from an old or spoofed GPS fix. The service
+        // publishes only validated positions; a manually set start can be
+        // used while GPS is unavailable.
+        val now=SystemClock.elapsedRealtime()
+        val fix=State.navFix?.takeIf {
+            (now-it.elapsedMs in 0L..15_000L ||
+                it.source.contains("Ручная")) &&
+                !GpsSpoofGuard.isLima(it.lat,it.lon)
+        }
+        val manual=State.manualStart
+        val start=if(fix!=null)RoutingEngine.Point(fix.lat,fix.lon)
+            else manual?.let{RoutingEngine.Point(it.lat,it.lon)}
+        if(start==null || !RoutingEngine.valid(start)){
             info.text="Нет исходной позиции: дождись GPS/сети или задай старт"
+            guidance.text="Цель сохранена. Маршрут построится после определения позиции"
             return
         }
-        if(requesting)return
+        if(requesting && reroute)return
+        if(RoutingEngine.meters(start,destination)<35.0){
+            guidance.text="Цель слишком близко к текущей позиции"
+            info.text="Выбери точку дальше 35 метров"
+            return
+        }
         requesting=true
+        val requestId=++routeGeneration
         info.text="Строю маршрут через интернет..."
-        routing.request(RoutingEngine.Point(fix.lat,fix.lon),destination){result->
+        routing.request(start,destination){result->
+            if(isFinishing || isDestroyed || requestId!=routeGeneration)
+                return@request
             requesting=false
             result.fold(onSuccess={itinerary->
                 route=itinerary
@@ -507,13 +573,19 @@ class OfflineVectorNavigatorActivity:Activity() {
                     addPoints(itinerary.points.map{it->LatLong(it.lat,it.lon)})
                 }
                 mapView.getLayerManager().getLayers().add(routeLine)
+                // Draw the red destination pin above the new route line.
+                destinationMarker?.let{marker->
+                    mapView.getLayerManager().getLayers().remove(marker)
+                    mapView.getLayerManager().getLayers().add(marker)
+                }
                 guidance.text="Маршрут: "+
                     String.format(Locale.getDefault(),"%.1f км",itinerary.lengthKm)
                 if(reroute)info.text="Маршрут перестроен"
                 else info.text="Маршрут готов. Нажми «Начать ведение»."
             },onFailure={e->
-                info.text="Маршрут не получен (нужен интернет)"
-                guidance.text=e.localizedMessage?:"Нет подключения"
+                info.text="Маршрут не построен. Цель сохранена на карте"
+                guidance.text="Маршрутизация требует интернет: "+
+                    (e.localizedMessage?:"сервер недоступен").take(90)
             })
         }
     }
@@ -687,6 +759,7 @@ class OfflineVectorNavigatorActivity:Activity() {
     }
     override fun onDestroy(){
         handler.removeCallbacks(refresh)
+        routeGeneration++
         inertialRouteMatcher.reset()
         if(active){
             State.activeRouting=false
