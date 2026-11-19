@@ -1558,7 +1558,8 @@ class NavService: Service(), LocationListener {
             State.speed!=null && now-speedTime<3500L) {
             learnedDr.observeTrustedGps(location,comparisonDr.pose,
                 correctedSpeed(),comparisonDr.correctionCount,
-                gpsConsensus.sampleCount,now)
+                gpsConsensus.sampleCount,now,
+                trustedExternalMock=external)
             State.learnedDrStatus=learnedDr.status()
             State.learnedDrDetail=learnedDr.detail()
         }
