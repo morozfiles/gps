@@ -158,6 +158,7 @@ class NavService: Service(), LocationListener {
                 }
             }
             AirAlerts.refreshIfDue()
+            motion.updateCalibrationTimers(now)
             updateNavigation(now)
             if(State.diagnosticRunning){
                 val obd=correctedSpeed()?.takeIf{
