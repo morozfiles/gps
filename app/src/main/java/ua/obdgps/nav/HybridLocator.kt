@@ -20,13 +20,17 @@ import com.google.android.gms.location.Priority
  */
 class HybridLocator(
     private val context:Context,
-    private val onRealLocation:(Location,String)->Unit
+    private val onRealLocation:(Location,String)->Unit,
+    private val onExternalMockLocation:(Location)->Unit = {}
 ) {
     private val lm=context.getSystemService(LocationManager::class.java)
-    private val fused=LocationServices.getFusedLocationProviderClient(context)
+    private val fused=runCatching{
+        LocationServices.getFusedLocationProviderClient(context)
+    }.getOrNull()
     private val networkListener=object:LocationListener {
         override fun onLocationChanged(location:Location) {
-            if(!location.isMock)onRealLocation(location,"Wi-Fi/сеть")
+            if(location.isMock)onExternalMockLocation(location)
+            else onRealLocation(location,"Wi-Fi/сеть")
         }
     }
     private val fusedListener=object:LocationCallback() {
@@ -35,7 +39,8 @@ class HybridLocator(
                 // Android marks our injected fused positions as mock.
                 // Real network/Wi-Fi/cellular/eligible BLE fixes are useful
                 // for a gently bounded DR correction too.
-                if(!location.isMock)onRealLocation(location,"Fused Android")
+                if(location.isMock)onExternalMockLocation(location)
+                else onRealLocation(location,"Fused Android")
             }
         }
     }
@@ -54,13 +59,13 @@ class HybridLocator(
         try {
             val request=LocationRequest.Builder(Priority.PRIORITY_BALANCED_POWER_ACCURACY,
                 3000L).setMinUpdateIntervalMillis(1500L).build()
-            fused.requestLocationUpdates(request,fusedListener,Looper.getMainLooper())
+            fused?.requestLocationUpdates(request,fusedListener,Looper.getMainLooper())
         } catch(_:Exception){}
     }
 
     fun stop() {
         active=false
         try{lm.removeUpdates(networkListener)}catch(_:Exception){}
-        try{fused.removeLocationUpdates(fusedListener)}catch(_:Exception){}
+        try{fused?.removeLocationUpdates(fusedListener)}catch(_:Exception){}
     }
 }
