@@ -815,7 +815,7 @@ class MainActivity : Activity() {
         window.statusBarColor=bgColor
         window.navigationBarColor=bgColor
         window.decorView.systemUiVisibility=0
-        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        // FYT's ACC/sleep controller owns display power; do not override standby.
         root = LinearLayout(this).apply {
             orientation=LinearLayout.VERTICAL
             setPadding(dip(16),dip(14),dip(16),dip(24))
