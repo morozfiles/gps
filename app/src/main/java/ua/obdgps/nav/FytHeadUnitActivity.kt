@@ -353,7 +353,7 @@ class FytHeadUnitActivity:Activity(){
         root.addView(main,LinearLayout.LayoutParams(-1,0,1f))
         val railScroll=ScrollView(this).apply{
             isFillViewport=true
-            overScrollMode=View.OVER_SCROLL_IF_CONTENT_SCROLL
+            overScrollMode=View.OVER_SCROLL_IF_CONTENT_SCROLLS
         }
         main.addView(railScroll,LinearLayout.LayoutParams(dp(leftDp),-1))
         val rail=LinearLayout(this).apply{
@@ -380,7 +380,7 @@ class FytHeadUnitActivity:Activity(){
         railButton("ПРОФИЛЬ ИИ"){showLearningProfile()}
         val scroll=ScrollView(this).apply{
             isFillViewport=false
-            overScrollMode=View.OVER_SCROLL_IF_CONTENT_SCROLL
+            overScrollMode=View.OVER_SCROLL_IF_CONTENT_SCROLLS
             background=shape(Color.rgb(24,35,49))
         }
         main.addView(scroll,LinearLayout.LayoutParams(0,-1,1f).apply{
