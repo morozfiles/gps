@@ -134,7 +134,7 @@ class InertialMapActivity : Activity() {
         window.statusBarColor=pageBackgroundColor
         window.navigationBarColor=pageBackgroundColor
         window.decorView.systemUiVisibility=0
-        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        // FYT's ACC/sleep controller owns display power; do not override standby.
 
         val column=LinearLayout(this).apply {
             orientation=LinearLayout.VERTICAL
