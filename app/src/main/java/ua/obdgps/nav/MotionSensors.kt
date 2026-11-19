@@ -102,6 +102,12 @@ class MotionSensors(
         return message
     }
 
+    /** Finish a failed compass check even when magnetometer samples stop arriving. */
+    fun updateCalibrationTimers(now:Long){
+        if(compassCheckStartMs!=0L && now-compassCheckStartMs>=15_000L)
+            finishCompassCheck()
+    }
+
     fun resetVehicleAlignment():String {
         carOffset=null
         State.compassAligned=false
