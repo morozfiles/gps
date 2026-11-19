@@ -1,27 +1,43 @@
 package ua.obdgps.nav
 
+import android.Manifest
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.util.Log
 
 /**
- * Best-effort monitor recovery after an actual head-unit reboot or app update.
- * Android may block location FGS creation from BOOT_COMPLETED on some OS
- * versions; opening the dashboard retries from a visible Activity.
+ * FYT Android 13 can send ACCON/ACCOFF broadcasts from vendor MCU services.
+ * Best effort only: Android may forbid starting a foreground service when
+ * the app is in the background. The visible dashboard handles recovery too.
  */
 class FytBootReceiver:BroadcastReceiver(){
     override fun onReceive(context:Context,intent:Intent?){
-        if(intent?.action !in setOf(
-                Intent.ACTION_BOOT_COMPLETED,Intent.ACTION_MY_PACKAGE_REPLACED))return
-        if(!context.getSharedPreferences("fyt_unit",Context.MODE_PRIVATE)
-                .getBoolean("auto_monitor",false))return
-        try {
+        when(intent?.action){
+            "com.fyt.boot.ACCOFF" -> {
+                State.gpsWakeStatus="ACC выключен: маршрут сохранён"
+                return
+            }
+            "com.fyt.boot.ACCON" ->{
+                State.gpsWakeStatus="ACC включён: восстановление соединений"
+            }
+            Intent.ACTION_BOOT_COMPLETED,
+            Intent.ACTION_MY_PACKAGE_REPLACED ->{
+                State.gpsWakeStatus="Android запущен: жду готовности системы"
+            }
+            else ->return
+        }
+        val prefs=context.getSharedPreferences("fyt_unit",Context.MODE_PRIVATE)
+        if(!prefs.getBoolean("monitor_enabled",false))return
+        if(context.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)!=
+            PackageManager.PERMISSION_GRANTED)return
+        try{
             context.startForegroundService(Intent(context,NavService::class.java)
                 .setAction(NavService.MONITOR))
-        } catch(e:Exception) {
+        }catch(e:Exception){
             Log.w("FytBootReceiver",
-                "Background start blocked: will retry on dashboard resume",e)
+                "Vendor/background start blocked, retry after screen resume",e)
         }
     }
 }
