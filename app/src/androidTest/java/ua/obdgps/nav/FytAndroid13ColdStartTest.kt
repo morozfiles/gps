@@ -69,6 +69,26 @@ class FytAndroid13ColdStartTest {
         }
     }
 
+    /**
+     * Regression for the actual FYT ROM crash reported from NavigatorActivity:
+     * AirAlertIndicatorsView must construct without relying on a new tzdb.
+     */
+    @Test fun standardNavigatorCanOpenWithAirAlertIndicators(){
+        val instrumentation=InstrumentationRegistry.getInstrumentation()
+        ActivityScenario.launch(NavigatorActivity::class.java).use { scenario ->
+            instrumentation.waitForIdleSync()
+            scenario.onActivity { activity ->
+                assertFalse("Navigator should not finish during first frame",
+                    activity.isFinishing)
+                val content=activity.findViewById<View>(android.R.id.content)
+                assertTrue("Navigator content must be drawn",content.childCount>0)
+                val text=buttons(content).map{it.text.toString()}
+                assertTrue("Route controls must be available",
+                    text.any{it.contains("Маршрут")})
+            }
+        }
+    }
+
     @Test fun dashboardAndRoutePreviewSurviveRecreation(){
         val context=InstrumentationRegistry.getInstrumentation().targetContext
         val start=RoutingEngine.Point(50.4501,30.5234)
