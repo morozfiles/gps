@@ -164,7 +164,7 @@ class NavigatorActivity : Activity() {
         window.statusBarColor=pageBackgroundColor
         window.navigationBarColor=pageBackgroundColor
         window.decorView.systemUiVisibility=0
-        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        // FYT's ACC/sleep controller owns display power; do not override standby.
         AirAlerts.initialize(this)
 
         val root=LinearLayout(this).apply {
