@@ -33,6 +33,8 @@ import java.util.concurrent.Executors
 import kotlin.math.*
 
 import org.mapsforge.core.model.LatLong
+import org.mapsforge.core.util.MercatorProjection
+import org.mapsforge.core.util.Parameters
 import org.mapsforge.core.model.Rotation
 import org.mapsforge.map.android.graphics.AndroidGraphicFactory
 import org.mapsforge.map.android.util.AndroidUtil
@@ -67,7 +69,6 @@ class OfflineVectorNavigatorActivity:Activity() {
     private var vectorMap:MapDataStore?=null
     private var loadedMapSignature=""
     private var loadedRegion=""
-    private lateinit var selectionOverlay:View
     private var routeGeneration=0
     private var route:RoutingEngine.Route?=null
     private var dest:RoutingEngine.Point?=null
@@ -265,17 +266,55 @@ class OfflineVectorNavigatorActivity:Activity() {
             mapView.setCenter(LatLong(point?.lat?:region?.lat?:50.4501,
                 point?.lon?:region?.lon?:30.5234))
             mapView.setZoomLevel(17.toByte())
+            // Touch the Mapsforge view directly. No intercepting overlay:
+            // a single-finger tap selects a destination while drag and
+            // pinch remain standard map interactions.
+            val slop=android.view.ViewConfiguration.get(this)
+                .scaledTouchSlop.coerceAtLeast(dp(6)).toFloat()
+            var downX=0f
+            var downY=0f
+            var downTime=0L
+            var tapMoved=false
             mapView.setOnTouchListener{_,event->
-                if(!picking && (event.actionMasked==MotionEvent.ACTION_DOWN ||
-                    event.actionMasked==MotionEvent.ACTION_POINTER_DOWN)){
-                    follow=false
-                    manualZoomUntil=SystemClock.elapsedRealtime()+60_000L
+                when(event.actionMasked){
+                    MotionEvent.ACTION_DOWN->{
+                        downX=event.x
+                        downY=event.y
+                        downTime=event.eventTime
+                        tapMoved=false
+                        if(!picking){
+                            follow=false
+                            manualZoomUntil=SystemClock.elapsedRealtime()+60_000L
+                        }
+                    }
+                    MotionEvent.ACTION_POINTER_DOWN,
+                    MotionEvent.ACTION_POINTER_UP->tapMoved=true
+                    MotionEvent.ACTION_MOVE->{
+                        if(kotlin.math.hypot((event.x-downX).toDouble(),
+                                (event.y-downY).toDouble())>slop)
+                            tapMoved=true
+                        if(::arrow.isInitialized)arrow.invalidate()
+                    }
+                    MotionEvent.ACTION_UP->{
+                        val elapsed=event.eventTime-downTime
+                        val distance=kotlin.math.hypot(
+                            (event.x-downX).toDouble(),
+                            (event.y-downY).toDouble())
+                        if(!tapMoved && distance<=slop && elapsed in 0L..700L){
+                            val px=event.x
+                            val py=event.y
+                            val autoRoute=picking
+                            // Don't modify view state inside Mapsforge dispatch.
+                            mapView.post {
+                                if(!isFinishing && !isDestroyed)
+                                    handleMapSelection(px,py,autoRoute)
+                            }
+                        }
+                    }
+                    MotionEvent.ACTION_CANCEL->tapMoved=true
                 }
-                // Keep line/pin in step with pan/zoom without modifying
-                // the renderer's layer list during gesture processing.
-                if(::arrow.isInitialized && event.actionMasked==MotionEvent.ACTION_MOVE)
-                    arrow.invalidate()
-                false
+                // Selection mode intercepts taps before Mapsforge gestures.
+                picking
             }
             frame.addView(mapView,FrameLayout.LayoutParams(-1,-1))
         }catch(e:Exception){
@@ -377,40 +416,6 @@ class OfflineVectorNavigatorActivity:Activity() {
         arrow.isFocusable=false
         frame.addView(arrow,FrameLayout.LayoutParams(-1,-1))
 
-        // This view is GONE except while the user is choosing a point.
-        // It intercepts the tap before Mapsforge and converts the actual
-        // screen pixel using Mapsforge's own map projection/rotation.
-        selectionOverlay=object:View(this){
-            override fun onTouchEvent(e:MotionEvent):Boolean {
-                if(!picking)return false
-                if(e.actionMasked==MotionEvent.ACTION_UP){
-                    try{
-                        val p=pointAtScreen(e.x,e.y)
-                        if(p==null){
-                            info.text="Не удалось определить точку — попробуй ещё раз"
-                        }else{
-                            picking=false
-                            visibility=View.GONE
-                            selectDestination(p,"Точка на карте",true)
-                            Toast.makeText(this@OfflineVectorNavigatorActivity,
-                                "Точка назначения установлена",Toast.LENGTH_SHORT).show()
-                        }
-                    }catch(ex:Exception){
-                        reportError("Выбор точки на карте",ex)
-                        info.text="Ошибка выбора точки: "+
-                            (ex.localizedMessage?:"неизвестная ошибка")
-                        Toast.makeText(this@OfflineVectorNavigatorActivity,
-                            info.text,Toast.LENGTH_LONG).show()
-                    }
-                }
-                return true
-            }
-        }.apply{
-            isClickable=true
-            visibility=View.GONE
-            contentDescription="Коснись дороги для установки точки назначения"
-        }
-        frame.addView(selectionOverlay,FrameLayout.LayoutParams(-1,-1))
         frame.addView(button("+"){adjustZoom(1)},
             FrameLayout.LayoutParams(dp(45),dp(45),Gravity.TOP or Gravity.RIGHT).apply{
                 topMargin=dp(8);rightMargin=dp(8)
@@ -463,15 +468,13 @@ class OfflineVectorNavigatorActivity:Activity() {
         root.addView(row(
             button("Поиск адреса"){searchAddress()},
             button("Цель на карте"){
+                picking=!picking
                 if(picking){
-                    picking=false
-                    selectionOverlay.visibility=View.GONE
-                    info.text="Выбор точки отменён"
-                }else{
-                    picking=true
                     follow=false
-                    selectionOverlay.visibility=View.VISIBLE
-                    info.text="Коснись карты для выбора цели · повторно — отмена"
+                    info.text="Коснись карты: установлю цель и построю маршрут"
+                    guidance.text="Можно также коснуться карты без режима выбора"
+                }else{
+                    info.text="Режим выбора выключен · обычное касание задаёт цель"
                 }
             },
             button("Маршрут"){buildRoute(false)}
@@ -606,20 +609,52 @@ class OfflineVectorNavigatorActivity:Activity() {
         selectDestination(coordinate,label,false)
     }
 
-    /** Common safe path for an address and a tap on the vector map. */
     /**
-     * Mapsforge's projection takes coordinates in MapView's own local
-     * coordinate system, including its current rotation and view centre.
-     * Do not apply rotation or offsets a second time.
+     * Use the LIVE map position rather than Mapsforge's delayed framebuffer
+     * position. Undo the rotation/center offset used when drawing pins.
      */
     private fun pointAtScreen(x:Float,y:Float):RoutingEngine.Point?{
-        if(!::mapView.isInitialized || mapView.width<=0 || mapView.height<=0 ||
-            !x.isFinite() || !y.isFinite() ||
-            x<0f || y<0f || x>mapView.width || y>mapView.height)return null
-        val geo=mapView.getMapViewProjection()
-            .fromPixels(x.toDouble(),y.toDouble())?:return null
+        if(!::mapView.isInitialized)return null
+        val model=mapView.getModel()
+        val pos=model.mapViewPosition.getMapPosition()
+        val mapSize=if(Parameters.FRACTIONAL_ZOOM)
+            MercatorProjection.getMapSizeWithScaleFactor(
+                model.mapViewPosition.getScaleFactor(),
+                model.displayModel.getTileSize())
+        else MercatorProjection.getMapSize(
+            pos.zoomLevel,model.displayModel.getTileSize())
+        val geo=VectorMapTapProjection.toLatLong(
+            x.toDouble(),y.toDouble(),mapView.width,mapView.height,
+            pos.latLong,mapSize,mapView.getOffsetX().toDouble(),
+            mapView.getOffsetY().toDouble(),mapView.getMapRotation())
+            ?:return null
         return RoutingEngine.Point(geo.latitude,geo.longitude)
             .takeIf{RoutingEngine.valid(it)}
+    }
+
+    private fun handleMapSelection(x:Float,y:Float,autoRoute:Boolean){
+        try{
+            val target=pointAtScreen(x,y)
+            if(target==null){
+                info.text="Не удалось выбрать точку. Коснись карты ещё раз"
+                Toast.makeText(this,"Точка недоступна — попробуй ещё раз",
+                    Toast.LENGTH_LONG).show()
+                return
+            }
+            val coordinateText=String.format(Locale.US,"%.5f, %.5f",
+                target.lat,target.lon)
+            selectDestination(target,coordinateText,autoRoute)
+            if(!autoRoute){
+                guidance.text="Цель отмечена красным · нажми «Маршрут»"
+            }
+            Toast.makeText(this,
+                "Цель выбрана: $coordinateText",Toast.LENGTH_SHORT).show()
+        }catch(e:Exception){
+            reportError("Нажатие на векторную карту",e)
+            info.text="Не удалось выбрать цель: "+
+                (e.localizedMessage?:"ошибка преобразования координат")
+            Toast.makeText(this,info.text,Toast.LENGTH_LONG).show()
+        }
     }
 
     /** Coordinate -> visible pixels, following the map's rotation. */
@@ -644,7 +679,6 @@ class OfflineVectorNavigatorActivity:Activity() {
         dest=coordinate
         State.navigationDestination=coordinate.lat to coordinate.lon
         picking=false
-        if(::selectionOverlay.isInitialized)selectionOverlay.visibility=View.GONE
         route=null
         active=false
         // Do not jump the view back to the vehicle while the user is
