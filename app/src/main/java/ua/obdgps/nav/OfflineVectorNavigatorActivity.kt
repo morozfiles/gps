@@ -474,7 +474,7 @@ class OfflineVectorNavigatorActivity:Activity() {
             setBackgroundColor(Color.rgb(34,41,50))
             isFillViewport=false
         }
-        workspace.addView(sideScroll,LinearLayout.LayoutParams(dp(196),-1))
+        workspace.addView(sideScroll,LinearLayout.LayoutParams((resources.configuration.screenWidthDp*.23f).toInt().coerceIn(230,320).let{dp(it)},-1))
         val actions=LinearLayout(this).apply{
             orientation=LinearLayout.VERTICAL
             setPadding(dp(4),dp(4),dp(4),dp(4))
@@ -486,9 +486,9 @@ class OfflineVectorNavigatorActivity:Activity() {
         })
         fun sideButton(title:String,click:()->Unit){
             actions.addView(button(title,click).apply{
-                textSize=13f
+                textSize=16f
                 setPadding(dp(6),dp(4),dp(6),dp(4))
-            },LinearLayout.LayoutParams(-1,dp(54)).apply{
+            },LinearLayout.LayoutParams(-1,dp(62)).apply{
                 setMargins(dp(2),dp(2),dp(2),dp(2))
             })
         }
