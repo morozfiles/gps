@@ -207,6 +207,26 @@ object State {
     var compassAlignmentText = "Курс автомобиля: не согласован"
     var calibrationText = "Нужна калибровка"
     var yawDegPerSec = 0.0
+    // Live readings and verified calibration checkpoints published by MotionSensors.
+    // They are distinct: sensor availability does NOT imply calibration success.
+    var sensorGyroAvailable=false
+    var sensorAccelAvailable=false
+    var sensorLinearAccelAvailable=false
+    var sensorGravityAvailable=false
+    var sensorCompassAvailable=false
+    var gyroCalibrated=false
+    var accelCalibrated=false
+    var compassMagnetCheckPassed=false
+    var compassAligned=false
+    var compassReliableNow=false
+    var stationaryCalibrationRunning=false
+    var compassCheckRunning=false
+    var gyroSampleMs=0L
+    var accelSampleMs=0L
+    var compassSampleMs=0L
+    var linearAccelerationMps2=Double.NaN
+    var compassHeadingDeg=Double.NaN
+    var compassFieldMicroTesla=Double.NaN
     var reverseSelected = false
     var directionConfirmed = false
     var directionText = "Направление: определяется"
