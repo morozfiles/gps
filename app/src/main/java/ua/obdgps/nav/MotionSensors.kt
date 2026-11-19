@@ -12,6 +12,9 @@ class MotionSensors(
 ) : SensorEventListener {
     private val sm = context.getSystemService(SensorManager::class.java)
     private val prefs = context.getSharedPreferences("motion", Context.MODE_PRIVATE)
+    private val hardwareGravity=sm.getDefaultSensor(Sensor.TYPE_GRAVITY)!=null
+    private val hardwareLinear=sm.getDefaultSensor(
+        Sensor.TYPE_LINEAR_ACCELERATION)!=null
     private val gravity = floatArrayOf(0f,0f,9.81f)
     private val rotationMatrix = FloatArray(9)
     private val orientation = FloatArray(3)
@@ -135,8 +138,8 @@ class MotionSensors(
         magnetometerPresent=sm.getDefaultSensor(Sensor.TYPE_MAGNETIC_FIELD)!=null
         State.sensorGyroAvailable=sm.getDefaultSensor(Sensor.TYPE_GYROSCOPE)!=null
         State.sensorAccelAvailable=sm.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)!=null
-        State.sensorLinearAccelAvailable=
-            sm.getDefaultSensor(Sensor.TYPE_LINEAR_ACCELERATION)!=null
+        State.sensorLinearAccelAvailable=hardwareLinear ||
+            State.sensorAccelAvailable // derive linear acceleration from raw sensor
         State.sensorGravityAvailable=
             sm.getDefaultSensor(Sensor.TYPE_GRAVITY)!=null ||
             State.sensorAccelAvailable
@@ -164,8 +167,7 @@ class MotionSensors(
             else "Привязка к автомобилю сохранена"
         val sensorNames = listOf(
             "Гироскоп" to Sensor.TYPE_GYROSCOPE,
-            "Акселерометр" to Sensor.TYPE_ACCELEROMETER,
-            "Компас" to Sensor.TYPE_ROTATION_VECTOR
+            "Акселерометр" to Sensor.TYPE_ACCELEROMETER
         )
         State.sensorAvailability=sensorNames.joinToString(" · ") { p ->
             p.first + ": " + if(sm.getDefaultSensor(p.second)!=null) "✓" else "нет"
@@ -180,6 +182,35 @@ class MotionSensors(
     }
 
      fun stop() = sm.unregisterListener(this)
+
+
+    /** Includes a software fallback for FYT firmware exposing only raw
+     * TYPE_ACCELEROMETER. Android doesn't have to expose the virtual
+     * TYPE_LINEAR_ACCELERATION to calibrate this fixed head unit. */
+    private fun processLinearAcceleration(values:FloatArray) {
+
+                val norm=sqrt((0..2).sumOf { i->values[i].toDouble().pow(2) })
+                State.accelSampleMs=SystemClock.elapsedRealtime()
+                State.linearAccelerationMps2=norm
+                if(calibrationStart!=0L) {accelSum+=norm;accelSamples++}
+                val corrected=(norm-accelBias).coerceAtLeast(0.0)
+                // Rotation matrix maps device acceleration to East/North/Up.
+                val carBearing=compassBearing
+                if(carBearing!=null) {
+                    val east=rotationMatrix[0]*values[0]+
+                        rotationMatrix[1]*values[1]+rotationMatrix[2]*values[2]
+                    val north=rotationMatrix[3]*values[0]+
+                        rotationMatrix[4]*values[1]+rotationMatrix[5]*values[2]
+                    val angle=Math.toRadians(carBearing)
+                    val forward=east*sin(angle)+north*cos(angle)
+                    signedAccelerationFiltered=0.86*signedAccelerationFiltered+0.14*forward
+                } else signedAccelerationFiltered=0.0
+                State.accelerationText=when{
+                    corrected<0.25 -> "Ровное движение / стоим"
+                    corrected<1.0 -> "Слабое ускорение или торможение"
+                    else -> "Ускорение или торможение"
+                }
+    }
 
     fun calibrate(speed: Int?, fresh: Boolean): String {
         if(calibrationStart!=0L)return State.calibrationText
@@ -341,32 +372,20 @@ class MotionSensors(
                 for(i in 0..2)gravity[i]=event.values[i]
                 gravityReady=true
             }
-            Sensor.TYPE_ACCELEROMETER -> if(!gravityReady) {
-                for(i in 0..2)gravity[i]=.97f*gravity[i]+.03f*event.values[i]
-                gravityReady=true
+            Sensor.TYPE_ACCELEROMETER -> {
+                if(!hardwareGravity){
+                    val alpha=if(gravityReady).025f else 1f
+                    for(i in 0..2)
+                        gravity[i]=(1f-alpha)*gravity[i]+alpha*event.values[i]
+                    gravityReady=true
+                }
+                if(!hardwareLinear){
+                    val linear=FloatArray(3){i->event.values[i]-gravity[i]}
+                    processLinearAcceleration(linear)
+                }
             }
             Sensor.TYPE_LINEAR_ACCELERATION -> {
-                val norm=sqrt((0..2).sumOf { i->event.values[i].toDouble().pow(2) })
-                State.accelSampleMs=SystemClock.elapsedRealtime()
-                State.linearAccelerationMps2=norm
-                if(calibrationStart!=0L) {accelSum+=norm;accelSamples++}
-                val corrected=(norm-accelBias).coerceAtLeast(0.0)
-                // Rotation matrix maps device acceleration to East/North/Up.
-                val carBearing=compassBearing
-                if(carBearing!=null) {
-                    val east=rotationMatrix[0]*event.values[0]+
-                        rotationMatrix[1]*event.values[1]+rotationMatrix[2]*event.values[2]
-                    val north=rotationMatrix[3]*event.values[0]+
-                        rotationMatrix[4]*event.values[1]+rotationMatrix[5]*event.values[2]
-                    val angle=Math.toRadians(carBearing)
-                    val forward=east*sin(angle)+north*cos(angle)
-                    signedAccelerationFiltered=0.86*signedAccelerationFiltered+0.14*forward
-                } else signedAccelerationFiltered=0.0
-                State.accelerationText=when{
-                    corrected<0.25 -> "Ровное движение / стоим"
-                    corrected<1.0 -> "Слабое ускорение или торможение"
-                    else -> "Ускорение или торможение"
-                }
+                processLinearAcceleration(event.values)
             }
             Sensor.TYPE_MAGNETIC_FIELD -> {
                 magneticAccuracy=event.accuracy
