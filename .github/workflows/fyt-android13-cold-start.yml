@@ -39,6 +39,10 @@ jobs:
             adb shell wm size
             adb shell wm density
             gradle --no-daemon :app:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=ua.obdgps.nav.FytAndroid13ColdStartTest
+            # connectedAndroidTest may uninstall the app after instrumentation.
+            # Install again before testing a real launcher cold start.
+            adb install -r app/build/outputs/apk/debug/app-debug.apk
+            adb shell pm list packages | grep -q ua.obdgps.nav.fyt7870
             mkdir -p app/build/outputs/fyt-diagnostics
             adb shell am force-stop ua.obdgps.nav.fyt7870
             adb shell pm revoke ua.obdgps.nav.fyt7870 android.permission.ACCESS_FINE_LOCATION || true
