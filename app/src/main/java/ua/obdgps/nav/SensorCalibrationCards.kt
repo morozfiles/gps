@@ -108,6 +108,9 @@ internal object SensorCalibrationCards {
                         "$name: отсутствует акселерометр или линейное ускорение."
                     s.calibrationRunning ->
                         "$name: калибровка идёт 5 с. Не двигай телефон и автомобиль."
+                    stationaryPassed(s) && failedAttempt(s.calibrationMessage) ->
+                        "$name: последняя попытка не прошла. Сохранена предыдущая "+
+                            "успешная калибровка. "+problem(s.calibrationMessage)
                     stationaryPassed(s) ->
                         "$name: ✓ успешно. Калибровка гироскопа и акселерометра сохранена."
                     else ->
@@ -119,6 +122,12 @@ internal object SensorCalibrationCards {
             }
         }
     }
+
+    private fun failedAttempt(message:String):Boolean =
+        listOf("Останови автомобиль","Мало данных","Обнаружено движение",
+            "Нет линейного ускорения","недоступен").any{
+            message.startsWith(it) || message.contains(it)
+        }
 
     private fun problem(message:String):String =
         if(message.isBlank() || message=="Не откалибровано" ||
