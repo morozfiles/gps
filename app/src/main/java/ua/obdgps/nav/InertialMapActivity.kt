@@ -56,7 +56,12 @@ class InertialMapActivity : Activity() {
     private fun button(label:String, action:()->Unit): Button = Button(this).apply {
         text=label
         isAllCaps=false
-        textSize=14f
+        textSize=12f
+        maxLines=2
+        gravity=Gravity.CENTER
+        includeFontPadding=false
+        minWidth=0;minimumWidth=0
+        setPadding(dp(2),0,dp(2),0)
         setTextColor(primaryTextColor)
         setBackgroundColor(surface)
         setOnClickListener { action() }
@@ -143,20 +148,6 @@ class InertialMapActivity : Activity() {
                 insets
             }
         }
-        val titleRow=LinearLayout(this).apply {
-            orientation=LinearLayout.HORIZONTAL
-            gravity=Gravity.CENTER_VERTICAL
-        }
-        titleRow.addView(TextView(this).apply {
-            text="Тест GPS / DR без GPS"
-            textSize=20f
-            typeface=Typeface.DEFAULT_BOLD
-            setTextColor(primaryTextColor)
-        },LinearLayout.LayoutParams(0,LinearLayout.LayoutParams.WRAP_CONTENT,1f))
-        titleRow.addView(button("Назад") { finish() },
-            LinearLayout.LayoutParams(dp(82),dp(44)))
-        column.addView(titleRow)
-
         info=TextView(this).apply {
             setTextColor(secondary)
             textSize=13f
@@ -167,7 +158,7 @@ class InertialMapActivity : Activity() {
         val buttons=LinearLayout(this).apply{
             orientation=LinearLayout.HORIZONTAL
         }
-        buttons.addView(button("▶ Начать два трека"){
+        buttons.addView(button("Начать\nдва трека"){
             try {
                 startForegroundService(Intent(this,NavService::class.java)
                     .setAction(NavService.START_DIAGNOSTIC))
@@ -179,7 +170,7 @@ class InertialMapActivity : Activity() {
             startService(Intent(this,NavService::class.java)
                 .setAction(NavService.STOP_DIAGNOSTIC))
         },LinearLayout.LayoutParams(0,dp(47),1f))
-        buttons.addView(button("Профиль ошибок"){
+        buttons.addView(button("Профиль\nошибок"){
             android.app.AlertDialog.Builder(this)
                 .setTitle("Обучение GPS против DR")
                 .setMessage(State.learnedDrStatus+"\n\n"+
