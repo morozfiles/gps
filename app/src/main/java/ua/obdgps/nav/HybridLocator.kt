@@ -33,6 +33,13 @@ class HybridLocator(
             else onRealLocation(location,"Wi-Fi/сеть")
         }
     }
+    // Works even on FYT firmware without Google Play services: a second
+    // mock provider can be observed passively when another app publishes it.
+    private val passiveListener=object:LocationListener {
+        override fun onLocationChanged(location:Location){
+            if(location.isMock)onExternalMockLocation(location)
+        }
+    }
     private val fusedListener=object:LocationCallback() {
         override fun onLocationResult(result:LocationResult) {
             for(location in result.locations) {
@@ -57,6 +64,10 @@ class HybridLocator(
             }
         } catch(_:Exception){}
         try {
+            lm.requestLocationUpdates(LocationManager.PASSIVE_PROVIDER,
+                1000L,0f,passiveListener,Looper.getMainLooper())
+        }catch(_:Exception){}
+        try {
             val request=LocationRequest.Builder(Priority.PRIORITY_BALANCED_POWER_ACCURACY,
                 3000L).setMinUpdateIntervalMillis(1500L).build()
             fused?.requestLocationUpdates(request,fusedListener,Looper.getMainLooper())
@@ -66,6 +77,7 @@ class HybridLocator(
     fun stop() {
         active=false
         try{lm.removeUpdates(networkListener)}catch(_:Exception){}
+        try{lm.removeUpdates(passiveListener)}catch(_:Exception){}
         try{fused?.removeLocationUpdates(fusedListener)}catch(_:Exception){}
     }
 }
