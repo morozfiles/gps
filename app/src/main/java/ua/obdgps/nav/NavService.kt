@@ -430,7 +430,7 @@ class NavService: Service(), LocationListener {
         val key=settings.adapterKey?:return
         if(checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT)!=
             PackageManager.PERMISSION_GRANTED)return
-        if(!bt?.isEnabled==true)return
+        if(bt?.isEnabled!=true)return
         val noSpeed=State.speedUpdatedElapsedMs<=0L ||
             now-State.speedUpdatedElapsedMs>22000L
         if(noSpeed && now-lastReconnectAttemptMs>25000L){
