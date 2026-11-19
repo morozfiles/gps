@@ -474,22 +474,19 @@ class OfflineVectorNavigatorActivity:Activity() {
             setBackgroundColor(Color.rgb(34,41,50))
             isFillViewport=false
         }
-        workspace.addView(sideScroll,LinearLayout.LayoutParams((resources.configuration.screenWidthDp*.23f).toInt().coerceIn(230,320).let{dp(it)},-1))
+        workspace.addView(sideScroll,LinearLayout.LayoutParams((resources.configuration.screenWidthDp*.165f).toInt().coerceIn(168,220).let{dp(it)},-1))
         val actions=LinearLayout(this).apply{
             orientation=LinearLayout.VERTICAL
-            setPadding(dp(4),dp(4),dp(4),dp(4))
+            setPadding(dp(3),dp(3),dp(3),dp(3))
         }
         sideScroll.addView(actions)
-        actions.addView(label("НАВИГАЦИЯ",13f).apply{
-            typeface=Typeface.DEFAULT_BOLD
-            setPadding(dp(6),0,0,dp(5))
-        })
+        // FYT has a permanent landscape display; map gets extra width.
         fun sideButton(title:String,click:()->Unit){
             actions.addView(button(title,click).apply{
-                textSize=16f
-                setPadding(dp(6),dp(4),dp(6),dp(4))
-            },LinearLayout.LayoutParams(-1,dp(62)).apply{
-                setMargins(dp(2),dp(2),dp(2),dp(2))
+                textSize=13f
+                setPadding(dp(4),dp(1),dp(4),dp(1))
+            },LinearLayout.LayoutParams(-1,dp(43)).apply{
+                setMargins(dp(1),dp(1),dp(1),dp(1))
             })
         }
         sideButton("Поиск адреса"){searchAddress()}
@@ -522,6 +519,9 @@ class OfflineVectorNavigatorActivity:Activity() {
             try{startForegroundService(Intent(this,NavService::class.java)
                 .setAction(NavService.START_DR))}
             catch(_:Exception){}
+        }
+        sideButton("Тест GPS / DR"){
+            startActivity(Intent(this,InertialMapActivity::class.java))
         }
         sideButton("Офлайн-карты"){
             startActivity(Intent(this,OfflineMapsActivity::class.java))
