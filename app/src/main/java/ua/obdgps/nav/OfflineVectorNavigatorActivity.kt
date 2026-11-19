@@ -36,8 +36,6 @@ import org.mapsforge.map.android.graphics.AndroidGraphicFactory
 import org.mapsforge.map.android.util.AndroidUtil
 import org.mapsforge.map.android.view.MapView
 import org.mapsforge.map.layer.renderer.TileRendererLayer
-import org.mapsforge.map.layer.overlay.Polyline
-import org.mapsforge.map.layer.overlay.FixedPixelCircle
 import org.mapsforge.map.reader.MapFile
 import org.mapsforge.map.datastore.MapDataStore
 import org.mapsforge.map.datastore.MultiMapDataStore
@@ -67,8 +65,7 @@ class OfflineVectorNavigatorActivity:Activity() {
     private var vectorMap:MapDataStore?=null
     private var loadedMapSignature=""
     private var loadedRegion=""
-    private var routeLine:Polyline?=null
-    private var destinationMarker:FixedPixelCircle?=null
+    private lateinit var selectionOverlay:View
     private var routeGeneration=0
     private var route:RoutingEngine.Route?=null
     private var dest:RoutingEngine.Point?=null
@@ -203,37 +200,11 @@ class OfflineVectorNavigatorActivity:Activity() {
             val tileCache=AndroidUtil.createTileCache(this,"offline-vector",
                 mapView.getModel().displayModel.getTileSize(),1.25f,
                 mapView.getModel().frameBufferModel.getOverdrawFactor())
-            val renderer=object:TileRendererLayer(tileCache,store,
-                mapView.getModel().mapViewPosition,AndroidGraphicFactory.INSTANCE){
-                override fun onTap(pos:LatLong,layerXY:Point,tapXY:Point):Boolean {
-                    if(!picking)return false
-                    val tapped=RoutingEngine.Point(pos.latitude,pos.longitude)
-                    if(!RoutingEngine.valid(tapped)){
-                        info.text="Не удалось определить координаты на карте"
-                        return true
-                    }
-                    // Mapsforge is currently dispatching a tap through its
-                    // layer list. Never remove/add a route layer here: that
-                    // can invalidate the layer iteration and crash the map.
-                    picking=false
-                    handler.post {
-                        if(!isFinishing && !isDestroyed && ::mapView.isInitialized){
-                            try {
-                                selectDestination(tapped,"Точка на карте",true)
-                            } catch (e:Exception) {
-                                // Recover within the same vector screen;
-                                // do not let an overlay exception return the
-                                // user to the previous activity.
-                                android.util.Log.e("VectorNavigator",
-                                    "Destination tap failed",e)
-                                info.text="Не удалось выбрать цель: "+
-                                    (e.localizedMessage?:"ошибка карты")
-                            }
-                        }
-                    }
-                    return true
-                }
-            }
+            // The tile layer renders vector roads ONLY. Map selections
+            // are handled by a separate Android View above MapView, not
+            // by Mapsforge's layer-tap dispatcher.
+            val renderer=TileRendererLayer(tileCache,store,
+                mapView.getModel().mapViewPosition,AndroidGraphicFactory.INSTANCE)
             renderer.setXmlRenderTheme(MapsforgeThemes.MOTORIDER)
             mapView.getLayerManager().getLayers().add(renderer)
             val region=OfflineRegionPacks.region(OfflineRegionPacks.selected(this))
@@ -264,6 +235,9 @@ class OfflineVectorNavigatorActivity:Activity() {
                 }.setNegativeButton("Закрыть"){_,_->finish()}.show()
             return
         }
+        // A regular Android overlay draws route and destination; its
+        // position is reprojected on every frame. No runtime add/remove
+        // operations on Mapsforge Layers are needed.
         arrow=object:View(this) {
             private val shape=Paint(Paint.ANTI_ALIAS_FLAG).apply{
                 color=Color.rgb(22,135,245);style=Paint.Style.FILL
@@ -271,13 +245,67 @@ class OfflineVectorNavigatorActivity:Activity() {
             private val edge=Paint(Paint.ANTI_ALIAS_FLAG).apply{
                 color=Color.WHITE;style=Paint.Style.STROKE;strokeWidth=4.5f
             }
+            private val roadBorder=Paint(Paint.ANTI_ALIAS_FLAG).apply{
+                color=Color.rgb(24,41,56)
+                style=Paint.Style.STROKE
+                strokeWidth=dp(16).toFloat()
+                strokeCap=Paint.Cap.ROUND
+                strokeJoin=Paint.Join.ROUND
+            }
+            private val roadFill=Paint(Paint.ANTI_ALIAS_FLAG).apply{
+                color=Color.rgb(11,132,246)
+                style=Paint.Style.STROKE
+                strokeWidth=dp(12).toFloat()
+                strokeCap=Paint.Cap.ROUND
+                strokeJoin=Paint.Join.ROUND
+            }
+            private val pinBorder=Paint(Paint.ANTI_ALIAS_FLAG).apply{
+                color=Color.WHITE
+                style=Paint.Style.FILL
+            }
+            private val pin=Paint(Paint.ANTI_ALIAS_FLAG).apply{
+                color=Color.rgb(247,83,91)
+                style=Paint.Style.FILL
+            }
+            private val halo=Paint(Paint.ANTI_ALIAS_FLAG).apply{
+                color=Color.argb(40,20,130,250)
+            }
             override fun onDraw(c:Canvas) {
+                super.onDraw(c)
+                val planned=route
+                if(planned!=null && planned.points.size>=2) {
+                    val path=Path()
+                    val segmentStride=(planned.points.size/3500)
+                        .coerceAtLeast(1)
+                    var started=false
+                    var i=0
+                    while(i<planned.points.size){
+                        val node=planned.points[i]
+                        val xy=screenPoint(node)
+                        if(xy!=null){
+                            if(!started){path.moveTo(xy.first,xy.second);started=true}
+                            else path.lineTo(xy.first,xy.second)
+                        } else started=false
+                        i+=segmentStride
+                    }
+                    val last=planned.points.last()
+                    screenPoint(last)?.let{xy->
+                        if(started)path.lineTo(xy.first,xy.second)
+                        else path.moveTo(xy.first,xy.second)
+                    }
+                    c.drawPath(path,roadBorder)
+                    c.drawPath(path,roadFill)
+                }
+                dest?.let{target->
+                    screenPoint(target)?.let{xy->
+                        c.drawCircle(xy.first,xy.second,dp(14).toFloat(),pinBorder)
+                        c.drawCircle(xy.first,xy.second,dp(10).toFloat(),pin)
+                    }
+                }
                 if(!follow||lastGpsPosition==null)return
                 val x=width/2f
                 val y=height*.68f
-                c.drawCircle(x,y,dp(27).toFloat(),
-                    Paint(Paint.ANTI_ALIAS_FLAG).apply{
-                        color=Color.argb(40,20,130,250)})
+                c.drawCircle(x,y,dp(27).toFloat(),halo)
                 val p=Path().apply{
                     moveTo(x,y-dp(31));lineTo(x+dp(16),y+dp(19))
                     lineTo(x,y+dp(10));lineTo(x-dp(16),y+dp(19));close()
@@ -289,6 +317,39 @@ class OfflineVectorNavigatorActivity:Activity() {
         arrow.isClickable=false
         arrow.isFocusable=false
         frame.addView(arrow,FrameLayout.LayoutParams(-1,-1))
+
+        // This view is GONE except while the user is choosing a point.
+        // It intercepts the tap before Mapsforge and converts the actual
+        // screen pixel using Mapsforge's own map projection/rotation.
+        selectionOverlay=object:View(this){
+            override fun onTouchEvent(e:MotionEvent):Boolean {
+                if(!picking)return false
+                if(e.actionMasked==MotionEvent.ACTION_UP){
+                    try{
+                        val p=pointAtScreen(e.x,e.y)
+                        if(p==null){
+                            info.text="Не удалось определить точку — попробуй ещё раз"
+                        }else{
+                            picking=false
+                            visibility=View.GONE
+                            selectDestination(p,"Точка на карте",true)
+                        }
+                    }catch(ex:Exception){
+                        android.util.Log.e("VectorNavigator","Select map point",ex)
+                        info.text="Ошибка выбора точки: "+
+                            (ex.localizedMessage?:"неизвестная ошибка")
+                        Toast.makeText(this@OfflineVectorNavigatorActivity,
+                            info.text,Toast.LENGTH_LONG).show()
+                    }
+                }
+                return true
+            }
+        }.apply{
+            isClickable=true
+            visibility=View.GONE
+            contentDescription="Коснись дороги для установки точки назначения"
+        }
+        frame.addView(selectionOverlay,FrameLayout.LayoutParams(-1,-1))
         frame.addView(button("+"){adjustZoom(1)},
             FrameLayout.LayoutParams(dp(45),dp(45),Gravity.TOP or Gravity.RIGHT).apply{
                 topMargin=dp(8);rightMargin=dp(8)
@@ -341,8 +402,16 @@ class OfflineVectorNavigatorActivity:Activity() {
         root.addView(row(
             button("Поиск адреса"){searchAddress()},
             button("Цель на карте"){
-                picking=true
-                info.text="Коснись карты, чтобы выбрать точку назначения"
+                if(picking){
+                    picking=false
+                    selectionOverlay.visibility=View.GONE
+                    info.text="Выбор точки отменён"
+                }else{
+                    picking=true
+                    follow=false
+                    selectionOverlay.visibility=View.VISIBLE
+                    info.text="Коснись карты для выбора цели · повторно — отмена"
+                }
             },
             button("Маршрут"){buildRoute(false)}
         ))
