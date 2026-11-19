@@ -329,8 +329,10 @@ class MotionSensors(
     }
 
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {
-        if(sensor?.type==Sensor.TYPE_MAGNETIC_FIELD)
+        if(sensor?.type==Sensor.TYPE_MAGNETIC_FIELD){
             magneticAccuracy=accuracy
+            State.compassReliableNow=compassReliable
+        }
     }
 
     override fun onSensorChanged(event: SensorEvent) {
