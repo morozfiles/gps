@@ -3,12 +3,15 @@ package ua.obdgps.nav
 import android.Manifest
 import android.app.Activity
 import android.app.AlertDialog
-import android.bluetooth.BluetoothManager
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -16,341 +19,521 @@ import android.os.SystemClock
 import android.view.Gravity
 import android.view.View
 import android.view.WindowInsets
-import android.view.WindowManager
 import android.widget.*
 import java.util.Locale
 
 /**
- * Dedicated 9-inch landscape dashboard for FYT UIS7870.
- * Only two real motion sensors: gyro + accelerometer; no compass UI.
- * GM906BT mock output is INPUT ONLY. No mock provider is set by this app.
+ * AOSP-first FYT UIS7870 dashboard.
+ * Designed for fixed 2000x1200 landscape / Android 13, with dp-aware sizing.
+ * Startup never requires a GPS fix, Bluetooth, Google Play or a downloaded map.
  */
 class FytHeadUnitActivity:Activity(){
-    private val bg=Color.rgb(20,27,35)
-    private val panel=Color.rgb(37,48,61)
-    private val fg=Color.rgb(237,245,252)
-    private val muted=Color.rgb(176,196,214)
-    private val sky=Color.rgb(105,192,255)
-    private val tick=Handler(Looper.getMainLooper())
-    private lateinit var alerts:AirAlertIndicatorsView
+    private val background=Color.rgb(17,26,37)
+    private val panel=Color.rgb(31,43,58)
+    private val bright=Color.rgb(239,246,252)
+    private val secondary=Color.rgb(168,190,210)
+    private val blue=Color.rgb(94,181,246)
+    private val green=Color.rgb(72,204,142)
+    private val handler=Handler(Looper.getMainLooper())
     private lateinit var gyroButton:Button
     private lateinit var accelButton:Button
     private lateinit var sensorHelp:TextView
     private lateinit var gpsText:TextView
     private lateinit var obdText:TextView
     private lateinit var infoText:TextView
+    private lateinit var monitorButton:Button
+    private lateinit var preview:FytRoutePreviewView
+    private var alerts:AirAlertIndicatorsView?=null
+    private var permissionRequestPending=false
+    private var lastMonitorStart=0L
     private var selectedSensor="gyro"
-    private var permissionRequested=false
-    private var dialogAdapter:ArrayAdapter<String>?=null
-    private var dialogKeys=emptyList<String>()
     private var adapterDialog:AlertDialog?=null
+    private var adapterRows:ArrayAdapter<String>?=null
+    private var adapterChoices:List<String> = emptyList()
 
-    private fun dp(n:Int)=(n*resources.displayMetrics.density+.5f).toInt()
-    private fun bgDrawable(color:Int=panel,stroke:Int=Color.rgb(63,79,94))=
-        GradientDrawable().apply{cornerRadius=dp(11).toFloat();setColor(color)
-            setStroke(dp(1),stroke)}
-    private fun label(value:String,size:Float=15f,bold:Boolean=false)=
+    private fun dp(x:Int)=(x*resources.displayMetrics.density+.5f).toInt()
+    private fun shape(fill:Int=panel,border:Int=Color.rgb(59,78,99)):GradientDrawable=
+        GradientDrawable().apply{
+            cornerRadius=dp(12).toFloat()
+            setColor(fill)
+            setStroke(dp(1),border)
+        }
+    private fun text(value:String,size:Float=14f,bold:Boolean=false):TextView=
         TextView(this).apply{
-            text=value;textSize=size;setTextColor(fg)
+            this.text=value
+            textSize=size
+            setTextColor(bright)
+            gravity=Gravity.CENTER_VERTICAL
+            includeFontPadding=true
             if(bold)typeface=Typeface.DEFAULT_BOLD
         }
-    private fun action(name:String,callback:()->Unit)=Button(this).apply{
-        text=name
+    private fun button(value:String,click:()->Unit):Button=Button(this).apply{
+        this.text=value
         isAllCaps=false
-        textSize=16f
-        maxLines=2
+        textSize=15f
+        maxLines=3
+        minHeight=0
+        minimumHeight=0
+        minWidth=0
+        minimumWidth=0
         gravity=Gravity.CENTER
-        minHeight=0;minimumHeight=0;minWidth=0;minimumWidth=0
-        setTextColor(fg)
-        background=bgDrawable()
-        setPadding(dp(5),dp(3),dp(5),dp(3))
-        setOnClickListener{callback()}
+        setTextColor(bright)
+        background=shape()
+        setPadding(dp(7),dp(3),dp(7),dp(3))
+        setOnClickListener{
+            try{click()}catch(e:Throwable){
+                FytCrashReporter.record(this@FytHeadUnitActivity,
+                    "Нажатие: "+value,e)
+                Toast.makeText(this@FytHeadUnitActivity,
+                    "Ошибка: открой Диагностику",Toast.LENGTH_LONG).show()
+            }
+        }
     }
-    private fun buttonRow(parent:LinearLayout,height:Int,vararg views:Button){
+    private fun twin(parent:LinearLayout,heightDp:Int,first:Button,second:Button){
         val row=LinearLayout(this).apply{orientation=LinearLayout.HORIZONTAL}
-        for(v in views){
-            row.addView(v,LinearLayout.LayoutParams(0,dp(height),1f).apply{
-                setMargins(dp(4),dp(3),dp(4),dp(3))
+        for(b in listOf(first,second)){
+            row.addView(b,LinearLayout.LayoutParams(0,dp(heightDp),1f).apply{
+                setMargins(dp(3),dp(3),dp(3),dp(3))
             })
         }
         parent.addView(row)
     }
-
-    private fun launchService(action:String,address:String?=null){
-        if(!hasPermissions()){
-            askPermissions()
-            Toast.makeText(this,"Сначала разреши GPS и Bluetooth",Toast.LENGTH_SHORT).show()
-            return
-        }
-        try{
-            startForegroundService(Intent(this,NavService::class.java).setAction(action)
-                .apply{if(address!=null)putExtra("address",address)})
-        }catch(e:Exception){
-            Toast.makeText(this,"Мониторинг: ${e.localizedMessage}",Toast.LENGTH_LONG).show()
-        }
+    private fun title(section:String):TextView=text(section,13f,true).apply{
+        setTextColor(blue)
+        setPadding(dp(7),dp(10),0,dp(5))
     }
-    private fun hasPermissions()=arrayOf(Manifest.permission.ACCESS_FINE_LOCATION,
-        Manifest.permission.BLUETOOTH_SCAN,Manifest.permission.BLUETOOTH_CONNECT)
-        .all{checkSelfPermission(it)==PackageManager.PERMISSION_GRANTED}
+    private fun labelPanel(parent:LinearLayout,value:String):TextView{
+        val t=text(value,14f)
+        t.background=shape()
+        t.setPadding(dp(12),dp(10),dp(11),dp(10))
+        parent.addView(t,LinearLayout.LayoutParams(-1,-2).apply{
+            setMargins(dp(3),dp(2),dp(3),dp(6))
+        })
+        return t
+    }
 
-    private fun askPermissions(){
-        if(permissionRequested || hasPermissions())return
-        permissionRequested=true
+    private fun hasLocation()=
+        checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)==
+            PackageManager.PERMISSION_GRANTED
+
+    private fun hasBluetooth()=Build.VERSION.SDK_INT<31 ||
+        (checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN)==
+            PackageManager.PERMISSION_GRANTED &&
+         checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT)==
+            PackageManager.PERMISSION_GRANTED)
+
+    private fun requestPermissions(){
+        if(permissionRequestPending)return
         val missing=ArrayList<String>()
-        if(checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)!=
-            PackageManager.PERMISSION_GRANTED){
+        if(!hasLocation()){
             missing.add(Manifest.permission.ACCESS_FINE_LOCATION)
             missing.add(Manifest.permission.ACCESS_COARSE_LOCATION)
         }
-        for(p in arrayOf(Manifest.permission.BLUETOOTH_SCAN,
-            Manifest.permission.BLUETOOTH_CONNECT,
-            Manifest.permission.POST_NOTIFICATIONS)){
-            if(checkSelfPermission(p)!=PackageManager.PERMISSION_GRANTED)missing.add(p)
+        if(Build.VERSION.SDK_INT>=31){
+            for(p in listOf(Manifest.permission.BLUETOOTH_SCAN,
+                Manifest.permission.BLUETOOTH_CONNECT)){
+                if(checkSelfPermission(p)!=PackageManager.PERMISSION_GRANTED)
+                    missing.add(p)
+            }
         }
-        if(missing.isNotEmpty())requestPermissions(missing.toTypedArray(),70)
+        if(Build.VERSION.SDK_INT>=33 &&
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)!=
+                PackageManager.PERMISSION_GRANTED)
+            missing.add(Manifest.permission.POST_NOTIFICATIONS)
+        if(missing.isEmpty()){
+            Toast.makeText(this,"Все необходимые разрешения уже выданы",
+                Toast.LENGTH_SHORT).show()
+            return
+        }
+        permissionRequestPending=true
+        requestPermissions(missing.toTypedArray(),78)
     }
+
+    @Deprecated("Android permission callback")
     override fun onRequestPermissionsResult(
-        requestCode:Int,permissions:Array<out String>,grantResults:IntArray
-    ){
-        super.onRequestPermissionsResult(requestCode,permissions,grantResults)
-        if(requestCode==70){
-            permissionRequested=false
-            if(hasPermissions()){
-                getSharedPreferences("fyt_unit",MODE_PRIVATE).edit()
-                    .putBoolean("auto_monitor",true).apply()
-                launchService(NavService.MONITOR)
-            } else {
-                Toast.makeText(this,
-                    "Для GPS и Vgate нужны разрешения геолокации и Bluetooth",
-                    Toast.LENGTH_LONG).show()
-            }
+        requestCode:Int,permissions:Array<out String>,results:IntArray){
+        super.onRequestPermissionsResult(requestCode,permissions,results)
+        if(requestCode==78){
+            permissionRequestPending=false
+            if(hasLocation() && monitoringEnabled())startMonitor(force=true)
+            else Toast.makeText(this,
+                "Без геолокации карта доступна, но отслеживание GPS выключено",
+                Toast.LENGTH_LONG).show()
         }
     }
 
-    private val uiUpdate=object:Runnable{
-        override fun run(){
-            if(!::gyroButton.isInitialized)return
-            alerts.refresh()
-            val now=SystemClock.elapsedRealtime()
-            val gyroFresh=State.gyroSampleMs>0 && now-State.gyroSampleMs<4000L
-            val accelFresh=State.accelSampleMs>0 && now-State.accelSampleMs<4000L
-            val gyroReady=State.gyroCalibrated && State.accelCalibrated &&
-                !State.stationaryCalibrationRunning && gyroFresh
-            val accelReady=gyroReady && accelFresh
-            gyroButton.text="ГИРОСКОП ${if(gyroReady)"✓" else ""}\n"+
-                (if(gyroFresh)String.format(Locale.US,"%.1f °/с",State.yawDegPerSec)
-                    else "Нет данных")
-            accelButton.text="АКСЕЛЕРОМЕТР ${if(accelReady)"✓" else ""}\n"+
-                (if(accelFresh && State.linearAccelerationMps2.isFinite())
-                    String.format(Locale.US,"%.2f м/с²",State.linearAccelerationMps2)
-                    else "Нет данных")
-            (gyroButton.background as? GradientDrawable)?.setStroke(
-                dp(if(selectedSensor=="gyro")2 else 1),
-                if(gyroReady)Color.rgb(70,197,125) else sky)
-            (accelButton.background as? GradientDrawable)?.setStroke(
-                dp(if(selectedSensor=="accel")2 else 1),
-                if(accelReady)Color.rgb(70,197,125) else sky)
-            sensorHelp.text=when{
-                State.stationaryCalibrationRunning->
-                    "Калибровка 5 с: машина стоит (OBD 0 км/ч). Не двигай магнитолу."
-                State.gyroCalibrated && State.accelCalibrated ->
-                    "✓ Смещения гироскопа и акселерометра сохранены. "+
-                        "При потере сигнала галочка временно исчезает."
-                else -> "Перед калибровкой остановись, подключи Vgate и "+
-                    "дождись скорости 0 км/ч. Удерживать магнитолу не нужно — "+
-                    "она неподвижно закреплена. 5 с, ≥40 измерений гироскопа, "+
-                    "≥20 акселерометра. ${State.calibrationText}"
-            }
-            val externalFresh=State.gpsExternalUpdateMs>0L &&
-                now-State.gpsExternalUpdateMs<8000L
-            val internalFresh=State.gpsInternalUpdateMs>0L &&
-                now-State.gpsInternalUpdateMs<8000L
-            gpsText.text="USB GM906BT: ${if(externalFresh)"●" else "○"} "+
-                State.gpsExternalStatus+"\n"+
-                "Встроенный GNSS: ${if(internalFresh)"●" else "○"} "+
-                State.gpsInternalStatus+"\n"+
-                "Используется: ${State.gpsActiveSource}\n"+
-                "Позиция: ${State.sourceDescription}"
-            val obdFresh=State.speedUpdatedElapsedMs>0 &&
-                now-State.speedUpdatedElapsedMs<4500
-            obdText.text="VGATE / OBD     "+
-                (if(obdFresh)String.format(Locale.US,"%.0f км/ч",
-                    State.obdSpeedKmh()?:0.0) else "нет скорости")+
-                "\n${State.deviceName} · ${State.modeLabel}"
-            val session=FytRouteStore.load(this@FytHeadUnitActivity)
-            infoText.text="Режим: ${State.navigationMode} · "+
-                "Маршрут: ${if(session?.active==true)"ведение сохранено"
-                    else if(session!=null)"цель сохранена" else "не выбран"}"+
-                "\nСон/пробуждение: ${State.gpsWakeStatus}"+
-                "\n${State.message}"
-            adapterDialog?.let { dialog->
-                if(dialog.isShowing){
-                    val devices=State.devices.toList()
-                    dialogKeys=devices.map{it.first}
-                    val values=if(devices.isEmpty())
-                        listOf("Сканирование Bluetooth / Vgate…")
-                    else devices.map{it.second+" · "+it.first.substringAfter("|")}
-                    dialogAdapter?.clear();dialogAdapter?.addAll(values)
-                    dialogAdapter?.notifyDataSetChanged()
-                }
-            }
-            tick.postDelayed(this,850L)
+    private fun monitoringEnabled()=
+        getSharedPreferences("fyt_unit",MODE_PRIVATE)
+            .getBoolean("monitor_enabled",false)
+
+    private fun startMonitor(force:Boolean=false){
+        if(!hasLocation()){
+            requestPermissions()
+            return
+        }
+        val now=SystemClock.elapsedRealtime()
+        if(!force && lastMonitorStart>0 && now-lastMonitorStart<3000L)return
+        lastMonitorStart=now
+        try {
+            startForegroundService(Intent(this,NavService::class.java)
+                .setAction(NavService.MONITOR))
+        }catch(e:Throwable){
+            FytCrashReporter.record(this,"Запуск мониторинга",e)
+            Toast.makeText(this,"Мониторинг не запустился: открой Диагностику",
+                Toast.LENGTH_LONG).show()
         }
     }
 
-    private fun calibrate(sensor:String){
-        selectedSensor=sensor
+    private fun enableMonitoring(){
+        getSharedPreferences("fyt_unit",MODE_PRIVATE).edit()
+            .putBoolean("monitor_enabled",true)
+            .putBoolean("auto_monitor",true).apply()
+        startMonitor(force=true)
+    }
+    private fun disableMonitoring(){
+        getSharedPreferences("fyt_unit",MODE_PRIVATE).edit()
+            .putBoolean("monitor_enabled",false)
+            .putBoolean("auto_monitor",false).apply()
+        try{
+            startService(Intent(this,NavService::class.java)
+                .setAction(NavService.EXIT))
+        }catch(_:Exception){}
+    }
+    private fun send(action:String,address:String?=null){
+        if(!hasLocation()){
+            requestPermissions()
+            return
+        }
+        val i=Intent(this,NavService::class.java).setAction(action)
+        if(address!=null)i.putExtra("address",address)
+        try{startForegroundService(i)}
+        catch(e:Throwable){
+            FytCrashReporter.record(this,"Команда: "+action,e)
+            Toast.makeText(this,"Ошибка команды, см. Диагностику",
+                Toast.LENGTH_LONG).show()
+        }
+    }
+
+    private fun openVector(){
+        try{
+            // No downloaded map is normal on a brand-new FYT installation.
+            if(OfflineRegionPacks.mapFiles(this).isEmpty()){
+                AlertDialog.Builder(this)
+                    .setTitle("Нет загруженной офлайн-карты")
+                    .setMessage("Перед первым использованием скачай карту Украины. "+
+                        "Главный экран работает даже без неё.")
+                    .setPositiveButton("Офлайн-карты"){_,_->
+                        startActivity(Intent(this,OfflineMapsActivity::class.java))
+                    }.setNegativeButton("Позже",null).show()
+            }else startActivity(Intent(this,
+                OfflineVectorNavigatorActivity::class.java))
+        }catch(e:Throwable){
+            FytCrashReporter.record(this,"Открытие карты",e)
+            showDiagnostics()
+        }
+    }
+    private fun openStandard(){
+        try{startActivity(Intent(this,NavigatorActivity::class.java))}
+        catch(e:Throwable){
+            FytCrashReporter.record(this,"Открытие навигатора",e)
+            showDiagnostics()
+        }
+    }
+    private fun calibrate(which:String){
+        selectedSensor=which
+        val name=if(which=="gyro")"гироскоп" else "акселерометр"
         AlertDialog.Builder(this)
-            .setTitle(if(sensor=="gyro")"Калибровка гироскопа"
-                else "Калибровка акселерометра")
-            .setMessage("Два датчика калибруются совместно. Машина должна "+
-                "стоять: нужна свежая скорость OBD = 0 км/ч. "+
-                "Магнитола закреплена и не должна двигаться 5 секунд. "+
-                "Галочки появятся только после успешной проверки ≥40 "+
-                "измерений гироскопа и ≥20 ускорения и допустимого "+
-                "смещения угловой скорости.\n\n${State.calibrationText}")
-            .setPositiveButton("Калибровать 5 с"){_,_->
-                launchService(NavService.CALIBRATE)
-            }.setNegativeButton("Закрыть",null).show()
+            .setTitle("Калибровка: "+name)
+            .setMessage("Калибровка выполняется совместно для двух датчиков "+
+                "на неподвижно закреплённой магнитоле.\n\n"+
+                "1. Автомобиль стоит, Vgate показывает 0 км/ч.\n"+
+                "2. Сохраняем показания 5 секунд.\n"+
+                "3. Нужно ≥40 отсчётов гироскопа, ≥20 отсчётов "+
+                "ускорения и допустимый шум.\n\n"+
+                "Статус: "+State.calibrationText)
+            .setPositiveButton("Начать 5 с"){_,_->send(NavService.CALIBRATE)}
+            .setNegativeButton("Закрыть",null).show()
     }
-
-    private fun showVgatePicker(){
-        if(!hasPermissions()){askPermissions();return}
-        launchService(NavService.SCAN)
-        val adapter=ArrayAdapter<String>(this,
-            android.R.layout.simple_list_item_1,mutableListOf("Поиск Vgate…"))
-        dialogAdapter=adapter
-        val dialog=AlertDialog.Builder(this)
-            .setTitle("ELM / Vgate: Bluetooth Classic или BLE")
-            .setAdapter(adapter){_,index->
-                dialogKeys.getOrNull(index)?.let {
-                    launchService(NavService.CONNECT,it)
-                }
+    private fun selectVgate(){
+        if(!hasBluetooth()){
+            requestPermissions()
+            Toast.makeText(this,"Для Vgate нужен Bluetooth",
+                Toast.LENGTH_SHORT).show()
+            return
+        }
+        send(NavService.SCAN)
+        val rows=ArrayAdapter(this,android.R.layout.simple_list_item_1,
+            mutableListOf("Поиск сопряжённых и BLE адаптеров…"))
+        adapterRows=rows
+        adapterDialog=AlertDialog.Builder(this)
+            .setTitle("Выбери Vgate / ELM327")
+            .setAdapter(rows){_,i->
+                adapterChoices.getOrNull(i)?.let{send(NavService.CONNECT,it)}
             }
-            .setPositiveButton("Обновить поиск"){_,_->showVgatePicker()}
-            .setNegativeButton("Закрыть",null)
-            .create()
-        adapterDialog=dialog
-        dialog.setOnDismissListener{adapterDialog=null;dialogAdapter=null}
-        dialog.show()
+            .setPositiveButton("Сканировать ещё раз"){_,_->selectVgate()}
+            .setNegativeButton("Закрыть",null).create()
+        adapterDialog?.setOnDismissListener{
+            adapterDialog=null;adapterRows=null
+        }
+        adapterDialog?.show()
     }
 
-    private fun showProtocol(){
-        val titles=arrayOf("AUTO (CAN + K-Line)","CAN","K-Line","MUT-II")
+    private fun selectProtocol(){
+        val names=arrayOf("AUTO / все протоколы","CAN ISO 15765","K-Line",
+            "MUT-II (эксперимент)")
         val actions=arrayOf(NavService.SET_AUTO,NavService.SET_CAN,
             NavService.SET_OBD,NavService.SET_MUT)
         AlertDialog.Builder(this).setTitle("Протокол Vgate")
-            .setItems(titles){_,i->launchService(actions[i])}
+            .setItems(names){_,i->send(actions[i])}
             .setNegativeButton("Отмена",null).show()
     }
+    private fun showDiagnostics(){
+        val report=FytCrashReporter.latest(this)
+            ?: "Сбоев приложения пока не зарегистрировано.\n"+
+                "Android "+Build.VERSION.RELEASE+" · "+Build.DISPLAY
+        FytCrashReporter.acknowledge(this)
+        AlertDialog.Builder(this)
+            .setTitle("Диагностика FYT 7870")
+            .setMessage(report)
+            .setPositiveButton("Закрыть",null)
+            .setNeutralButton("Копировать"){_,_->
+                val clipboard=getSystemService(Context.CLIPBOARD_SERVICE)
+                    as ClipboardManager
+                clipboard.setPrimaryClip(
+                    ClipData.newPlainText("FYT 7870 crash report",report))
+                Toast.makeText(this,"Отчёт скопирован",Toast.LENGTH_SHORT).show()
+            }
+            .setNegativeButton("Поделиться"){_,_->
+                val share=Intent(Intent.ACTION_SEND).apply{
+                    type="text/plain"
+                    putExtra(Intent.EXTRA_TEXT,report)
+                }
+                startActivity(Intent.createChooser(share,"Отправить отчёт"))
+            }.show()
+    }
 
-    override fun onCreate(savedInstanceState:Bundle?){
-        super.onCreate(savedInstanceState)
-        // FYT's ACC/sleep controller owns display power; do not override standby.
-        window.statusBarColor=bg;window.navigationBarColor=bg
-        val root=LinearLayout(this).apply {
+    private fun render(){
+        val root=LinearLayout(this).apply{
             orientation=LinearLayout.VERTICAL
-            setBackgroundColor(bg)
-            setPadding(dp(10),dp(4),dp(10),dp(4))
-            setOnApplyWindowInsetsListener{view,insets->
-                val bars=insets.getInsets(WindowInsets.Type.systemBars() or
-                    WindowInsets.Type.displayCutout())
-                view.setPadding(dp(10)+bars.left,dp(4)+bars.top,
-                    dp(10)+bars.right,dp(4)+bars.bottom)
+            setBackgroundColor(background)
+            setPadding(dp(12),dp(5),dp(12),dp(8))
+            setOnApplyWindowInsetsListener{v,insets->
+                val edges=insets.getInsets(
+                    WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout())
+                v.setPadding(dp(12)+edges.left,dp(5)+edges.top,
+                    dp(12)+edges.right,dp(8)+edges.bottom)
                 insets
             }
         }
         setContentView(root)
         val header=LinearLayout(this).apply{
-            orientation=LinearLayout.HORIZONTAL
-            gravity=Gravity.CENTER_VERTICAL
+            orientation=LinearLayout.HORIZONTAL;gravity=Gravity.CENTER_VERTICAL
         }
-        header.addView(label("OBD GPS · FYT 7870",21f,true),
-            LinearLayout.LayoutParams(0,dp(52),1f))
-        alerts=AirAlertIndicatorsView(this)
-        header.addView(alerts,LinearLayout.LayoutParams(dp(168),dp(52)))
+        val headerTitle=text("OBD GPS  •  FYT 7870",23f,true)
+        header.addView(headerTitle,LinearLayout.LayoutParams(0,dp(55),1f))
+        val sub=text("Android "+Build.VERSION.RELEASE+"  •  2000×1200",
+            13f).apply{setTextColor(secondary)}
+        header.addView(sub,LinearLayout.LayoutParams(-2,dp(55)))
         root.addView(header)
-        val body=LinearLayout(this).apply{orientation=LinearLayout.HORIZONTAL}
-        root.addView(body,LinearLayout.LayoutParams(-1,0,1f))
 
-        val leftScroll=ScrollView(this).apply{isFillViewport=true}
-        body.addView(leftScroll,LinearLayout.LayoutParams(0,-1,1.02f))
-        val left=LinearLayout(this).apply{
-            orientation=LinearLayout.VERTICAL
-            setPadding(dp(3),dp(2),dp(7),0)
-        }
-        leftScroll.addView(left)
-        left.addView(label("ДАТЧИКИ ДВИЖЕНИЯ",13f,true).apply{
-            setTextColor(sky);setPadding(dp(6),dp(1),0,dp(3))
-        })
-        gyroButton=action("ГИРОСКОП"){calibrate("gyro")}
-        accelButton=action("АКСЕЛЕРОМЕТР"){calibrate("accel")}
-        buttonRow(left,74,gyroButton,accelButton)
-        sensorHelp=label("Проверяю калибровку…",12f).apply{
-            setTextColor(muted);setPadding(dp(7),dp(3),dp(7),dp(8))
-        }
-        left.addView(sensorHelp)
-        left.addView(label("ДВА ИСТОЧНИКА GPS",13f,true).apply{setTextColor(sky)})
-        gpsText=label("Ожидаю данные GNSS…",12.5f)
-        gpsText.background=bgDrawable()
-        gpsText.setPadding(dp(8),dp(8),dp(8),dp(8))
-        left.addView(gpsText,LinearLayout.LayoutParams(-1,-2).apply{
-            setMargins(0,dp(5),0,dp(6))
-        })
-        obdText=label("Ожидаю Vgate…",13f)
-        obdText.background=bgDrawable()
-        obdText.setPadding(dp(8),dp(7),dp(8),dp(7))
-        left.addView(obdText)
+        // Width is based on dp, not raw 2000px; works at ROM density values
+        // 160, 240, 320 and with larger accessibility fonts.
+        val widthDp=resources.configuration.screenWidthDp
+        val rightDp=(widthDp*.34f).toInt().coerceIn(305,490)
+            .coerceAtMost((widthDp*.50f).toInt())
+        val main=LinearLayout(this).apply{orientation=LinearLayout.HORIZONTAL}
+        root.addView(main,LinearLayout.LayoutParams(-1,0,1f))
 
-        val right=LinearLayout(this).apply{
+        val mapColumn=LinearLayout(this).apply{
             orientation=LinearLayout.VERTICAL
-            setPadding(dp(8),dp(2),dp(3),0)
+            setPadding(0,0,dp(6),0)
         }
-        body.addView(right,LinearLayout.LayoutParams(0,-1,1.25f))
-        right.addView(label("НАВИГАЦИЯ",13f,true).apply{setTextColor(sky)})
-        buttonRow(right,74,
-            action("ВЕКТОРНАЯ КАРТА\nИ МАРШРУТ"){startActivity(Intent(this,
-                OfflineVectorNavigatorActivity::class.java))},
-            action("ПРОДОЛЖИТЬ\nМАРШРУТ"){startActivity(Intent(this,
-                OfflineVectorNavigatorActivity::class.java))})
-        buttonRow(right,58,
-            action("НАВИГАТОР"){startActivity(Intent(this,NavigatorActivity::class.java))},
-            action("ОФЛАЙН-КАРТЫ"){startActivity(Intent(this,OfflineMapsActivity::class.java))})
-        right.addView(label("OBD И РЕЗЕРВНОЕ ВЕДЕНИЕ",13f,true).apply{setTextColor(sky)})
-        buttonRow(right,58,
-            action("VGATE: ПОДКЛЮЧИТЬ"){showVgatePicker()},
-            action("ПРОТОКОЛ"){showProtocol()})
-        buttonRow(right,57,
-            action("ВЕДЕНИЕ ПО\nДАТЧИКАМ"){launchService(NavService.START_DR)},
-            action("ВЕРНУТЬ GPS"){launchService(NavService.STOP_DR)})
-        infoText=label("Готово",12f)
-        infoText.setTextColor(muted)
-        infoText.setPadding(dp(9),dp(8),dp(9),dp(8))
-        infoText.background=bgDrawable()
-        right.addView(infoText,LinearLayout.LayoutParams(-1,0,1f).apply{
-            setMargins(dp(4),dp(4),dp(4),dp(3))
+        main.addView(mapColumn,LinearLayout.LayoutParams(0,-1,1f))
+        val subTitle=text("МАРШРУТ И НАВИГАЦИЯ",14f,true).apply{
+            setTextColor(blue);setPadding(dp(5),dp(4),0,dp(6))
+        }
+        mapColumn.addView(subTitle)
+        preview=FytRoutePreviewView(this).apply{
+            isClickable=true
+            contentDescription="Предпросмотр маршрута. Нажми, чтобы открыть векторную карту"
+            setOnClickListener{openVector()}
+        }
+        mapColumn.addView(preview,LinearLayout.LayoutParams(-1,0,1f).apply{
+            setMargins(dp(3),0,dp(3),dp(6))
         })
-        // In normal wake Android resumes the foreground map activity.
-        // After process death, reopening the launcher reopens a saved route.
-        if(savedInstanceState==null && FytRouteStore.load(this)?.active==true){
-            root.post{startActivity(Intent(this,OfflineVectorNavigatorActivity::class.java))}
+        twin(mapColumn,71,
+            button("ВЕКТОРНАЯ КАРТА\nИ МАРШРУТ"){openVector()},
+            button("ПРОДОЛЖИТЬ\nВЕДЕНИЕ"){openVector()})
+        twin(mapColumn,58,
+            button("НАВИГАТОР"){openStandard()},
+            button("СКАЧАТЬ ОФЛАЙН-КАРТЫ"){
+                startActivity(Intent(this,OfflineMapsActivity::class.java))
+            })
+
+        val scroll=ScrollView(this).apply{
+            isFillViewport=false
+            overScrollMode=View.OVER_SCROLL_IF_CONTENT_SCROLLS
+            background=shape(Color.rgb(24,35,49))
         }
-        root.post {askPermissions()}
+        main.addView(scroll,LinearLayout.LayoutParams(dp(rightDp),-1))
+        val side=LinearLayout(this).apply{
+            orientation=LinearLayout.VERTICAL
+            setPadding(dp(8),dp(7),dp(8),dp(9))
+        }
+        scroll.addView(side)
+        side.addView(title("ИНЕРЦИАЛЬНЫЕ ДАТЧИКИ"))
+        gyroButton=button("ГИРОСКОП"){calibrate("gyro")}
+        accelButton=button("АКСЕЛЕРОМЕТР"){calibrate("accel")}
+        twin(side,84,gyroButton,accelButton)
+        sensorHelp=text("Калибровка: ожидаю данные Vgate и датчиков",12.5f)
+            .apply{setTextColor(secondary);setPadding(dp(10),dp(7),dp(10),dp(11))}
+        side.addView(sensorHelp)
+        side.addView(title("КООРДИНАТЫ И ИСТОЧНИКИ"))
+        gpsText=labelPanel(side,"USB GM906BT: нет данных\nВстроенный GPS: нет данных")
+        side.addView(title("VGATE / ELM327"))
+        obdText=labelPanel(side,"OBD: нет подключения")
+        twin(side,60,button("ПОДКЛЮЧИТЬ\nVGATE"){selectVgate()},
+            button("ПРОТОКОЛ"){selectProtocol()})
+        side.addView(title("РЕЖИМ НАВИГАЦИИ"))
+        twin(side,62,button("ВЕДЕНИЕ ПО\nДАТЧИКАМ"){send(NavService.START_DR)},
+            button("ВЕРНУТЬ GPS"){send(NavService.STOP_DR)})
+        monitorButton=button("ВКЛЮЧИТЬ МОНИТОРИНГ"){
+            if(monitoringEnabled())disableMonitoring() else enableMonitoring()
+        }
+        twin(side,59,monitorButton,
+            button("РАЗРЕШЕНИЯ"){requestPermissions()})
+        side.addView(title("СОСТОЯНИЕ / ДИАГНОСТИКА"))
+        infoText=labelPanel(side,"Запуск в безопасном режиме. "+
+            "Данные GPS не изменяются.")
+        twin(side,53,
+            button("ДИАГНОСТИКА"){showDiagnostics()},
+            button("ОБНОВИТЬ"){updateView()})
     }
 
+    private fun updateView(){
+        if(!::gyroButton.isInitialized)return
+        val now=SystemClock.elapsedRealtime()
+        val gyroFresh=State.gyroSampleMs>0L &&
+            now-State.gyroSampleMs in 0L..4200L
+        val accelFresh=State.accelSampleMs>0L &&
+            now-State.accelSampleMs in 0L..4200L
+        val bothCalibrated=State.gyroCalibrated && State.accelCalibrated &&
+            !State.stationaryCalibrationRunning
+        val gyroCheck=gyroFresh && bothCalibrated
+        val accelCheck=accelFresh && bothCalibrated
+        gyroButton.text="ГИРОСКОП "+(if(gyroCheck)"✓" else "")+"\n"+
+            (if(gyroFresh)String.format(Locale.US,"%.1f °/с",
+                State.yawDegPerSec) else "Нет сигнала")
+        accelButton.text="АКСЕЛЕРОМЕТР "+
+            (if(accelCheck)"✓" else "")+"\n"+
+            (if(accelFresh && State.linearAccelerationMps2.isFinite())
+                String.format(Locale.US,"%.2f м/с²",
+                    State.linearAccelerationMps2) else "Нет сигнала")
+        (gyroButton.background as? GradientDrawable)?.setStroke(
+            dp(if(selectedSensor=="gyro")2 else 1),
+            if(gyroCheck)green else blue)
+        (accelButton.background as? GradientDrawable)?.setStroke(
+            dp(if(selectedSensor=="accel")2 else 1),
+            if(accelCheck)green else blue)
+        sensorHelp.text=when{
+            State.stationaryCalibrationRunning->
+                "Идёт калибровка (5 секунд): машина неподвижна, OBD = 0 км/ч."
+            bothCalibrated->"✓ Смещения сохранены. Если пропадёт поток "+
+                "данных датчика, его зелёная галочка исчезнет."
+            else->"Нужна стоянка: 0 км/ч по Vgate, 5 секунд. "+
+                "≥40 измерений гироскопа и ≥20 акселерометра.\n"+
+                State.calibrationText
+        }
+        val ext=State.gpsExternalUpdateMs>0L &&
+            now-State.gpsExternalUpdateMs in 0L..8500L
+        val builtIn=State.gpsInternalUpdateMs>0L &&
+            now-State.gpsInternalUpdateMs in 0L..8500L
+        gpsText.text="USB GM906BT  "+(if(ext)"● ЕСТЬ СИГНАЛ"
+            else "○ ожидание")+"\n"+
+            "Встроенный GNSS  "+(if(builtIn)"● ЕСТЬ СИГНАЛ"
+            else "○ ожидание")+"\n"+
+            "Источник: "+State.gpsActiveSource+"\n"+
+            State.sourceDescription
+        val obdNow=State.speedUpdatedElapsedMs>0L &&
+            now-State.speedUpdatedElapsedMs in 0L..4500L
+        obdText.text="Адаптер: "+State.deviceName+"\n"+
+            "Скорость: "+(if(obdNow)String.format(Locale.US,"%.0f км/ч",
+                State.obdSpeedKmh()?:0.0) else "нет свежих данных")+"\n"+
+            "Режим: "+State.modeLabel
+        val session=FytRouteStore.load(this)
+        preview.update(session,State.navFix)
+        monitorButton.text=if(monitoringEnabled())"ОСТАНОВИТЬ\nМОНИТОРИНГ"
+            else "ВКЛЮЧИТЬ\nМОНИТОРИНГ"
+        infoText.text="GPS: "+(if(hasLocation())"разрешён" else "нет разрешения")+
+            "  ·  Bluetooth: "+(if(hasBluetooth())"разрешён" else "не разрешён")+
+            "\nМаршрут: "+when{
+                session?.active==true->"ведение сохранено"
+                session!=null->"цель сохранена"
+                else->"не выбран"
+            }+"\nПробуждение: "+State.gpsWakeStatus+
+            "\n"+(if(FytCrashReporter.unread(this))
+                "⚠ Ошибка предыдущего запуска. Открой Диагностику."
+                else State.message.take(250))
+        adapterDialog?.let{ dialog->
+            if(dialog.isShowing){
+                val choices=State.devices.toList()
+                if(choices.map{it.first}!=adapterChoices){
+                    adapterChoices=choices.map{it.first}
+                    val display=if(choices.isEmpty())
+                        listOf("Ищу Vgate…") else
+                        choices.map{it.second}
+                    adapterRows?.clear()
+                    adapterRows?.addAll(display)
+                    adapterRows?.notifyDataSetChanged()
+                }
+            }
+        }
+        try{alerts?.refresh()}catch(_:Throwable){}
+    }
+    private val refresh=object:Runnable{
+        override fun run(){
+            try{updateView()}catch(e:Throwable){
+                FytCrashReporter.record(this@FytHeadUnitActivity,
+                    "Обновление панели",e)
+            }
+            handler.postDelayed(this,1100L)
+        }
+    }
+    private fun failSafeUi(error:Throwable){
+        FytCrashReporter.record(this,"Отрисовка первого экрана",error)
+        val box=LinearLayout(this).apply{
+            orientation=LinearLayout.VERTICAL
+            setBackgroundColor(background)
+            setPadding(dp(35),dp(30),dp(35),dp(25))
+        }
+        box.addView(text("FYT 7870 · Безопасный режим",25f,true))
+        box.addView(text("Основной интерфейс столкнулся с ошибкой. "+
+            "Отчёт сохранён. Можно открыть диагностику или повторить запуск.",16f))
+        box.addView(button("ПОКАЗАТЬ И СКОПИРОВАТЬ ОШИБКУ"){showDiagnostics()},
+            LinearLayout.LayoutParams(-1,dp(76)))
+        box.addView(button("ПОВТОРИТЬ ЗАПУСК"){recreate()},
+            LinearLayout.LayoutParams(-1,dp(76)))
+        setContentView(box)
+    }
+    override fun onCreate(savedInstanceState:Bundle?){
+        super.onCreate(savedInstanceState)
+        // No service starts or permission dialogs during cold startup.
+        try{render()}catch(e:Throwable){failSafeUi(e)}
+    }
     override fun onResume(){
         super.onResume()
-        if(hasPermissions()){
-            getSharedPreferences("fyt_unit",MODE_PRIVATE).edit()
-                .putBoolean("auto_monitor",true).apply()
-            launchService(NavService.MONITOR)
-        }
-        tick.removeCallbacks(uiUpdate)
-        tick.post(uiUpdate)
+        // Monitoring restarts after FYT ACC wake ONLY after user enabled it.
+        if(monitoringEnabled() && hasLocation())startMonitor()
+        handler.removeCallbacks(refresh)
+        if(::gyroButton.isInitialized)handler.post(refresh)
     }
     override fun onPause(){
-        tick.removeCallbacks(uiUpdate)
+        handler.removeCallbacks(refresh)
         adapterDialog?.dismiss()
         super.onPause()
+    }
+    override fun onDestroy(){
+        handler.removeCallbacks(refresh)
+        super.onDestroy()
     }
 }
