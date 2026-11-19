@@ -293,7 +293,7 @@ class NavigatorActivity : Activity() {
         val sideScroll=ScrollView(this).apply{
             setBackgroundColor(Color.rgb(33,41,50))
         }
-        workspace.addView(sideScroll,LinearLayout.LayoutParams(dp(195),-1))
+        workspace.addView(sideScroll,LinearLayout.LayoutParams((resources.configuration.screenWidthDp*.23f).toInt().coerceIn(230,320).let{dp(it)},-1))
         val sideActions=LinearLayout(this).apply{
             orientation=LinearLayout.VERTICAL
             setPadding(dp(5),dp(5),dp(5),dp(5))
@@ -301,9 +301,9 @@ class NavigatorActivity : Activity() {
         sideScroll.addView(sideActions)
         fun sideAction(title:String,click:()->Unit){
             sideActions.addView(styledButton(title,click).apply{
-                textSize=13f
+                textSize=16f
                 setPadding(dp(5),dp(4),dp(5),dp(4))
-            },LinearLayout.LayoutParams(-1,dp(50)).apply{
+            },LinearLayout.LayoutParams(-1,dp(61)).apply{
                 setMargins(dp(1),dp(2),dp(1),dp(2))
             })
         }
