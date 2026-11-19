@@ -218,7 +218,17 @@ class OfflineVectorNavigatorActivity:Activity() {
                     picking=false
                     handler.post {
                         if(!isFinishing && !isDestroyed && ::mapView.isInitialized){
-                            selectDestination(tapped,"Точка на карте",true)
+                            try {
+                                selectDestination(tapped,"Точка на карте",true)
+                            } catch (e:Exception) {
+                                // Recover within the same vector screen;
+                                // do not let an overlay exception return the
+                                // user to the previous activity.
+                                android.util.Log.e("VectorNavigator",
+                                    "Destination tap failed",e)
+                                info.text="Не удалось выбрать цель: "+
+                                    (e.localizedMessage?:"ошибка карты")
+                            }
                         }
                     }
                     return true
@@ -480,6 +490,9 @@ class OfflineVectorNavigatorActivity:Activity() {
         picking=false
         route=null
         active=false
+        // Do not jump the view back to the vehicle while the user is
+        // inspecting a destination and its planned route.
+        follow=false
         inertialRouteMatcher.reset()
         lastRouteWarning=InertialRouteMatcher.Warning.NONE
         State.activeRouting=false
@@ -732,7 +745,9 @@ class OfflineVectorNavigatorActivity:Activity() {
                 }
                 arrow.invalidate()
             }else {
-                info.text="Ожидание GPS, сети или координат OBD/DR"
+                info.text=if(dest!=null)
+                    "Цель сохранена · жду GPS/сеть или ручную стартовую точку"
+                else "Ожидание GPS, сети или координат OBD/DR"
             }
             handler.postDelayed(this,750L)
         }
