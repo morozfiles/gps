@@ -40,8 +40,11 @@ class MainActivity : Activity() {
     private val handler = Handler(Looper.getMainLooper())
     private lateinit var root: LinearLayout
     private lateinit var status: TextView
-    private lateinit var sensorStatus: TextView
+    private lateinit var sensorHint: TextView
+    private val sensorButtons=linkedMapOf<CalibrationSensor,Button>()
+    private var selectedSensor=CalibrationSensor.COMPASS
     private var compassDialogStatus: TextView? = null
+    private var inertialDialogStatus: TextView? = null
     private lateinit var gpsSpeedValue: TextView
     private lateinit var obdSpeedValue: TextView
     private var gpsSpeedKmh: Double? = null
@@ -265,21 +268,161 @@ class MainActivity : Activity() {
                 "OBD: ${"%.1f".format(Locale.getDefault(),State.obdFactor*100)}% от ЭБУ\n"+
                 "Статус: ${State.message}\n"+
                 if(State.dr) "Путь: ${State.position}\nРост погрешности: ~${State.driftMeters.toInt()} м" else ""
-            sensorStatus.text="Движение: ${State.motionText}\n"+
-                "Ускорение: ${State.accelerationText}\n"+
-                "Компас: ${State.compassStatus}\n"+
-                "${State.compassAccuracyText}\n"+
-                "Привязка курса: ${State.compassAlignmentText}\n"+
-                "Направление: ${State.directionText}\n"+
-                "Калибровка: ${State.calibrationText}\n"+
-                State.sensorAvailability
-            compassDialogStatus?.text=
-                State.compassAccuracyText+"\n"+State.compassCalibrationText
+            updateSensorCards()
+            compassDialogStatus?.text=State.compassAccuracyText+"\n"+
+                State.compassCalibrationText+"\n"+State.compassAlignmentText
+            inertialDialogStatus?.text=State.calibrationText
 
             if (picker != null) updateDevicePicker()
             handler.postDelayed(this,750)
         }
     }
+    private fun sensorSnapshot():SensorCalibrationSnapshot {
+        val now=SystemClock.elapsedRealtime()
+        fun fresh(at:Long)=at>0L && now-at in 0L..3500L
+        return SensorCalibrationSnapshot(
+            gyroAvailable=State.sensorGyroAvailable,
+            accelAvailable=State.sensorAccelAvailable,
+            linearAccelAvailable=State.sensorLinearAccelAvailable,
+            gravityAvailable=State.sensorGravityAvailable,
+            compassAvailable=State.sensorCompassAvailable,
+            gyroCalibrated=State.gyroCalibrated,
+            accelCalibrated=State.accelCalibrated,
+            compassCheckPassed=State.compassMagnetCheckPassed,
+            compassAligned=State.compassAligned,
+            compassReliable=State.compassReliableNow,
+            gyroFresh=fresh(State.gyroSampleMs),
+            accelFresh=fresh(State.accelSampleMs),
+            compassFresh=fresh(State.compassSampleMs),
+            calibrationRunning=State.stationaryCalibrationRunning,
+            compassChecking=State.compassCheckRunning,
+            yawDegreesPerSecond=State.yawDegPerSec,
+            accelerationMetersPerSecond2=State.linearAccelerationMps2,
+            headingDegrees=State.compassHeadingDeg,
+            fieldMicroTesla=State.compassFieldMicroTesla,
+            calibrationMessage=State.calibrationText,
+            compassCheckMessage=State.compassCalibrationText,
+            compassAlignmentMessage=State.compassAlignmentText
+        )
+    }
+
+    private fun addSensorCards(){
+        val row=LinearLayout(this).apply {
+            orientation=LinearLayout.HORIZONTAL
+            setPadding(0,dip(6),0,dip(3))
+        }
+        for(sensor in CalibrationSensor.values()){
+            val button=Button(this).apply {
+                isAllCaps=false
+                textSize=if(sensor==CalibrationSensor.ACCELEROMETER)10f else 11f
+                includeFontPadding=false
+                maxLines=3
+                gravity=Gravity.CENTER
+                minWidth=0;minimumWidth=0
+                minHeight=0;minimumHeight=0
+                setTextColor(primaryText)
+                background=GradientDrawable().apply {
+                    cornerRadius=dip(10).toFloat()
+                    setColor(panelColor)
+                    setStroke(dip(1),Color.rgb(81,96,114))
+                }
+                setPadding(dip(1),dip(3),dip(1),dip(3))
+                setOnClickListener {
+                    selectedSensor=sensor
+                    updateSensorCards()
+                    when(sensor){
+                        CalibrationSensor.COMPASS -> showCompassCheck()
+                        CalibrationSensor.GYROSCOPE,
+                        CalibrationSensor.ACCELEROMETER -> showStationaryCalibration(sensor)
+                    }
+                }
+            }
+            row.addView(button,LinearLayout.LayoutParams(
+                0,dip(83),1f).apply{setMargins(dip(2),0,dip(2),0)})
+            sensorButtons[sensor]=button
+        }
+        root.addView(row)
+        sensorHint=TextView(this).apply {
+            textSize=12f
+            setTextColor(secondaryText)
+            gravity=Gravity.START
+            setPadding(dip(10),dip(9),dip(10),dip(10))
+            background=GradientDrawable().apply {
+                cornerRadius=dip(9).toFloat()
+                setColor(panelColor)
+                setStroke(dip(1),Color.rgb(74,87,102))
+            }
+        }
+        root.addView(sensorHint,LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+            setMargins(dip(2),dip(3),dip(2),dip(7))
+        })
+        updateSensorCards()
+    }
+
+    private fun updateSensorCards(){
+        if(!::sensorHint.isInitialized)return
+        val snapshot=sensorSnapshot()
+        for((sensor,button) in sensorButtons){
+            val complete=SensorCalibrationCards.checked(sensor,snapshot)
+            button.text=SensorCalibrationCards.buttonText(sensor,snapshot)
+            button.contentDescription=button.text.toString().replace("\n"," ") +
+                if(complete) ". Калибровка выполнена" else ". Калибровка не завершена"
+            val selected=sensor==selectedSensor
+            val border=when {
+                complete -> Color.rgb(65,196,124)
+                selected -> Color.rgb(133,191,255)
+                else -> Color.rgb(81,96,114)
+            }
+            (button.background as? GradientDrawable)?.setStroke(
+                dip(if(selected)2 else 1),border)
+        }
+        sensorHint.text=SensorCalibrationCards.hint(selectedSensor,snapshot)
+    }
+
+    private fun showStationaryCalibration(sensor:CalibrationSensor) {
+        val name=if(sensor==CalibrationSensor.GYROSCOPE)
+            "гироскопа" else "акселерометра"
+        val content=LinearLayout(this).apply {
+            orientation=LinearLayout.VERTICAL
+            setPadding(dip(20),dip(8),dip(20),dip(10))
+        }
+        content.addView(TextView(this).apply {
+            text="Калибровка $name выполняется вместе с другим датчиком. "+
+                "Автомобиль должен стоять, свежие данные OBD — 0 км/ч. "+
+                "Телефон не двигать 5 секунд. Нужны не менее 40 измерений "+
+                "гироскопа и 20 измерений линейного ускорения. "+
+                "Среднее вращение — не более 0,14 рад/с. "+
+                "Галочки появятся на обоих датчиках только после "+
+                "успешного завершения всех проверок."
+            textSize=14f
+            setTextColor(primaryText)
+        })
+        val result=TextView(this).apply {
+            text=State.calibrationText
+            textSize=14f
+            setTextColor(Color.rgb(142,195,251))
+            setPadding(0,dip(12),0,0)
+        }
+        content.addView(result)
+        inertialDialogStatus=result
+        val dialog=AlertDialog.Builder(this)
+            .setTitle("Калибровка $name")
+            .setView(content)
+            .setPositiveButton("Начать 5 с",null)
+            .setNegativeButton("Закрыть",null)
+            .create()
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                send(NavService.CALIBRATE)
+                result.text="Проверяю OBD и датчики. "+State.calibrationText
+            }
+        }
+        dialog.setOnDismissListener {inertialDialogStatus=null}
+        dialog.show()
+    }
+
     private fun addButton(parent: LinearLayout, caption: String, click: ()->Unit) {
         parent.addView(Button(this).apply {
             text = caption
@@ -459,10 +602,14 @@ class MainActivity : Activity() {
         }
         content.addView(TextView(this).apply {
             text="Этап 1: на стоящей машине вынь телефон из магнитного крепления. " +
-                "Вдали от автомобиля и металлических предметов плавно повращай " +
-                "его восьмёркой во всех плоскостях 15 секунд.\n\n" +
-                "Этот шаг проверяет точность магнитного датчика Android. " +
-                "Он не задаёт направление машины."
+                "Вдали от металла вращай его восьмёркой во всех плоскостях "+
+                "15 секунд. Нужны 25+ замеров, изменение поля по двум осям "+
+                "и достоверный компас.\n\n"+
+                "Этап 2: закрепи телефон в рабочем положении, нажми "+
+                "«Привязка к GPS». При хорошем GPS едь прямо со скоростью "+
+                "от 15 км/ч. Привязка завершится автоматически после "+
+                "четырёх устойчивых измерений. Во время движения "+
+                "телефоном пользоваться не нужно."
             textSize=15f
             setTextColor(primaryText)
         })
@@ -478,12 +625,17 @@ class MainActivity : Activity() {
             .setTitle("Проверка и калибровка компаса")
             .setView(content)
             .setPositiveButton("Начать 15 с",null)
+            .setNeutralButton("Привязка к GPS",null)
             .setNegativeButton("Закрыть",null)
             .create()
         dialog.setOnShowListener {
             dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
                 send(NavService.CHECK_COMPASS)
-                result.text="Запущена проверка. Вращай телефон восьмёркой 15 секунд..."
+                result.text="Запрос на проверку. "+State.compassCalibrationText
+            }
+            dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener {
+                send(NavService.ALIGN_COMPASS)
+                result.text="GPS-привязка: "+State.compassAlignmentText
             }
         }
         dialog.setOnDismissListener { compassDialogStatus=null }
@@ -661,12 +813,7 @@ class MainActivity : Activity() {
             setPadding(dip(4), dip(8), dip(4), dip(15))
         }
         root.addView(status)
-        sensorStatus=TextView(this).apply {
-            textSize=14f
-            setTextColor(secondaryText)
-            setPadding(dip(4),dip(7),dip(4),dip(15))
-        }
-        root.addView(sensorStatus)
+        addSensorCards()
         addButton(root,"Настройки") { showSettingsMenu() }
         addButton(root,"Принудительно: вести по датчикам") { send(NavService.START_DR) }
         addButton(root,"Вернуться к GPS") { send(NavService.STOP_DR) }
