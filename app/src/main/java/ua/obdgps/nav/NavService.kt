@@ -826,7 +826,8 @@ class NavService: Service(), LocationListener {
                 !GpsSpoofGuard.isLima(it.lat,it.lon) &&
                 (it.source=="Wi-Fi/сеть" ||
                     (!gpsQuarantined &&
-                        (it.source=="GPS" || it.source=="Fused Android")))
+                        (it.source=="GPS" || it.source=="GM906BT USB" ||
+                            it.source=="Fused Android")))
         }
         // In quarantine never seed from an old GPS or a fused fix which
         // may itself incorporate GNSS. Network provider is independent.
@@ -840,7 +841,8 @@ class NavService: Service(), LocationListener {
         val lat=live?.lat?:manual?.lat
         val lon=live?.lon?:manual?.lon
         val heading=realGps?.takeIf{
-            live?.source=="GPS" && it.hasBearing() &&
+            (live?.source=="GPS" || live?.source=="GM906BT USB") &&
+                it.hasBearing() &&
                 it.hasSpeed() && it.speed>=2.0f
         }?.bearing?.toDouble()
             ?: lastTrustedHeading?.takeIf{
@@ -848,6 +850,7 @@ class NavService: Service(), LocationListener {
             }
             ?: live?.bearing?.takeIf{
                 it.isFinite() && (live.source=="GPS" ||
+                    live.source=="GM906BT USB" ||
                     live.source=="Fused Android") &&
                     (correctedSpeed()?:0.0)>=5.0
             }
@@ -863,8 +866,8 @@ class NavService: Service(), LocationListener {
         if(heading==null || !heading.isFinite()){
             State.diagnosticText="Начальные координаты найдены, "+
                 "но направление автомобиля неизвестно. "+
-                "Нужен GPS-курс во время движения, калиброванный компас "+
-                "или вручную заданный курс."
+                "Нужен курс GM906BT/встроенного GPS во время движения "+
+                "или вручную заданный курс на карте (компаса в FYT нет)."
             State.message=State.diagnosticText
             return
         }
