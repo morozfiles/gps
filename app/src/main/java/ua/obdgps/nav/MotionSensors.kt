@@ -135,7 +135,8 @@ class MotionSensors(
         if(compassReliable && carOffset != null) wrap360(trueNorth + carOffset!!) else null
 
     fun start() {
-        magnetometerPresent=sm.getDefaultSensor(Sensor.TYPE_MAGNETIC_FIELD)!=null
+        // FYT 7870 has no usable magnetometer. Never present a phantom compass.
+        magnetometerPresent=false
         State.sensorGyroAvailable=sm.getDefaultSensor(Sensor.TYPE_GYROSCOPE)!=null
         State.sensorAccelAvailable=sm.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)!=null
         State.sensorLinearAccelAvailable=hardwareLinear ||
@@ -143,8 +144,7 @@ class MotionSensors(
         State.sensorGravityAvailable=
             sm.getDefaultSensor(Sensor.TYPE_GRAVITY)!=null ||
             State.sensorAccelAvailable
-        State.sensorCompassAvailable=magnetometerPresent &&
-            sm.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)!=null
+        State.sensorCompassAvailable=false
         State.gyroCalibrated=prefs.contains("yawBias") &&
             yawBias.isFinite() && State.sensorGyroAvailable
         State.accelCalibrated=prefs.contains("accelBias") &&
@@ -173,8 +173,7 @@ class MotionSensors(
             p.first + ": " + if(sm.getDefaultSensor(p.second)!=null) "✓" else "нет"
         }
         for(t in listOf(Sensor.TYPE_GYROSCOPE,Sensor.TYPE_GRAVITY,
-            Sensor.TYPE_ACCELEROMETER,Sensor.TYPE_LINEAR_ACCELERATION,
-            Sensor.TYPE_ROTATION_VECTOR,Sensor.TYPE_MAGNETIC_FIELD)) {
+            Sensor.TYPE_ACCELEROMETER,Sensor.TYPE_LINEAR_ACCELERATION)) {
             sm.getDefaultSensor(t)?.let { sm.registerListener(this,it,SensorManager.SENSOR_DELAY_GAME) }
         }
         State.calibrationText=if(State.gyroCalibrated && State.accelCalibrated)
@@ -229,7 +228,7 @@ class MotionSensors(
         calibrationStart=SystemClock.elapsedRealtime()
         State.stationaryCalibrationRunning=true
         gyroSamples=0;gyroSum=0.0;accelSamples=0;accelSum=0.0
-        State.calibrationText="Калибровка: не двигай телефон 5 секунд"
+        State.calibrationText="Калибровка: автомобиль неподвижен 5 секунд"
         return State.calibrationText
     }
 
