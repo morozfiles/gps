@@ -340,17 +340,17 @@ class FytHeadUnitActivity:Activity(){
             State.obdSpeedKmh(),State.speedUpdatedElapsedMs,now)
         val status=if(which=="GPS")gps else obd
         val desc=if(which=="GPS")
-            "Источник: "+State.gpsActiveSource+"\\n"+
+            "Источник: "+State.gpsActiveSource+"\n"+
                 "В панели зелёным отмечается только свежая GPS-скорость "+
                 "из координат, принятых фильтрами навигации."
-            else "Адаптер: "+State.deviceName+"\\n"+
+            else "Адаптер: "+State.deviceName+"\n"+
                 "Скорость поступает от Vgate / ELM327 по OBD."
         AlertDialog.Builder(this)
             .setTitle("Скорость "+which)
             .setMessage((if(status.valid)
                 String.format(Locale.US,"%.0f км/ч",status.speedKmh)
                 else "Нет свежей подтверждённой скорости")+
-                "\\n\\n"+desc)
+                "\n\n"+desc)
             .setPositiveButton("OK",null).show()
     }
 
@@ -493,11 +493,11 @@ class FytHeadUnitActivity:Activity(){
             State.gpsSpeedKmh,State.gpsSpeedUpdatedElapsedMs,now)
         val obdSpeed=FytSpeedIndicators.obdStatus(
             State.obdSpeedKmh(),State.speedUpdatedElapsedMs,now)
-        gpsSpeedButton.text="GPS "+(if(gpsSpeed.valid)"✓" else "")+"\\n"+
+        gpsSpeedButton.text="GPS "+(if(gpsSpeed.valid)"✓" else "")+"\n"+
             (if(gpsSpeed.valid)
                 String.format(Locale.US,"%.0f км/ч",gpsSpeed.speedKmh)
                 else "— км/ч")
-        obdSpeedButton.text="OBD "+(if(obdSpeed.valid)"✓" else "")+"\\n"+
+        obdSpeedButton.text="OBD "+(if(obdSpeed.valid)"✓" else "")+"\n"+
             (if(obdSpeed.valid)
                 String.format(Locale.US,"%.0f км/ч",obdSpeed.speedKmh)
                 else "— км/ч")
