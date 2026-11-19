@@ -45,6 +45,8 @@ jobs:
           echo "OBDGPS_SIGNING_STORE_FILE=$RUNNER_TEMP/obdgps-signing.p12" >> "$GITHUB_ENV"
           echo "PERMANENT_SIGNING=true" >> "$GITHUB_ENV"
           echo "Permanent APK signing key loaded from GitHub Actions secrets."
+      - name: Run vector map projection regression tests
+        run: gradle --no-daemon :app:testDebugUnitTest
       - name: Build debug APK
         env:
           OBDGPS_SIGNING_PASSWORD: ${{ secrets.OBDGPS_SIGNING_PASSWORD }}
