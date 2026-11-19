@@ -607,7 +607,8 @@ class OfflineVectorNavigatorActivity:Activity() {
     /** Common safe path for an address and a tap on the vector map. */
     /** Pixel -> coordinate, accounting for Mapsforge's map rotation. */
     private fun pointAtScreen(x:Float,y:Float):RoutingEngine.Point?{
-        if(!x.isFinite() || !y.isFinite() ||
+        if(mapView.width<=0 || mapView.height<=0 ||
+            !x.isFinite() || !y.isFinite() ||
             x<0f || y<0f || x>mapView.width || y>mapView.height)return null
         var pixel=org.mapsforge.core.model.Point(x.toDouble(),y.toDouble())
             .offset(-mapView.getOffsetX().toDouble(),
@@ -622,7 +623,8 @@ class OfflineVectorNavigatorActivity:Activity() {
 
     /** Coordinate -> visible pixels for the route/pin Android overlay. */
     private fun screenPoint(point:RoutingEngine.Point):Pair<Float,Float>?{
-        if(!RoutingEngine.valid(point) || !::mapView.isInitialized)return null
+        if(!RoutingEngine.valid(point) || !::mapView.isInitialized ||
+            mapView.width<=0 || mapView.height<=0)return null
         var pixels=mapView.getMapViewProjection().toPixels(
             LatLong(point.lat,point.lon))?:return null
         val rotation=mapView.getMapRotation()
