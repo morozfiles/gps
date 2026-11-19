@@ -549,7 +549,8 @@ class OfflineVectorNavigatorActivity:Activity() {
         if(!x.isFinite() || !y.isFinite() ||
             x<0f || y<0f || x>mapView.width || y>mapView.height)return null
         var pixel=org.mapsforge.core.model.Point(x.toDouble(),y.toDouble())
-            .offset(-mapView.getOffsetX(),-mapView.getOffsetY())
+            .offset(-mapView.getOffsetX().toDouble(),
+                -mapView.getOffsetY().toDouble())
         val rotation=mapView.getMapRotation()
         if(!Rotation.noRotation(rotation))pixel=rotation.rotate(pixel)
         val point=mapView.getMapViewProjection()
