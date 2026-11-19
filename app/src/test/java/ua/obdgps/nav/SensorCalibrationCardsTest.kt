@@ -68,7 +68,7 @@ class SensorCalibrationCardsTest {
     }
 
     @Test fun labelsContainLiveNumbersAndNotFalseCheckmarks(){
-        assertEquals("Компас\\n245°\\n46 мкТ",
+        assertEquals("Компас\n245°\n46 мкТ",
             SensorCalibrationCards.buttonText(CalibrationSensor.COMPASS,allSensors))
         assertTrue(SensorCalibrationCards.buttonText(
             CalibrationSensor.GYROSCOPE,allSensors).contains("0.1°/с"))
