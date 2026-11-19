@@ -312,10 +312,13 @@ class FytHeadUnitActivity:Activity(){
     }
 
     private fun showLearningProfile(){
+        // Read stored weights/counters even before the service starts.
+        // Training examples belong to this FYT package, not to the phone.
+        val model=AdaptiveDrLearning(this)
         AlertDialog.Builder(this)
             .setTitle("ИИ · обучение GPS / DR")
-            .setMessage(State.learnedDrStatus+"\\n\\n"+
-                State.learnedDrDetail+"\\n\\n"+
+            .setMessage(model.status()+"\n\n"+
+                model.detail()+"\n\n"+
                 "Для набора примеров открой «ТЕСТ GPS / DR», подключи "+
                 "Vgate и начни запись двух треков. "+
                 "Внешний GM906BT должен передавать проверенные координаты "+
