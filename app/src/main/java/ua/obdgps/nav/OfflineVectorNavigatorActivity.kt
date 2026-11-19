@@ -464,59 +464,83 @@ class OfflineVectorNavigatorActivity:Activity() {
         frame.addView(guidance,FrameLayout.LayoutParams(-1,-2,Gravity.BOTTOM).apply{
             bottomMargin=dp(5)
         })
-        root.addView(frame,LinearLayout.LayoutParams(-1,0,1f))
-        root.addView(row(
-            button("Поиск адреса"){searchAddress()},
-            button("Цель на карте"){
-                picking=!picking
-                if(picking){
-                    follow=false
-                    info.text="Коснись карты: установлю цель и построю маршрут"
-                    guidance.text="Можно также коснуться карты без режима выбора"
-                }else{
-                    info.text="Режим выбора выключен · обычное касание задаёт цель"
-                }
-            },
-            button("Маршрут"){buildRoute(false)}
-        ))
-        root.addView(row(
-            button("Начать ведение") {
-                if(route==null){
-                    buildRoute(false)
-                }else{
-                    active=true
-                    inertialRouteMatcher.reset()
-                    lastRouteWarning=InertialRouteMatcher.Warning.NONE
-                    State.activeRouting=true
-                    State.gpsFilterRoutePoints=route!!.points
-                    FytRouteStore.setActive(this,true)
-                    followCar()
-                    info.text="Ведение по маршруту · GPS / OBD / DR"
-                }
-            },
-            button("Ведение по датчикам"){
-                try{startForegroundService(Intent(this,NavService::class.java)
-                    .setAction(NavService.START_DR))}
-                catch(_:Exception){}
-            },
-            button("Офлайн-карты"){
-                startActivity(Intent(this,OfflineMapsActivity::class.java))
-            },
-            button("Завершить маршрут"){
-                FytRouteStore.clear(this)
-                dest=null
-                route=null
-                active=false
-                State.navigationDestination=null
-                State.activeRouting=false
-                State.gpsFilterRoutePoints=emptyList()
+        // Landscape 9-inch workspace: roads occupy the entire left pane;
+        // large touch targets live in a scrollable RIGHT sidebar.
+        val workspace=LinearLayout(this).apply{
+            orientation=LinearLayout.HORIZONTAL
+        }
+        workspace.addView(frame,LinearLayout.LayoutParams(0,-1,1f))
+        val sideScroll=android.widget.ScrollView(this).apply{
+            setBackgroundColor(Color.rgb(34,41,50))
+            isFillViewport=false
+        }
+        workspace.addView(sideScroll,LinearLayout.LayoutParams(dp(196),-1))
+        val actions=LinearLayout(this).apply{
+            orientation=LinearLayout.VERTICAL
+            setPadding(dp(4),dp(4),dp(4),dp(4))
+        }
+        sideScroll.addView(actions)
+        actions.addView(label("НАВИГАЦИЯ",13f).apply{
+            typeface=Typeface.DEFAULT_BOLD
+            setPadding(dp(6),0,0,dp(5))
+        })
+        fun sideButton(title:String,click:()->Unit){
+            actions.addView(button(title,click).apply{
+                textSize=13f
+                setPadding(dp(6),dp(4),dp(6),dp(4))
+            },LinearLayout.LayoutParams(-1,dp(54)).apply{
+                setMargins(dp(2),dp(2),dp(2),dp(2))
+            })
+        }
+        sideButton("Поиск адреса"){searchAddress()}
+        sideButton("Цель на карте"){
+            picking=!picking
+            if(picking){
                 follow=false
-                arrow.invalidate()
-                guidance.text="Маршрут завершён · выбери новую цель"
-                info.text="Маршрут удалён из памяти"
-            },
-            button("Диагностика"){showDiagnostic()}
-        ))
+                info.text="Коснись карты: установлю цель и построю маршрут"
+                guidance.text="Можно также коснуться карты без режима выбора"
+            }else{
+                info.text="Режим выбора выключен · обычное касание задаёт цель"
+            }
+        }
+        sideButton("Маршрут"){buildRoute(false)}
+        sideButton("Начать ведение"){
+            if(route==null){
+                buildRoute(false)
+            }else{
+                active=true
+                inertialRouteMatcher.reset()
+                lastRouteWarning=InertialRouteMatcher.Warning.NONE
+                State.activeRouting=true
+                State.gpsFilterRoutePoints=route!!.points
+                FytRouteStore.setActive(this,true)
+                followCar()
+                info.text="Ведение по маршруту · GM906BT / GPS / OBD / DR"
+            }
+        }
+        sideButton("Ведение по датчикам"){
+            try{startForegroundService(Intent(this,NavService::class.java)
+                .setAction(NavService.START_DR))}
+            catch(_:Exception){}
+        }
+        sideButton("Офлайн-карты"){
+            startActivity(Intent(this,OfflineMapsActivity::class.java))
+        }
+        sideButton("Завершить маршрут"){
+            FytRouteStore.clear(this)
+            dest=null
+            route=null
+            active=false
+            State.navigationDestination=null
+            State.activeRouting=false
+            State.gpsFilterRoutePoints=emptyList()
+            follow=false
+            arrow.invalidate()
+            guidance.text="Маршрут завершён · выбери новую цель"
+            info.text="Маршрут удалён из памяти"
+        }
+        sideButton("Диагностика"){showDiagnostic()}
+        root.addView(workspace,LinearLayout.LayoutParams(-1,0,1f))
         setContentView(root)
         // Restore destination and exact road geometry after FYT deep sleep
         // or Android process recreation, without needing internet.
