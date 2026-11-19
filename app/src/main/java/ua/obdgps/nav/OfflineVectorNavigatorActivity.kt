@@ -59,7 +59,7 @@ class OfflineVectorNavigatorActivity:Activity() {
     private val searchWorker=Executors.newSingleThreadExecutor { r->
         Thread(r,"Mapsforge-POI-Search").apply{isDaemon=true}
     }
-    private val routing=RoutingEngine()
+    private var routing=RoutingEngine()
     private lateinit var mapView:MapView
     private lateinit var info:TextView
     private lateinit var guidance:TextView
