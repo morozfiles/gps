@@ -51,13 +51,17 @@ jobs:
             sleep 3
             adb shell dumpsys activity activities > app/build/outputs/fyt-diagnostics/activity.txt
             grep -q "ua.obdgps.nav.fyt7870" app/build/outputs/fyt-diagnostics/activity.txt
+            # On overloaded software-rendered 2K emulators the AOSP
+            # Quickstep launcher may ANR even while our Activity is fine.
+            # Close that system dialog, never our application.
+            adb shell uiautomator dump /sdcard/window.xml || true
+            adb shell cat /sdcard/window.xml | grep -q "Quickstep" && adb shell input tap 620 590 || true
+            adb shell am start -W -n ua.obdgps.nav.fyt7870/ua.obdgps.nav.FytHeadUnitActivity
+            sleep 2
             adb shell screencap -p /sdcard/fyt-dashboard.png
             adb pull /sdcard/fyt-dashboard.png app/build/outputs/fyt-diagnostics/fyt-2000x1200.png
             adb logcat -d -v threadtime > app/build/outputs/fyt-diagnostics/logcat.txt
-            if grep -A 10 "FATAL EXCEPTION" app/build/outputs/fyt-diagnostics/logcat.txt | grep -q "ua.obdgps.nav.fyt7870"; then
-              echo "::error::FYT dashboard crashed during cold-start test"
-              exit 1
-            fi
+            if grep -A 10 "FATAL EXCEPTION" app/build/outputs/fyt-diagnostics/logcat.txt | grep -q "ua.obdgps.nav.fyt7870"; then echo "::error::FYT dashboard crashed during cold-start test"; exit 1; fi
       - name: Upload screenshot and startup diagnostics
         if: always()
         uses: actions/upload-artifact@v4
