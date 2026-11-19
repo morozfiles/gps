@@ -10,6 +10,8 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import org.junit.Assert.*
 import org.junit.Test
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import org.junit.runner.RunWith
 
 /**
@@ -146,4 +148,31 @@ class VectorMapTapRouteInstrumentedTest {
             State.navigationDestination=null
         }
     }
+    @Test fun threeLiveRoutesThroughProductionValhallaService() {
+        val source=RoutingEngine.Point(50.4501,30.5234)
+        val destinations=listOf(
+            RoutingEngine.Point(50.4563,30.5355),
+            RoutingEngine.Point(50.4443,30.5112),
+            RoutingEngine.Point(50.4612,30.5054)
+        )
+        val engine=RoutingEngine()
+        for((index,target) in destinations.withIndex()){
+            val latch=CountDownLatch(1)
+            var routeResult:Result<RoutingEngine.Route>?=null
+            engine.request(source,target){result->
+                routeResult=result
+                latch.countDown()
+            }
+            assertTrue("Live routing request #${index+1} timed out",
+                latch.await(35,TimeUnit.SECONDS))
+            val route=routeResult?:error("No live routing result #${index+1}")
+            assertTrue("Live route #${index+1} failed: "+
+                route.exceptionOrNull()?.message,route.isSuccess)
+            assertTrue("Route #${index+1} missing road geometry",
+                route.getOrThrow().points.size>=2)
+            assertEquals(target.lat,route.getOrThrow().destination.lat,0.00001)
+            assertEquals(target.lon,route.getOrThrow().destination.lon,0.00001)
+        }
+    }
+
 }
