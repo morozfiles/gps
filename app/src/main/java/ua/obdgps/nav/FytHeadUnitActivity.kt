@@ -315,7 +315,7 @@ class FytHeadUnitActivity:Activity(){
     private fun render(){
         val root=LinearLayout(this).apply{
             orientation=LinearLayout.VERTICAL
-            setBackgroundColor(background)
+            setBackgroundColor(this@FytHeadUnitActivity.background)
             setPadding(dp(12),dp(5),dp(12),dp(8))
             setOnApplyWindowInsetsListener{v,insets->
                 val edges=insets.getInsets(
@@ -503,7 +503,7 @@ class FytHeadUnitActivity:Activity(){
         FytCrashReporter.record(this,"Отрисовка первого экрана",error)
         val box=LinearLayout(this).apply{
             orientation=LinearLayout.VERTICAL
-            setBackgroundColor(background)
+            setBackgroundColor(this@FytHeadUnitActivity.background)
             setPadding(dp(35),dp(30),dp(35),dp(25))
         }
         box.addView(text("FYT 7870 · Безопасный режим",25f,true))
