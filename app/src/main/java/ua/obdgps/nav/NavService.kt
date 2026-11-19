@@ -163,7 +163,15 @@ class NavService: Service(), LocationListener {
             }
             previousInteractive=interactive
             lastLoopObservedMs=now
-            if(interactive)recoverStaleVgate(now)
+            if(!interactive){
+                // The FYT ACC controller may suspend execution without
+                // destroying Android services. Keep the session, do not
+                // generate fake DR motion or poll Vgate at 4 Hz in sleep.
+                tickTime=now
+                handler.postDelayed(this,4000L)
+                return
+            }
+            recoverStaleVgate(now)
             if(interactive && !State.dr &&
                 getSharedPreferences("fyt_unit",MODE_PRIVATE)
                     .getBoolean("dr_requested",false) &&
