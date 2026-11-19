@@ -52,7 +52,10 @@ class NavService: Service(), LocationListener {
     private var transport = "BLE"
     private var scanner: BluetoothLeScanner? = null
     private var scanCallback: ScanCallback? = null
-    private val bt by lazy { getSystemService(BluetoothManager::class.java).adapter }
+    private val bt by lazy {
+        runCatching{getSystemService(BluetoothManager::class.java)?.adapter}
+            .getOrNull()
+    }
     private val dr = DeadReckoner()
     // Separate test estimate: receives OBD + gyro + direct NETWORK fixes only.
     private val comparisonDr=IndependentNetworkDr()
@@ -280,7 +283,7 @@ class NavService: Service(), LocationListener {
         val intent = PendingIntent.getActivity(this,0,Intent(this,FytHeadUnitActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
         val n = Notification.Builder(this,"nav").setContentTitle("OBD GPS · FYT 7870").setContentText("GM906BT / GPS / Vgate: мониторинг")
             .setSmallIcon(android.R.drawable.ic_menu_mylocation).setContentIntent(intent).build()
-        startForeground(1,n,android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION or android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
+        startForeground(1,n,android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION)
         if(checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)==PackageManager.PERMISSION_GRANTED) {
             try {
                 lm.requestLocationUpdates(LocationManager.GPS_PROVIDER,1000,0f,this,Looper.getMainLooper())
@@ -368,7 +371,7 @@ class NavService: Service(), LocationListener {
                 if(key!=null && !connected &&
                     SystemClock.elapsedRealtime()-lastReconnectAttemptMs>2500L &&
                     checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT)==PackageManager.PERMISSION_GRANTED &&
-                    bt.isEnabled) {
+                    bt?.isEnabled==true) {
                     State.message="Подключение к сохранённому Vgate..."
                     connectChoice(key,save=false)
                 } else if(!connected) State.message="Мониторинг датчиков запущен"
@@ -413,7 +416,7 @@ class NavService: Service(), LocationListener {
             handler.postDelayed({
                 if(power.isInteractive &&
                     checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT)==
-                        PackageManager.PERMISSION_GRANTED && bt.isEnabled){
+                        PackageManager.PERMISSION_GRANTED && bt?.isEnabled==true){
                     connectChoice(key,save=false)
                 }
             },3000L)
@@ -427,7 +430,7 @@ class NavService: Service(), LocationListener {
         val key=settings.adapterKey?:return
         if(checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT)!=
             PackageManager.PERMISSION_GRANTED)return
-        if(!bt.isEnabled)return
+        if(!bt?.isEnabled==true)return
         val noSpeed=State.speedUpdatedElapsedMs<=0L ||
             now-State.speedUpdatedElapsedMs>22000L
         if(noSpeed && now-lastReconnectAttemptMs>25000L){
@@ -470,9 +473,13 @@ class NavService: Service(), LocationListener {
         try {
             stopScan()
             State.devices.clear()
+            val adapter=bt ?: run{
+                State.message="Bluetooth FYT недоступен через Android API"
+                return
+            }
             // Show paired classic devices and BLE devices separately. Some
             // iCar Pro 2S variants advertise as Android-Vlink over RFCOMM.
-            bt.bondedDevices.forEach { d ->
+            adapter.bondedDevices.forEach { d ->
                 val name=d.name ?: "Bluetooth без имени"
                 if(d.type==BluetoothDevice.DEVICE_TYPE_CLASSIC ||
                    d.type==BluetoothDevice.DEVICE_TYPE_DUAL ||
@@ -482,7 +489,7 @@ class NavService: Service(), LocationListener {
                    d.type==BluetoothDevice.DEVICE_TYPE_DUAL)
                     State.devices["BLE|${d.address}"]="Сопряжён: $name [BLE]"
             }
-            val scan=bt.bluetoothLeScanner
+            val scan=adapter.bluetoothLeScanner
             if(scan==null) {
                 State.message="Bluetooth выключен; доступны только сопряжённые устройства"
                 return
@@ -541,12 +548,18 @@ class NavService: Service(), LocationListener {
         State.deviceName=State.devices["SPP|$address"] ?: settings.adapterName ?: address
         changeMode(mutMode)
         State.message="Подключение Bluetooth Classic к $address"
-        val socket=bt.getRemoteDevice(address).createRfcommSocketToServiceRecord(
-            UUID.fromString("00001101-0000-1000-8000-00805f9b34fb"))
+        val socket=try{
+            val adapter=bt ?:error("Стандартный Bluetooth API недоступен на FYT")
+            adapter.getRemoteDevice(address).createRfcommSocketToServiceRecord(
+                UUID.fromString("00001101-0000-1000-8000-00805f9b34fb"))
+        }catch(e:Exception){
+            State.message="VGATE: "+(e.localizedMessage?:"нет Bluetooth API")
+            return
+        }
         sppSocket=socket
         sppReader=Thread {
             try {
-                bt.cancelDiscovery()
+                bt?.cancelDiscovery()
                 socket.connect()
                 val output=socket.outputStream
                 handler.post {
@@ -589,7 +602,8 @@ class NavService: Service(), LocationListener {
             transport="BLE"
             changeMode(mutMode)
             State.deviceName=State.devices["BLE|$address"] ?: settings.adapterName ?: address
-            gatt=bt.getRemoteDevice(address).connectGatt(this,false,object:BluetoothGattCallback(){
+            val adapter=bt ?:error("Bluetooth API FYT недоступен")
+            gatt=adapter.getRemoteDevice(address).connectGatt(this,false,object:BluetoothGattCallback(){
                 override fun onConnectionStateChange(g:BluetoothGatt,status:Int,newState:Int) {
                     handler.post {
                         if (gatt !== g) return@post
