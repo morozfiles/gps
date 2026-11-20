@@ -950,12 +950,18 @@ class NavService: Service(), LocationListener {
         val now=SystemClock.elapsedRealtime()
         val ageNanos=SystemClock.elapsedRealtimeNanos()-location.elapsedRealtimeNanos
         if(ageNanos<0L || ageNanos>8_000_000_000L) return
-        if(!location.hasAccuracy() || location.accuracy>45f) {
+        if(!location.hasAccuracy() || location.accuracy<=0f ||
+            location.accuracy>150f) {
             State.gpsText="GPS: низкая точность"
             return
         }
         val kmh=if(location.hasSpeed()) location.speed*3.6 else null
-        if(kmh!=null && kmh in 0.0..350.0) {
+        if(kmh!=null && (!kmh.isFinite() || kmh>180.0 || kmh<0.0)) {
+            State.gpsText="GPS: недостоверная скорость (>180 км/ч)"
+            lastRejectedGps=now
+            return
+        }
+        if(kmh!=null && kmh in 0.0..180.0) {
             State.gpsSpeedKmh=kmh
             State.gpsSpeedUpdatedElapsedMs=now
         } else {
@@ -1015,7 +1021,7 @@ class NavService: Service(), LocationListener {
                 latitude=pose.lat
                 longitude=pose.lon
             }
-            val acceptable=max(65.0,50.0+State.driftMeters*1.5)
+            val acceptable=max(100.0,location.accuracy*1.5+State.driftMeters*1.5)
             if(predicted.distanceTo(location)>acceptable) {
                 State.gpsText="GPS: слишком далеко от инерциального пути"
                 return
