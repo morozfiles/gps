@@ -58,6 +58,17 @@ class NavigatorActivity : Activity() {
     private var selectedDestination:RoutingEngine.Point?=null
     private var manualOrigin:RoutingEngine.Point?=null
     private var plan:RoutingEngine.Route?=null
+    private val routeFollower=RouteLockedFollower()
+    private val turnSensors by lazy { MotionSensors(this) { rate, dt ->
+        routeFollower.onYaw(rate,dt)
+    } }
+    private var sensorsStarted=false
+    private fun startTurnSensors() {
+        if(!sensorsStarted) { turnSensors.start(); sensorsStarted=true }
+    }
+    private fun stopTurnSensors() {
+        if(sensorsStarted) { turnSensors.stop(); sensorsStarted=false }
+    }
     private var requestingRoute=false
     private var routeGeneration=0
     private var active=false
@@ -607,6 +618,7 @@ class NavigatorActivity : Activity() {
             result.fold(
                 onSuccess={value->
                     plan=value
+                    routeFollower.bind(value,currentFix())
                     State.activeRouting=active
                     pickStatus.text="Маршрут построен. "+(value.lengthKm).roundToInt()+" км"
                     if(active) speak("Маршрут обновлён")
@@ -649,6 +661,8 @@ class NavigatorActivity : Activity() {
             return
         }
         val fix=currentFix()
+        routeFollower.bind(route,fix)
+        startTurnSensors()
         val userPoint=fix?.let{RoutingEngine.Point(it.lat,it.lon)}
         val nearest=userPoint?.let{route.progress(it).nearestShapeIndex}?:0
         val ahead=upcomingCourse(route,nearest)
@@ -666,6 +680,8 @@ class NavigatorActivity : Activity() {
     }
 
     private fun stopGuidance() {
+        stopTurnSensors()
+        routeFollower.reset()
         active=false
         State.activeRouting=false
         map.stopRouteGuidance()
@@ -741,9 +757,25 @@ class NavigatorActivity : Activity() {
         override fun run() {
             AirAlerts.refreshIfDue()
             updateAlertIndicator()
-            val fix=currentFix()
+            val rawFix=currentFix()
             val route=plan
             val speed=liveCarSpeed()
+            val now=SystemClock.elapsedRealtime()
+            val obdFresh=State.speedUpdatedElapsedMs>0L &&
+                now-State.speedUpdatedElapsedMs<3500L
+            val obd=State.obdSpeedKmh()
+            val alert=AirAlerts.autoNavigationAlertActive()
+            if(active && route!=null)routeFollower.bind(route,rawFix)
+            val estimate=if(active && route!=null)routeFollower.update(
+                now,obd,obdFresh,rawFix,State.networkFix,alert) else null
+            val gpsHealthy=rawFix!=null && rawFix.source=="GPS" &&
+                rawFix.accuracy<=25f && !alert &&
+                (State.gpsSpeedKmh==null || State.gpsSpeedKmh!!<=180.0) &&
+                (estimate==null || RoutingEngine.meters(
+                    RoutingEngine.Point(rawFix.lat,rawFix.lon),
+                    RoutingEngine.Point(estimate.lat,estimate.lon))<65.0)
+            val fix=if(active && route!=null && !gpsHealthy)
+                estimate?:rawFix else rawFix
             val routeProgress=if(route!=null && fix!=null)
                 route.progress(RoutingEngine.Point(fix.lat,fix.lon)) else null
             val routeDirection=route?.let {
@@ -751,8 +783,10 @@ class NavigatorActivity : Activity() {
             }
             map.updateFromNavigation(fix,route?.points?:emptyList(),
                 selectedDestination,manualOrigin,speed,routeDirection,active)
-            source.text=State.sourceDescription+" · "+
-                if(State.dr)"DR + OBD" else "обычное местоположение"
+            source.text=if(active && estimate!=null && !gpsHealthy)
+                routeFollower.status+" · оценочная позиция (не GPS)"
+            else State.sourceDescription+" · "+
+                (if(State.dr)"DR + OBD" else "обычное местоположение")
             if(route!=null) {
                 if(fix!=null) {
                     val progress=routeProgress
@@ -770,7 +804,7 @@ class NavigatorActivity : Activity() {
                     if(active) {
                         maybeSpeakManeuver(progress)
                         val now=SystemClock.elapsedRealtime()
-                        if(progress.lateralMeters>max(120.0,fix.accuracy*2.3) &&
+                        if(fix.source=="GPS" && progress.lateralMeters>max(120.0,fix.accuracy*2.3) &&
                             now-lastRerouteMs>65_000L && !requestingRoute &&
                             fix.accuracy<=90f && fix.source!="Ручная точка" &&
                             fix.source!="Ручной старт") {
@@ -789,14 +823,17 @@ class NavigatorActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        if(active)startTurnSensors()
         handler.removeCallbacks(refresh)
         handler.post(refresh)
     }
     override fun onPause() {
+        stopTurnSensors()
         handler.removeCallbacks(refresh)
         super.onPause()
     }
     override fun onDestroy() {
+        stopTurnSensors()
         handler.removeCallbacks(refresh)
         tts?.stop()
         tts?.shutdown()
