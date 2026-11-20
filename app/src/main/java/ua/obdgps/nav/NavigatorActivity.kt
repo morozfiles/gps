@@ -1004,6 +1004,21 @@ class NavigatorActivity : Activity() {
             State.NavFix(fallback.lat,fallback.lon,ahead,90f,
                 "Старт маршрута",SystemClock.elapsedRealtime()) else null
         lastVoiceKey=""
+        // "Start guidance" is an explicit request to actually navigate.
+        // If GNSS has gone away but Vgate still sends speed, start
+        // OBD/gyro DR immediately instead of showing a static route.
+        // NavService will use a fresh independent network/manual fix or
+        // the driver-selected route start when no fix is available.
+        val now=SystemClock.elapsedRealtime()
+        val obdAvailable=State.obdSpeedKmh()?.let{it.isFinite()}==true &&
+            State.speedUpdatedElapsedMs>0L &&
+            now-State.speedUpdatedElapsedMs in 0L..3500L
+        val reliableGps=fix!=null &&
+            fix.source in setOf("GPS","Fused Android") &&
+            now-fix.elapsedMs in 0L..6000L
+        if(!reliableGps && obdAvailable && !State.dr)
+            sendService(NavService.START_ROUTE_DR)
+        lastVoiceKey=""
         pickStatus.text=if(fix==null)
             "Маршрут впереди. Нет свежих координат — показан старт маршрута"
         else "Ведение: слежение за автомобилем и направлением маршрута"
