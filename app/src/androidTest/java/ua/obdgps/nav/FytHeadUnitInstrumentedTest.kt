@@ -66,6 +66,37 @@ class FytHeadUnitInstrumentedTest {
         }
     }
 
+    @Test fun comparisonAcceptsFreshIndependentNetworkFixOneKilometreAway(){
+        val clock=android.os.SystemClock.elapsedRealtime()
+        val comparison=IndependentNetworkDr()
+        comparison.start(50.4501,30.5234,0.0,clock)
+        val correction=android.location.Location(
+            android.location.LocationManager.NETWORK_PROVIDER).apply{
+            latitude=50.4591 // about 1 km north
+            longitude=30.5234
+            accuracy=20f
+            elapsedRealtimeNanos=android.os.SystemClock.elapsedRealtimeNanos()
+        }
+        val approved=comparison.onIndependentNetworkLocation(
+            correction,"Wi-Fi/сеть",android.os.SystemClock.elapsedRealtime(),
+            gyroFresh=false)
+        assertTrue("Precise network correction at 1 km must be accepted",
+            approved)
+        assertEquals(1,comparison.correctionCount)
+        val raw=comparison.trainingPose!!
+        val blue=comparison.pose!!
+        val rawFix=android.location.Location("training").apply{
+            latitude=raw.lat;longitude=raw.lon
+        }
+        val blueFix=android.location.Location("blue").apply{
+            latitude=blue.lat;longitude=blue.lon
+        }
+        assertTrue("Raw training DR must not be snapped to the network",
+            rawFix.distanceTo(correction)>900f)
+        assertTrue("Blue display DR should follow the accurate network fix",
+            blueFix.distanceTo(correction)<200f)
+    }
+
     @Test fun routeAndGuidanceAreStoredForHeadunitWakeWithoutInternet(){
         val context=InstrumentationRegistry.getInstrumentation().targetContext
         FytRouteStore.clear(context)
