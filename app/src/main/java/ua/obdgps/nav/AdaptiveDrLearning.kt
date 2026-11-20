@@ -37,6 +37,10 @@ internal class AdaptiveDrLearning(context:Context) {
     private val outputBias=DoubleArray(2)
     private var speedExamples=0
     private var yawExamples=0
+    private var observedLeft=0
+    private var observedRight=0
+    private val turnCounter=TrustedTurnCounter()
+    private var lastObservedFix:Location?=null
     private val samples=Array(3){IntArray(3)}
     private val positionError=Array(3){DoubleArray(3)}
     private val distanceScaleSum=Array(3){DoubleArray(3)}
@@ -54,7 +58,11 @@ internal class AdaptiveDrLearning(context:Context) {
     init { load() }
 
     /** Do not connect examples across a spoof/quarantine or test restart. */
-    fun resetSegment(){lastPair=null}
+    fun resetSegment(){
+        lastPair=null
+        lastObservedFix=null
+        turnCounter.reset()
+    }
 
     /** Explainability: how many straight/left/right examples were learned. */
     fun status():String{
@@ -64,8 +72,9 @@ internal class AdaptiveDrLearning(context:Context) {
             "дистанция готова" else "дистанция: $speedExamples/20"
         val turns=if(yawExamples>=10)"повороты готовы"
             else "повороты: $yawExamples/10"
-        return "ИИ: $total участков · прямо ${count[0]}, влево ${count[1]}, "+
-            "вправо ${count[2]} · $readiness · $turns"
+        return "ИИ: $readiness · $turns · "+
+            "GPS-повороты: ←$observedLeft / →$observedRight"+
+            " · обучено: прямо ${count[0]}, лево ${count[1]}, право ${count[2]}"
     }
 
     fun detail():String {
@@ -85,6 +94,10 @@ internal class AdaptiveDrLearning(context:Context) {
                     "${"%.3f".format(java.util.Locale.US,factor)}×")
             }
         }
+        report.add("Повороты, замеченные GPS: влево $observedLeft, "+
+            "вправо $observedRight. Это НЕ калибровка гироскопа.")
+        if(yawExamples==0)report.add("Угол ИИ обучается только когда "+
+            "гироскоп регистрирует такой же поворот, как GPS.")
         if(speedExamples>=20) {
             val straight=speedGain(45.0,0.0)
             report.add("Нейросеть, прямая 45 км/ч: "+
@@ -118,11 +131,16 @@ internal class AdaptiveDrLearning(context:Context) {
         gpsSampleCount:Int, now:Long=SystemClock.elapsedRealtime(),
         trustedExternalMock:Boolean=false
     ){
-        if(dr==null || !gps.hasAccuracy() || gps.accuracy>12f ||
+        // Count real turns from ACCEPTED GNSS courses separately from
+        // gyroscope learning. FYT firmware may expose no physical gyro.
+        // Counting a GPS turn must never silently train a missing sensor.
+        observeGpsTurn(gps,obdKmh,gpsSampleCount,now,
+            trustedExternalMock)
+        if(dr==null || !gps.hasAccuracy() || gps.accuracy>18f ||
             gps.accuracy<=0f || gpsSampleCount<3 ||
-            !gps.hasSpeed() || gps.speed*3.6f !in 12f..130f ||
-            obdKmh==null || obdKmh !in 12.0..130.0 ||
-            abs(gps.speed*3.6-obdKmh)>max(9.0,obdKmh*0.23) ||
+            !gps.hasSpeed() || gps.speed*3.6f !in 8f..130f ||
+            obdKmh==null || obdKmh !in 8.0..130.0 ||
+            abs(gps.speed*3.6-obdKmh)>max(12.0,obdKmh*0.28) ||
             // GM906BT's companion publishes Android mock GPS. Allow it
             // ONLY after NavService's spoof/route/jump/OBD checks accepted
             // this fix and explicitly identified the external input.
@@ -135,12 +153,10 @@ internal class AdaptiveDrLearning(context:Context) {
             latitude=dr.lat
             longitude=dr.lon
         }
-        // Do not learn after DR has diverged too far from trusted GNSS;
-        // the distance could be from a false course or network adjustment.
-        if(measurement.distanceTo(gps)>65f){
-            lastPair=null
-            return
-        }
+        // Do NOT reject a short OBD/gyro learning segment merely because
+        // the entire raw DR track is 65m (or 1km) from GPS. Relative
+        // movement can still calibrate speed. Raw trainingPose is never
+        // network-corrected, unlike the visible blue comparison trace.
         val prior=lastPair
         if(prior==null){
             lastPair=PairSample(Location(gps),dr,now,networkCorrections)
@@ -149,8 +165,9 @@ internal class AdaptiveDrLearning(context:Context) {
         val elapsed=(now-prior.timestamp)/1000.0
         if(elapsed<4.0)return
         lastPair=PairSample(Location(gps),dr,now,networkCorrections)
-        if(elapsed>14.0 || prior.networkCorrections!=networkCorrections)
-            return
+        // Corrections affect the BLUE trace, not the untouched training
+        // estimator. They must not break otherwise valid GPS-vs-OBD pairs.
+        if(elapsed>14.0)return
         val gpsDistance=prior.gps.distanceTo(gps).toDouble()
         val from=Location("independent-dr").apply {
             latitude=prior.dr.lat; longitude=prior.dr.lon
@@ -159,12 +176,12 @@ internal class AdaptiveDrLearning(context:Context) {
             latitude=dr.lat; longitude=dr.lon
         }
         val drDistance=from.distanceTo(to).toDouble()
-        if(gpsDistance<18.0 || drDistance<18.0 ||
-            gpsDistance/elapsed*3.6 !in 12.0..130.0)return
+        if(gpsDistance<15.0 || drDistance<15.0 ||
+            gpsDistance/elapsed*3.6 !in 8.0..130.0)return
         val ratio=gpsDistance/drDistance
         // Reject apparent gains produced by GNSS jitter, a teleport or
         // an already incorrect DR heading. No outlier may train the model.
-        if(ratio !in 0.88..1.12)return
+        if(ratio !in 0.82..1.18)return
 
         val gpsTurn=if(gps.hasBearing() && prior.gps.hasBearing() &&
             (!gps.hasBearingAccuracy() || gps.bearingAccuracyDegrees<18f) &&
@@ -209,11 +226,53 @@ internal class AdaptiveDrLearning(context:Context) {
         }
     }
 
+    private fun observeGpsTurn(
+        gps:Location,obdKmh:Double?,gpsSampleCount:Int,now:Long,
+        trustedExternalMock:Boolean
+    ) {
+        if(!gps.hasAccuracy() || gps.accuracy !in 1f..30f ||
+            gpsSampleCount<2 ||
+            (gps.isMock && !trustedExternalMock) ||
+            GpsSpoofGuard.isLima(gps.latitude,gps.longitude) ||
+            !gps.hasSpeed() || gps.speed*3.6 !in 5.0..135.0 ||
+            obdKmh==null || obdKmh !in 5.0..135.0 ||
+            abs(gps.speed*3.6-obdKmh)>max(14.0,obdKmh*0.40)){
+            turnCounter.reset()
+            lastObservedFix=null
+            return
+        }
+        val previous=lastObservedFix
+        var course=if(gps.hasBearing() &&
+            (!gps.hasBearingAccuracy() ||
+                gps.bearingAccuracyDegrees<=30f))
+            gps.bearing.toDouble() else Double.NaN
+        if(!course.isFinite() && previous!=null &&
+            previous.distanceTo(gps)>=max(16f,
+                (gps.accuracy+previous.accuracy)*1.5f)){
+            course=previous.bearingTo(gps).toDouble()
+        }
+        lastObservedFix=Location(gps)
+        if(!course.isFinite())return
+        when(turnCounter.observe(course,now)){
+            TrustedTurnCounter.Direction.LEFT->{
+                observedLeft++
+                save()
+            }
+            TrustedTurnCounter.Direction.RIGHT->{
+                observedRight++
+                save()
+            }
+            null->{}
+        }
+    }
+
     fun save(){
         val root=JSONObject()
             .put("version",1)
             .put("speed",speedExamples)
             .put("yaw",yawExamples)
+            .put("observedLeft",observedLeft)
+            .put("observedRight",observedRight)
             .put("w1",matrixToJson(inputWeights))
             .put("b1",vectorToJson(hiddenBias))
             .put("w2",matrixToJson(outputWeights))
@@ -350,6 +409,8 @@ internal class AdaptiveDrLearning(context:Context) {
             }
             speedExamples=root.getInt("speed").coerceIn(0,100000)
             yawExamples=root.getInt("yaw").coerceIn(0,100000)
+            observedLeft=root.optInt("observedLeft",0).coerceIn(0,100000)
+            observedRight=root.optInt("observedRight",0).coerceIn(0,100000)
             require(speedExamples>=yawExamples)
         }.onFailure{
             // Corrupt model fails closed: disable trained corrections until
