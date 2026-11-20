@@ -3,6 +3,8 @@ package ua.obdgps.nav
 import android.app.Activity
 import android.app.AlertDialog
 import android.content.Intent
+import android.content.ClipboardManager
+import android.location.Geocoder
 import android.net.Uri
 import android.graphics.Color
 import android.graphics.Typeface
@@ -33,6 +35,7 @@ import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Locale
+import java.util.concurrent.Executors
 import kotlin.math.*
 
 /**
@@ -48,6 +51,10 @@ class NavigatorActivity : Activity() {
     private val handler=Handler(Looper.getMainLooper())
     private val engine=RoutingEngine()
     private val placeSearch=PlaceSearch(this)
+    private val googleLinkWorker=Executors.newSingleThreadExecutor { task ->
+        Thread(task,"Google-Maps-Link").apply{isDaemon=true}
+    }
+    private var googleLinkGeneration=0
     private lateinit var map:InertialTrackMapView
     private lateinit var summary:TextView
     private lateinit var instruction:TextView
@@ -55,6 +62,9 @@ class NavigatorActivity : Activity() {
     private lateinit var pickStatus:TextView
     private lateinit var voiceButton:Button
     private lateinit var alertsView:AirAlertIndicatorsView
+    private lateinit var speedValue:TextView
+    private lateinit var speedSource:TextView
+    private lateinit var learnedDrButton:Button
     private var selectedDestination:RoutingEngine.Point?=null
     private var manualOrigin:RoutingEngine.Point?=null
     private var plan:RoutingEngine.Route?=null
@@ -63,6 +73,9 @@ class NavigatorActivity : Activity() {
     private var active=false
     private var pickMode="DEST"
     private var lastRerouteMs=0L
+    private val inertialRouteMatcher=InertialRouteMatcher()
+    private var lastRouteWarning=InertialRouteMatcher.Warning.NONE
+    private var lastRouteWarningSpokenMs=0L
     private var lastVoiceKey=""
     private var voiceEnabled=false
     private val speechRequestCode=1638
@@ -116,6 +129,18 @@ class NavigatorActivity : Activity() {
             setOnClickListener{onClick()}
         }
 
+    private fun refreshLearnedDrButton(){
+        if(!::learnedDrButton.isInitialized)return
+        val enabled=State.learnedDrEnabled
+        learnedDrButton.text=if(enabled)"ИИ\nВКЛ" else "ИИ\nВЫКЛ"
+        learnedDrButton.contentDescription=if(enabled)
+            "Выключить нейросетевые поправки к инерциальной навигации"
+        else "Включить нейросетевые поправки к инерциальной навигации"
+        (learnedDrButton.background as? GradientDrawable)?.setColor(
+            if(enabled)Color.argb(228,23,99,128)
+            else Color.argb(164,30,39,53))
+    }
+
     private fun label(value:String,size:Float,color:Int=textColor)=TextView(this).apply {
         text=value
         textSize=size
@@ -155,21 +180,8 @@ class NavigatorActivity : Activity() {
             }
         }
 
-        val title=LinearLayout(this).apply {
-            orientation=LinearLayout.HORIZONTAL
-            gravity=Gravity.CENTER_VERTICAL
-        }
-        title.addView(label("Навигатор · OBD GPS",17f).apply {
-            typeface=Typeface.DEFAULT_BOLD
-            isSingleLine=true
-            ellipsize=TextUtils.TruncateAt.END
-        },LinearLayout.LayoutParams(0,LinearLayout.LayoutParams.WRAP_CONTENT,1f))
-        alertsView=AirAlertIndicatorsView(this)
-        title.addView(alertsView,LinearLayout.LayoutParams(
-            dp(168),dp(53)))
-        root.addView(title)
-        updateAlertIndicator()
-
+        // Remove the 53dp title row: the map now occupies its space.
+        // Air-alert status remains accessible as a floating map overlay.
         source=label("Источники координат: ожидание",12f,secondary)
         source.setPadding(dp(2),dp(1),dp(2),dp(2))
         source.maxLines=1
@@ -190,13 +202,25 @@ class NavigatorActivity : Activity() {
                 pickMode="START"
                 pickStatus.text="Коснись карты: отметить старт автомобиля"
             },
-            styledButton("Поиск адреса") {showAddressSearch()}
+            styledButton("Поиск адреса") {showAddressSearch()},
+            styledButton("Ссылка Maps") {showGoogleMapsLinkDialog()}
         ))
 
         val mapContainer=FrameLayout(this)
         map=InertialTrackMapView(this)
         map.enableNavigationMode{lat,lon->onMapPicked(lat,lon)}
         mapContainer.addView(map)
+        alertsView=AirAlertIndicatorsView(this).apply{
+            background=GradientDrawable().apply{
+                cornerRadius=dp(10).toFloat()
+                setColor(Color.argb(213,27,31,38))
+            }
+        }
+        mapContainer.addView(alertsView,FrameLayout.LayoutParams(
+            dp(168),dp(53),Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply{
+                topMargin=dp(5)
+        })
+        updateAlertIndicator()
         val zoom=LinearLayout(this).apply {
             orientation=LinearLayout.VERTICAL
             setPadding(dp(2),dp(2),dp(2),dp(2))
@@ -207,6 +231,70 @@ class NavigatorActivity : Activity() {
             LinearLayout.LayoutParams(dp(45),dp(45)).apply{topMargin=dp(4)})
         zoom.addView(mapControl("◎"){map.followCar()},
             LinearLayout.LayoutParams(dp(45),dp(45)).apply{topMargin=dp(4)})
+        // Match the map controls' dimensions and outline. This is a
+        // read-only speedometer, not a button: the same speed reading is
+        // passed to the map's camera/automatic zoom on each refresh.
+        val speedBadge=LinearLayout(this).apply{
+            orientation=LinearLayout.VERTICAL
+            gravity=Gravity.CENTER
+            minimumHeight=0
+            background=GradientDrawable().apply{
+                cornerRadius=dp(11).toFloat()
+                setColor(Color.argb(164,30,39,53))
+                setStroke(dp(1),Color.argb(160,210,225,244))
+            }
+            setPadding(0,0,0,0)
+        }
+        speedValue=label("—",18f,Color.WHITE).apply{
+            typeface=Typeface.DEFAULT_BOLD
+            gravity=Gravity.CENTER
+            includeFontPadding=false
+            isSingleLine=true
+        }
+        speedBadge.addView(speedValue,LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,LinearLayout.LayoutParams.WRAP_CONTENT))
+        speedBadge.addView(label("км/ч",8f,Color.rgb(220,233,246)).apply{
+            gravity=Gravity.CENTER
+            includeFontPadding=false
+            isSingleLine=true
+        },LinearLayout.LayoutParams(-1,-2))
+        speedSource=label("нет",8f,Color.rgb(170,191,210)).apply{
+            gravity=Gravity.CENTER
+            includeFontPadding=false
+            isSingleLine=true
+        }
+        speedBadge.addView(speedSource,LinearLayout.LayoutParams(-1,-2))
+        speedBadge.contentDescription="Скорость навигатора неизвестна"
+        zoom.addView(speedBadge,
+            LinearLayout.LayoutParams(dp(45),dp(45)).apply{topMargin=dp(4)})
+        State.learnedDrEnabled=NavigatorPrefs(this).learnedDrEnabled
+        learnedDrButton=mapControl("ИИ\nВЫКЛ"){
+            val enabled=!State.learnedDrEnabled
+            State.learnedDrEnabled=enabled
+            NavigatorPrefs(this).learnedDrEnabled=enabled
+            refreshLearnedDrButton()
+            Toast.makeText(this,
+                (if(enabled)"ИИ-поправки включены. " else "ИИ-поправки выключены. ")+
+                    State.learnedDrStatus,Toast.LENGTH_LONG).show()
+        }.apply {
+            textSize=11f
+            maxLines=2
+            setOnLongClickListener {
+                AlertDialog.Builder(this@NavigatorActivity)
+                    .setTitle("Профиль обучения GPS / инерциальной системы")
+                    .setMessage(State.learnedDrStatus+"\n\n"+
+                        State.learnedDrDetail+
+                        "\n\nОбучение идёт только в тесте двух треков. "+
+                        "GPS во время DR не используется для нейросетевых поправок.")
+                    .setPositiveButton("Закрыть",null).show()
+                true
+            }
+        }
+        zoom.addView(learnedDrButton,
+            LinearLayout.LayoutParams(dp(45),dp(45)).apply{
+                topMargin=dp(4)
+            })
+        refreshLearnedDrButton()
         mapContainer.addView(zoom,FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.WRAP_CONTENT,FrameLayout.LayoutParams.WRAP_CONTENT,
             Gravity.RIGHT or Gravity.TOP).apply{setMargins(0,dp(8),dp(7),0)})
@@ -281,7 +369,7 @@ class NavigatorActivity : Activity() {
             startActivity(Intent(this,OfflineMapsActivity::class.java))
         }.apply{
             textSize=23f
-            contentDescription="Сохранённые офлайн-карты и импорт области"
+            contentDescription="Карта Украины и офлайн-база адресов"
         },FrameLayout.LayoutParams(dp(44),dp(44),
             Gravity.TOP or Gravity.LEFT).apply{
             setMargins(dp(7),dp(32),0,0)
@@ -309,6 +397,252 @@ class NavigatorActivity : Activity() {
                 tts?.language=Locale("ru","RU")
             }
         }
+        if(savedInstanceState==null)handleGoogleMapsIntent(intent)
+    }
+
+    /**
+     * Google Maps owns the link domains, so Android 12+ may open links in
+     * Google Maps/browser unless the user explicitly approves our app.
+     * Text sharing and manual paste work without domain verification.
+     */
+    private fun showGoogleMapsLinkDialog() {
+        val field=EditText(this).apply {
+            hint="https://maps.app.goo.gl/... или google.com/maps/..."
+            isSingleLine=false
+            minLines=2
+            maxLines=4
+            textSize=14f
+            inputType=InputType.TYPE_CLASS_TEXT or
+                InputType.TYPE_TEXT_VARIATION_URI
+            setTextColor(textColor)
+            setHintTextColor(secondary)
+            setSelectAllOnFocus(true)
+            setPadding(dp(12),dp(12),dp(12),dp(12))
+        }
+        // Clipboard is accessed only after the user taps "Ссылка Maps",
+        // not silently in the background; prefill when it is a Maps link.
+        val pasted=runCatching {
+            val clipboard=getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
+            clipboard.primaryClip?.takeIf{it.itemCount>0}
+                ?.getItemAt(0)?.coerceToText(this)?.toString()
+        }.getOrNull()
+        pasted?.let{GoogleMapsLinks.extract(it)}?.let{
+            field.setText(it)
+            field.setSelection(field.text.length)
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Открыть ссылку Google Maps")
+            .setMessage("Вставь ссылку на место или маршрут. "+
+                "Короткие ссылки требуют интернета для раскрытия.")
+            .setView(field)
+            .setPositiveButton("Открыть"){_,_->
+                openGoogleMapsLink(field.text.toString())
+            }
+            .setNegativeButton("Отмена",null).show()
+    }
+
+    private fun handleGoogleMapsIntent(received:Intent?) {
+        if(received==null)return
+        val raw=when(received.action) {
+            Intent.ACTION_VIEW->received.dataString
+            Intent.ACTION_SEND->if(received.type=="text/plain")
+                received.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString()
+                else null
+            else->null
+        }
+        if(!raw.isNullOrBlank())openGoogleMapsLink(raw)
+    }
+
+    override fun onNewIntent(intent:Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleGoogleMapsIntent(intent)
+    }
+
+    private fun openGoogleMapsLink(raw:String) {
+        val found=GoogleMapsLinks.parse(raw)
+        if(found==null) {
+            pickStatus.text="Не удалось определить место из ссылки Google Maps"
+            AlertDialog.Builder(this)
+                .setTitle("Ссылка не распознана")
+                .setMessage("Нужна ссылка Google Maps на место, "+
+                    "координаты или маршрут. Для короткой ссылки можно "+
+                    "использовать «Поделиться» в Google Maps. "+
+                    "Ссылка с одним только идентификатором Place ID "+
+                    "без названия/координат не подходит.")
+                .setPositiveButton("Вставить другую"){_,_->
+                    showGoogleMapsLinkDialog()}
+                .setNegativeButton("Закрыть",null).show()
+            return
+        }
+        val generation=++googleLinkGeneration
+        if(found is GoogleMapsLinks.Target.ShortUrl){
+            pickStatus.text="Раскрываю короткую ссылку Google Maps..."
+            googleLinkWorker.execute{
+                val result=runCatching{GoogleMapsLinks.resolveShort(found.url)}
+                handler.post{
+                    if(generation!=googleLinkGeneration || isFinishing || isDestroyed)
+                        return@post
+                    result.fold(
+                        onSuccess={applyGoogleMapsTarget(it,generation)},
+                        onFailure={
+                            showMapsLinkError("Короткая ссылка не открылась: "+
+                                (it.localizedMessage?:"нет ответа Google Maps"))
+                        }
+                    )
+                }
+            }
+        } else applyGoogleMapsTarget(found,generation)
+    }
+
+    private fun showMapsLinkError(message:String) {
+        pickStatus.text=message.take(200)
+        AlertDialog.Builder(this).setTitle("Google Maps")
+            .setMessage(message+"\n\nПроверь интернет либо вставь полную "+
+                "ссылку с координатами.")
+            .setPositiveButton("Вставить ссылку"){_,_->
+                showGoogleMapsLinkDialog()}
+            .setNegativeButton("Закрыть",null).show()
+    }
+
+    private fun applyGoogleMapsTarget(
+        target:GoogleMapsLinks.Target,generation:Int
+    ){
+        if(generation!=googleLinkGeneration)return
+        when(target) {
+            is GoogleMapsLinks.Target.Coordinate -> {
+                setGoogleMapsDestination(RoutingEngine.Point(target.lat,target.lon),
+                    target.label,target.approximate)
+            }
+            is GoogleMapsLinks.Target.Address -> {
+                lookupGoogleMapsAddress(target.query,generation)
+            }
+            is GoogleMapsLinks.Target.ShortUrl -> {
+                showMapsLinkError("Ссылка не содержит раскрываемого места назначения.")
+            }
+        }
+    }
+
+    private fun lookupGoogleMapsAddress(query:String,generation:Int){
+        if(query.isBlank()) {
+            showMapsLinkError("В ссылке Google Maps нет адреса.")
+            return
+        }
+        // Google Maps q= can contain POI + full address + postcode.
+        // Photon returns no results for many such strings: retry the
+        // shorter "POI, city" and "street, number, city" queries.
+        val variants=GoogleMapsLinks.addressVariants(query)
+        if(variants.isEmpty()){
+            showMapsLinkError("В ссылке Google Maps нет подходящего адреса.")
+            return
+        }
+        fun attempt(index:Int,lastError:String?=null){
+            if(generation!=googleLinkGeneration || isFinishing || isDestroyed)
+                return
+            if(index>=variants.size){
+                showMapsLinkError("Место «"+query+"» не найдено."+
+                    (lastError?.let{" Причина: "+it}.orEmpty()))
+                return
+            }
+            val candidate=variants[index]
+            pickStatus.text="Поиск места из Google Maps ("+
+                (index+1)+"/"+variants.size+"): "+candidate.take(65)
+            if(PlaceSearch.isAllowedAddress(candidate)){
+                placeSearch.search(candidate){result->
+                    if(generation!=googleLinkGeneration || isFinishing ||
+                        isDestroyed)return@search
+                    val matches=result.getOrNull().orEmpty()
+                    if(matches.isNotEmpty())
+                        chooseGoogleMapsAddress(matches.map{
+                            it.label to it.coordinate
+                        },candidate)
+                    else attempt(index+1,result.exceptionOrNull()
+                        ?.localizedMessage?:lastError)
+                }
+            }else{
+                // Android Geocoder supports Latin and mixed-script names.
+                googleLinkWorker.execute{
+                    val result=runCatching{
+                        @Suppress("DEPRECATION")
+                        val addresses=Geocoder(this,Locale("uk","UA"))
+                            .getFromLocationName(candidate,6).orEmpty()
+                        addresses.filter{
+                            it.hasLatitude() && it.hasLongitude() &&
+                                it.latitude in -85.0..85.0 &&
+                                it.longitude in -180.0..180.0
+                        }.map{
+                            (it.getAddressLine(0)?:candidate) to
+                                RoutingEngine.Point(it.latitude,it.longitude)
+                        }
+                    }
+                    handler.post{
+                        if(generation!=googleLinkGeneration ||
+                            isFinishing || isDestroyed)return@post
+                        val matches=result.getOrNull().orEmpty()
+                        if(matches.isNotEmpty())
+                            chooseGoogleMapsAddress(matches,candidate)
+                        else attempt(index+1,result.exceptionOrNull()
+                            ?.localizedMessage?:lastError)
+                    }
+                }
+            }
+        }
+        attempt(0)
+    }
+
+    private fun chooseGoogleMapsAddress(
+        places:List<Pair<String,RoutingEngine.Point>>,query:String
+    ){
+        val choices=places.filter{RoutingEngine.valid(it.second)}
+            .distinctBy{it.second.lat to it.second.lon}.take(6)
+        if(choices.isEmpty()){
+            showMapsLinkError("Место «"+query+"» не удалось определить. "+
+                "Нужна полная ссылка с координатами или доступ к поиску адресов.")
+            return
+        }
+        if(choices.size==1) {
+            setGoogleMapsDestination(choices.first().second,
+                choices.first().first,false)
+        }else{
+            // Android AlertDialog cannot display setMessage() and setItems()
+            // together: the message view takes precedence and hides the list.
+            // Use a descriptive title and a real visible list of choices.
+            AlertDialog.Builder(this)
+                .setTitle("Выбери подходящий адрес")
+                .setItems(choices.map{it.first}.toTypedArray()){_,which->
+                    val selected=choices[which]
+                    setGoogleMapsDestination(selected.second,selected.first,false)
+                }
+                .setNegativeButton("Отмена",null).show()
+        }
+    }
+
+    private fun setGoogleMapsDestination(
+        point:RoutingEngine.Point,label:String,approximate:Boolean
+    ){
+        if(!RoutingEngine.valid(point)) {
+            showMapsLinkError("В ссылке некорректные координаты.")
+            return
+        }
+        // A received link is a new user-selected target. Cancel any old
+        // routing request and active route before importing it.
+        stopGuidance()
+        val cleaned=PlaceSearch.cyrillicLabel(label).take(120)
+        selectedDestination=point
+        State.navigationDestination=point.lat to point.lon
+        pickMode="DEST"
+        map.centerAt(point.lat,point.lon)
+        NavigatorPrefs(this).rememberAddress(NavigatorPrefs.RecentAddress(
+            cleaned,point.lat,point.lon))
+        pickStatus.text=(if(approximate)"Примерный центр карты: "
+            else "Цель из Google Maps: ")+cleaned+
+            " · "+format(point.lat)+", "+format(point.lon)
+        if(approximate)Toast.makeText(this,
+            "Получен центр карты, а не точная метка места. Проверь цель.",
+            Toast.LENGTH_LONG).show()
+        if(currentFix()!=null || manualOrigin!=null)buildRoute(false)
+        else summary.text="Цель открыта. Для маршрута нужна текущая "+
+            "позиция или ручной старт."
     }
 
     private fun onMapPicked(lat:Double,lon:Double) {
@@ -607,7 +941,10 @@ class NavigatorActivity : Activity() {
             result.fold(
                 onSuccess={value->
                     plan=value
+                    inertialRouteMatcher.reset()
+                    lastRouteWarning=InertialRouteMatcher.Warning.NONE
                     State.activeRouting=active
+                    State.gpsFilterRoutePoints=if(active)value.points else emptyList()
                     pickStatus.text="Маршрут построен. "+(value.lengthKm).roundToInt()+" км"
                     if(active) speak("Маршрут обновлён")
                 },
@@ -657,7 +994,30 @@ class NavigatorActivity : Activity() {
         // restore car-following and face down the planned route immediately.
         map.beginRouteGuidance(ahead,fallback)
         active=true
+        inertialRouteMatcher.reset()
+        lastRouteWarning=InertialRouteMatcher.Warning.NONE
         State.activeRouting=true
+        State.gpsFilterRoutePoints=route.points
+        // Preserve a driver-selected road anchor if GPS disappears before
+        // DR starts. This is never accepted as a trusted GPS coordinate.
+        State.routeDrSeed=if(fallback!=null && ahead!=null)
+            State.NavFix(fallback.lat,fallback.lon,ahead,90f,
+                "Старт маршрута",SystemClock.elapsedRealtime()) else null
+        lastVoiceKey=""
+        // "Start guidance" is an explicit request to actually navigate.
+        // If GNSS has gone away but Vgate still sends speed, start
+        // OBD/gyro DR immediately instead of showing a static route.
+        // NavService will use a fresh independent network/manual fix or
+        // the driver-selected route start when no fix is available.
+        val now=SystemClock.elapsedRealtime()
+        val obdAvailable=State.obdSpeedKmh()?.let{it.isFinite()}==true &&
+            State.speedUpdatedElapsedMs>0L &&
+            now-State.speedUpdatedElapsedMs in 0L..3500L
+        val reliableGps=fix!=null &&
+            fix.source in setOf("GPS","Fused Android") &&
+            now-fix.elapsedMs in 0L..6000L
+        if(!reliableGps && obdAvailable && !State.dr)
+            sendService(NavService.START_ROUTE_DR)
         lastVoiceKey=""
         pickStatus.text=if(fix==null)
             "Маршрут впереди. Нет свежих координат — показан старт маршрута"
@@ -667,7 +1027,11 @@ class NavigatorActivity : Activity() {
 
     private fun stopGuidance() {
         active=false
+        inertialRouteMatcher.reset()
+        lastRouteWarning=InertialRouteMatcher.Warning.NONE
         State.activeRouting=false
+        State.gpsFilterRoutePoints=emptyList()
+        State.routeDrSeed=null
         map.stopRouteGuidance()
         routeGeneration++
         requestingRoute=false
@@ -693,6 +1057,8 @@ class NavigatorActivity : Activity() {
                 lastVoiceKey="arrived"
                 active=false
                 State.activeRouting=false
+                State.gpsFilterRoutePoints=emptyList()
+                State.routeDrSeed=null
                 map.stopRouteGuidance()
             }
             return
@@ -724,16 +1090,20 @@ class NavigatorActivity : Activity() {
         }
     }
 
-    private fun liveCarSpeed():Double? {
+    private data class SpeedReading(val kmh:Double,val source:String)
+
+    private fun liveCarSpeed():SpeedReading? {
         val now=SystemClock.elapsedRealtime()
         // The corrected ELM327/OBD value is the primary speed source.
         val obd=State.obdSpeedKmh()
         if(obd!=null && obd.isFinite() && State.speedUpdatedElapsedMs>0L &&
-            now-State.speedUpdatedElapsedMs<3500L)return obd
-        // Real GPS velocity can drive the camera when OBD is disconnected.
+            now-State.speedUpdatedElapsedMs<3500L)
+            return SpeedReading(obd,"OBD")
+        // Real GPS velocity drives the camera if OBD is not fresh.
         val gps=State.gpsSpeedKmh
         if(gps!=null && gps.isFinite() && State.gpsSpeedUpdatedElapsedMs>0L &&
-            now-State.gpsSpeedUpdatedElapsedMs<6000L)return gps
+            now-State.gpsSpeedUpdatedElapsedMs<6000L)
+            return SpeedReading(gps,"GPS")
         return null
     }
 
@@ -743,20 +1113,45 @@ class NavigatorActivity : Activity() {
             updateAlertIndicator()
             val fix=currentFix()
             val route=plan
-            val speed=liveCarSpeed()
-            val routeProgress=if(route!=null && fix!=null)
-                route.progress(RoutingEngine.Point(fix.lat,fix.lon)) else null
+            val speedReading=liveCarSpeed()
+            val speed=speedReading?.kmh
+            speedValue.text=speed?.roundToInt()?.toString()?:"—"
+            speedSource.text=speedReading?.source?:"нет"
+            refreshLearnedDrButton()
+            speedValue.contentDescription=if(speedReading==null)
+                "Скорость недоступна" else
+                "Скорость "+speed!!.roundToInt()+" километров в час, "+
+                    speedReading.source
+            val now=SystemClock.elapsedRealtime()
+            // Inertial map matching is DISPLAY ONLY. The raw DR estimator
+            // and GPS anti-spoof checks never receive this route projection.
+            val matched=if(active && State.dr && route!=null && fix!=null)
+                inertialRouteMatcher.match(fix,route,
+                    if(speedReading?.source=="OBD")speed else null,now)
+                else {
+                    inertialRouteMatcher.reset()
+                    null
+                }
+            val displayFix=matched?.displayFix?:fix
+            val routeProgress=if(route!=null && displayFix!=null)
+                route.progress(RoutingEngine.Point(displayFix.lat,displayFix.lon))
+                else null
             val routeDirection=route?.let {
                 upcomingCourse(it,routeProgress?.nearestShapeIndex?:0)
             }
-            map.updateFromNavigation(fix,route?.points?:emptyList(),
+            map.updateFromNavigation(displayFix,route?.points?:emptyList(),
                 selectedDestination,manualOrigin,speed,routeDirection,active)
             source.text=State.sourceDescription+" · "+
-                if(State.dr)"DR + OBD" else "обычное местоположение"
+                (if(State.dr) {
+                    if(matched?.snapped==true)
+                        "DR + OBD · привязка к маршруту"
+                    else "DR + OBD · исходная позиция"
+                }else "обычное местоположение")
             if(route!=null) {
                 if(fix!=null) {
                     val progress=routeProgress
-                        ?:route.progress(RoutingEngine.Point(fix.lat,fix.lon))
+                        ?:route.progress(RoutingEngine.Point(displayFix!!.lat,
+                            displayFix.lon))
                     val distance=if(progress.remainingMeters>=1000)
                         String.format(Locale.getDefault(),"%.1f км",progress.remainingMeters/1000)
                     else progress.remainingMeters.roundToInt().toString()+" м"
@@ -768,16 +1163,37 @@ class NavigatorActivity : Activity() {
                                 it.instruction
                         }?:"Продолжай движение по маршруту")
                     if(active) {
-                        maybeSpeakManeuver(progress)
-                        val now=SystemClock.elapsedRealtime()
-                        if(progress.lateralMeters>max(120.0,fix.accuracy*2.3) &&
+                        val warning=matched?.warning
+                            ?:InertialRouteMatcher.Warning.NONE
+                        if(warning!=InertialRouteMatcher.Warning.NONE) {
+                            instruction.text=matched!!.warningText+
+                                ". Проверь направление и маршрут!"
+                            summary.text=if(warning==
+                                InertialRouteMatcher.Warning.WRONG_WAY)
+                                "⚠ Движение против направления маршрута"
+                            else "⚠ Сход с маршрута · "+
+                                (matched.rawDeviationMeters.roundToInt())+" м"
+                            if(warning!=lastRouteWarning ||
+                                now-lastRouteWarningSpokenMs>45_000L){
+                                speak(matched.warningText)
+                                lastRouteWarningSpokenMs=now
+                            }
+                        }else {
+                            maybeSpeakManeuver(progress)
+                        }
+                        lastRouteWarning=warning
+                        // Do not silently rebuild a route during DR. A raw
+                        // inertial departure must remain visible and warn,
+                        // not become a new automatically accepted route.
+                        if(!State.dr &&
+                            progress.lateralMeters>max(120.0,fix.accuracy*2.3) &&
                             now-lastRerouteMs>65_000L && !requestingRoute &&
                             fix.accuracy<=90f && fix.source!="Ручная точка" &&
                             fix.source!="Ручной старт") {
                             lastRerouteMs=now
                             buildRoute(true)
                         }
-                    }
+                    }else lastRouteWarning=InertialRouteMatcher.Warning.NONE
                 } else {
                     instruction.text="Нет свежего положения — маршрут сохранён"
                     summary.text="Ожидаем GPS/Wi-Fi или ручной старт"
@@ -797,9 +1213,18 @@ class NavigatorActivity : Activity() {
         super.onPause()
     }
     override fun onDestroy() {
+        // The UI owns the planned route; never leave a stale route-wide
+        // GPS exclusion corridor in the background service.
+        if(active){
+            State.activeRouting=false
+            State.gpsFilterRoutePoints=emptyList()
+            State.routeDrSeed=null
+        }
         handler.removeCallbacks(refresh)
         tts?.stop()
         tts?.shutdown()
+        googleLinkGeneration++
+        googleLinkWorker.shutdownNow()
         super.onDestroy()
     }
 

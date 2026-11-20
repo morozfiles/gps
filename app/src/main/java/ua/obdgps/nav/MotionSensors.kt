@@ -40,6 +40,7 @@ class MotionSensors(
     private var wasStopped=true
     private var lastMotionSpeed=0.0
     private var magnetometerPresent=false
+    private var compassCheckPassed=prefs.getBoolean("compassCheckPassed",false)
     private var magneticSampleMs=0L
     private var rotationHeadingAccuracyDeg=Double.NaN
     private var compassCheckStartMs=0L
@@ -67,6 +68,10 @@ class MotionSensors(
             return State.compassCalibrationText
         }
         compassCheckStartMs=SystemClock.elapsedRealtime()
+        compassCheckPassed=false
+        prefs.edit().putBoolean("compassCheckPassed",false).apply()
+        State.compassMagnetCheckPassed=false
+        State.compassCheckRunning=true
         compassCheckSamples=0
         for(i in 0..2){magnetMin[i]=Double.POSITIVE_INFINITY;magnetMax[i]=Double.NEGATIVE_INFINITY}
         State.compassCalibrationText="Проверка 15 с: вращай телефон восьмёркой вдали от металла"
@@ -75,6 +80,7 @@ class MotionSensors(
 
     private fun finishCompassCheck():String {
         compassCheckStartMs=0L
+        State.compassCheckRunning=false
         val ranges=(0..2).count{i->
             magnetMin[i].isFinite() && magnetMax[i].isFinite() &&
                 magnetMax[i]-magnetMin[i]>15.0
@@ -89,12 +95,22 @@ class MotionSensors(
             else ->
                 "Магнитный датчик проверен. Закрепи телефон и привяжи курс к GPS"
         }
+        compassCheckPassed=compassCheckSamples>=25 && ranges>=2 && compassReliable
+        prefs.edit().putBoolean("compassCheckPassed",compassCheckPassed).apply()
+        State.compassMagnetCheckPassed=compassCheckPassed
         State.compassCalibrationText=message
         return message
     }
 
+    /** Finish a failed compass check even when magnetometer samples stop arriving. */
+    fun updateCalibrationTimers(now:Long){
+        if(compassCheckStartMs!=0L && now-compassCheckStartMs>=15_000L)
+            finishCompassCheck()
+    }
+
     fun resetVehicleAlignment():String {
         carOffset=null
+        State.compassAligned=false
         prefs.edit().remove("carOffset").apply()
         alignmentSamples=0
         lastAlignmentSampleMs=0L
@@ -117,6 +133,31 @@ class MotionSensors(
 
     fun start() {
         magnetometerPresent=sm.getDefaultSensor(Sensor.TYPE_MAGNETIC_FIELD)!=null
+        State.sensorGyroAvailable=sm.getDefaultSensor(Sensor.TYPE_GYROSCOPE)!=null
+        State.sensorAccelAvailable=sm.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)!=null
+        State.sensorLinearAccelAvailable=
+            sm.getDefaultSensor(Sensor.TYPE_LINEAR_ACCELERATION)!=null
+        State.sensorGravityAvailable=
+            sm.getDefaultSensor(Sensor.TYPE_GRAVITY)!=null ||
+            State.sensorAccelAvailable
+        State.sensorCompassAvailable=magnetometerPresent &&
+            sm.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)!=null
+        State.gyroCalibrated=prefs.contains("yawBias") &&
+            yawBias.isFinite() && State.sensorGyroAvailable
+        State.accelCalibrated=prefs.contains("accelBias") &&
+            accelBias.isFinite() && State.sensorLinearAccelAvailable &&
+            State.sensorAccelAvailable
+        State.compassMagnetCheckPassed=compassCheckPassed
+        State.compassAligned=carOffset!=null
+        State.compassReliableNow=false
+        State.stationaryCalibrationRunning=false
+        State.compassCheckRunning=false
+        State.gyroSampleMs=0L
+        State.accelSampleMs=0L
+        State.compassSampleMs=0L
+        State.linearAccelerationMps2=Double.NaN
+        State.compassHeadingDeg=Double.NaN
+        State.compassFieldMicroTesla=Double.NaN
         State.compassCalibrationText="Магнитометр готов к проверке восьмёркой"
         State.compassAlignmentText=if(carOffset==null)
             "Курс автомобиля ещё не привязан. Доступна автопривязка по GPS"
@@ -134,16 +175,28 @@ class MotionSensors(
             Sensor.TYPE_ROTATION_VECTOR,Sensor.TYPE_MAGNETIC_FIELD)) {
             sm.getDefaultSensor(t)?.let { sm.registerListener(this,it,SensorManager.SENSOR_DELAY_GAME) }
         }
-        State.calibrationText=if(prefs.contains("yawBias")) "Калибровка выполнена" else "Не откалибровано"
+        State.calibrationText=if(State.gyroCalibrated && State.accelCalibrated)
+            "Гироскоп и акселерометр откалиброваны" else "Не откалибровано"
     }
 
-    fun stop() = sm.unregisterListener(this)
+     fun stop() = sm.unregisterListener(this)
 
     fun calibrate(speed: Int?, fresh: Boolean): String {
-        if (!fresh || speed != 0) return "Останови автомобиль: OBD должен показывать 0"
-        if(sm.getDefaultSensor(Sensor.TYPE_GYROSCOPE)==null || !gravityReady)
-            return "Гироскоп или датчик гравитации недоступен"
+        if(calibrationStart!=0L)return State.calibrationText
+        if (!fresh || speed != 0) {
+            State.calibrationText="Останови автомобиль: нужен свежий OBD со скоростью 0 км/ч"
+            return State.calibrationText
+        }
+        if(!State.sensorGyroAvailable || !gravityReady) {
+            State.calibrationText="Гироскоп или датчик гравитации недоступен"
+            return State.calibrationText
+        }
+        if(!State.sensorLinearAccelAvailable) {
+            State.calibrationText="Нет линейного ускорения: калибровка невозможна"
+            return State.calibrationText
+        }
         calibrationStart=SystemClock.elapsedRealtime()
+        State.stationaryCalibrationRunning=true
         gyroSamples=0;gyroSum=0.0;accelSamples=0;accelSum=0.0
         State.calibrationText="Калибровка: не двигай телефон 5 секунд"
         return State.calibrationText
@@ -152,19 +205,23 @@ class MotionSensors(
     fun finishCalibration(): String {
         if(calibrationStart==0L) return State.calibrationText
         calibrationStart=0L
+        State.stationaryCalibrationRunning=false
         if(gyroSamples<40 || accelSamples<20) {
             State.calibrationText="Мало данных: повтори калибровку"
             return State.calibrationText
         }
         val average=gyroSum/gyroSamples
-        if(!average.isFinite() || abs(average)>0.14) {
+        val accelAverage=accelSum/accelSamples
+        if(!average.isFinite() || !accelAverage.isFinite() || abs(average)>0.14) {
             State.calibrationText="Обнаружено движение: повтори калибровку"
             return State.calibrationText
         }
         yawBias=average
-        accelBias=accelSum/accelSamples
+        accelBias=accelAverage
         prefs.edit().putFloat("yawBias",yawBias.toFloat())
             .putFloat("accelBias",accelBias.toFloat()).apply()
+        State.gyroCalibrated=true
+        State.accelCalibrated=true
         State.calibrationText="Гироскоп и акселерометр откалиброваны"
         return State.calibrationText
     }
@@ -216,6 +273,7 @@ class MotionSensors(
         carOffset=if(previous==null)desired
             else wrapSigned(previous+0.10*wrapSigned(desired-previous))
         prefs.edit().putFloat("carOffset",carOffset!!.toFloat()).apply()
+        State.compassAligned=true
         State.compassAlignmentText="Привязка компаса к автомобилю выполнена и сохранена"
     }
 
@@ -271,8 +329,10 @@ class MotionSensors(
     }
 
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {
-        if(sensor?.type==Sensor.TYPE_MAGNETIC_FIELD)
+        if(sensor?.type==Sensor.TYPE_MAGNETIC_FIELD){
             magneticAccuracy=accuracy
+            State.compassReliableNow=compassReliable
+        }
     }
 
     override fun onSensorChanged(event: SensorEvent) {
@@ -287,6 +347,8 @@ class MotionSensors(
             }
             Sensor.TYPE_LINEAR_ACCELERATION -> {
                 val norm=sqrt((0..2).sumOf { i->event.values[i].toDouble().pow(2) })
+                State.accelSampleMs=SystemClock.elapsedRealtime()
+                State.linearAccelerationMps2=norm
                 if(calibrationStart!=0L) {accelSum+=norm;accelSamples++}
                 val corrected=(norm-accelBias).coerceAtLeast(0.0)
                 // Rotation matrix maps device acceleration to East/North/Up.
@@ -312,6 +374,9 @@ class MotionSensors(
                 magneticStrength=sqrt((0..2).sumOf{
                     i->event.values[i].toDouble().pow(2)
                 })
+                State.compassFieldMicroTesla=magneticStrength
+                State.compassSampleMs=magneticSampleMs
+                State.compassReliableNow=compassReliable
                 State.compassAccuracyText=
                     "Точность: ${accuracyLabel()}; поле: ${magneticStrength.toInt()} мкТ"
                 if(compassCheckStartMs!=0L) {
@@ -335,6 +400,8 @@ class MotionSensors(
                     event.values[4]>0f)
                     Math.toDegrees(event.values[4].toDouble()) else Double.NaN
                 trueNorth=wrap360(Math.toDegrees(orientation[0].toDouble())+declination)
+                State.compassHeadingDeg=compassBearing?:trueNorth
+                State.compassReliableNow=compassReliable
                 State.compassStatus=when {
                     !compassReliable -> "Компас: ${accuracyLabel()} / возможные помехи"
                     compassBearing!=null -> "Курс авто: ${compassBearing!!.toInt()}°"
@@ -351,6 +418,7 @@ class MotionSensors(
                 yawSmoothed=.82*yawSmoothed+.18*(raw-yawBias)
                 val rightRate=-Math.toDegrees(yawSmoothed)
                 State.yawDegPerSec=rightRate
+                State.gyroSampleMs=SystemClock.elapsedRealtime()
                 State.motionText=when {
                     State.speed == null || SystemClock.elapsedRealtime()-
                         State.speedUpdatedElapsedMs>3500L -> "Нет свежей скорости OBD"

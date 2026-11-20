@@ -20,6 +20,7 @@ class NavService: Service(), LocationListener {
         const val SCAN="SCAN"
         const val CONNECT="CONNECT"
         const val START_DR="START_DR"
+        const val START_ROUTE_DR="START_ROUTE_DR"
         const val STOP_DR="STOP_DR"
         const val EXIT="EXIT"
         const val SET_MUT="SET_MUT"
@@ -36,6 +37,8 @@ class NavService: Service(), LocationListener {
         const val REVERSE="REVERSE"
         const val FORWARD="FORWARD"
         const val MONITOR="MONITOR"
+        const val START_DIAGNOSTIC="START_DIAGNOSTIC"
+        const val STOP_DIAGNOSTIC="STOP_DIAGNOSTIC"
     }
     private val handler = Handler(Looper.getMainLooper())
     private lateinit var lm: LocationManager
@@ -53,6 +56,15 @@ class NavService: Service(), LocationListener {
     private var scanCallback: ScanCallback? = null
     private val bt by lazy { getSystemService(BluetoothManager::class.java).adapter }
     private val dr = DeadReckoner()
+    // Separate test estimate: receives OBD + gyro + direct NETWORK fixes only.
+    private val comparisonDr=IndependentNetworkDr()
+    private lateinit var learnedDr:AdaptiveDrLearning
+    private val gpsConsensus=GpsFixConsensus()
+    private var gpsQuarantined=false
+    private var quarantineRecoveryCount=0
+    private var quarantineRecoveryLast=0L
+    private var quarantineRecoverySince=0L
+    private var quarantineCandidate:Location?=null
     private var gps: Location? = null
     private var gpsTime = 0L
     private var speedTime = 0L
@@ -62,6 +74,14 @@ class NavService: Service(), LocationListener {
     private var gpsInvalidSince = 0L
     private var gpsRecoveryCount = 0
     private var gpsRecoveryLast = 0L
+    private var gpsRecoverySince = 0L
+    // GPS may briefly look valid during spoofing. Correct DR after 3
+    // independently corroborated fixes; auto-return only after a 30 s
+    // continuous stable window with >=18 measurements.
+    private val gpsCorrectionFixes=3
+    private val gpsReturnFixes=18
+    private val gpsReturnStableMs=30_000L
+    private val gpsRecoveryMaxGapMs=5_000L
     private var lastRejectedGps = 0L
     private var lastGpsTeleport = 0L
     private var lastAcceptedGps = 0L
@@ -139,7 +159,23 @@ class NavService: Service(), LocationListener {
                 }
             }
             AirAlerts.refreshIfDue()
+            motion.updateCalibrationTimers(now)
             updateNavigation(now)
+            if(State.diagnosticRunning){
+                val obd=correctedSpeed()?.takeIf{
+                    State.speed!=null && now-speedTime<3500L
+                }
+                comparisonDr.advance(now,obd)?.let{pose->
+                    State.addNetworkDrPoint(pose.lat,pose.lon,pose.bearing,
+                        obd?:0.0,now)
+                }
+                State.diagnosticNetworkStatus=comparisonDr.lastNetworkStatus
+                State.learnedDrStatus=learnedDr.status()
+                State.learnedDrDetail=learnedDr.detail()
+                State.diagnosticText=if(obd==null)
+                    "GPS отключён для DR · нет свежей скорости OBD"
+                else "Имитация отсутствия GPS · DR: OBD + гироскоп + сеть"
+            }
             publishActualNavigationPosition(now)
             tickTime=now
             handler.postDelayed(this,250)
@@ -149,6 +185,10 @@ class NavService: Service(), LocationListener {
         super.onCreate()
         lm = getSystemService(LOCATION_SERVICE) as LocationManager
         settings = NavigatorPrefs(this)
+        learnedDr=AdaptiveDrLearning(this)
+        State.learnedDrEnabled=settings.learnedDrEnabled
+        State.learnedDrStatus=learnedDr.status()
+        State.learnedDrDetail=learnedDr.detail()
         AirAlerts.initialize(this)
         State.obdFactor = settings.obdFactor
         autoEnabled = settings.autoEnabled
@@ -174,7 +214,18 @@ class NavService: Service(), LocationListener {
             acceptNetworkLocation(location,source)
         }
         motion = MotionSensors(this) { yaw, dt ->
-            if (State.dr) dr.turn(yaw, dt)
+            if(State.dr){
+                val fresh=State.speed!=null &&
+                    SystemClock.elapsedRealtime()-speedTime<3500L
+                val kmh=if(fresh)correctedSpeed() else null
+                val scale=if(State.learnedDrEnabled && kmh!=null)
+                    learnedDr.yawGain(kmh,Math.toDegrees(yaw))
+                    else 1.0
+                dr.turn(yaw*scale,dt)
+            }
+            // Training comparison remains COMPLETELY uncorrected. It is
+            // independent of the learned network and of the primary DR.
+            if(State.diagnosticRunning)comparisonDr.onGyroYaw(yaw,dt)
         }
         motion.start()
         State.navigationMode = "GPS"
@@ -230,6 +281,16 @@ class NavService: Service(), LocationListener {
                 State.message="Ручная стартовая точка удалена"
             }
             START_DR -> startDr(force=true)
+            START_ROUTE_DR -> if(State.activeRouting)startDr(force=false)
+            REVERSE -> applyDetectedDirection(true,"выбрано вручную")
+            FORWARD -> applyDetectedDirection(false,"выбрано вручную")
+            START_DIAGNOSTIC -> startDiagnostic()
+            STOP_DIAGNOSTIC -> {
+                State.stopDiagnostic()
+                comparisonDr.stop()
+                learnedDr.resetSegment()
+                learnedDr.save()
+            }
             STOP_DR -> {
                 autoEnabled=false
                 State.autoEnabled=false
@@ -612,18 +673,273 @@ class NavService: Service(), LocationListener {
             State.message="$reason; пробую ${protocols[protocolIndex].second}"
         } else State.message="$reason; стандартный PID 010D недоступен"
     }
+    private fun startDiagnostic(){
+        val now=SystemClock.elapsedRealtime()
+        if(State.diagnosticRunning){
+            State.message="Два трека уже записываются"
+            return
+        }
+        if(State.speed==null || now-speedTime>=3500L ||
+            correctedSpeed()==null){
+            State.diagnosticText="Нет свежей скорости OBD. Подключи ELM327, "+
+                "чтобы тест DR не использовал GPS-скорость."
+            State.message=State.diagnosticText
+            return
+        }
+        // Capture the SAME accepted position shown by the main navigator
+        // (GPS or fresh direct network/Wi-Fi) once, before the GPS-free DR
+        // test begins. Previous code required an internal GPS fix and could
+        // ignore the already available State.navFix when GPS was unavailable.
+        val realGps=gps?.takeIf{
+            !gpsQuarantined && now-gpsTime in 0L..10_000L
+        }
+        val network=State.networkFix?.takeIf{
+            it.source=="Wi-Fi/сеть" &&
+                now-it.elapsedMs in 0L..12_000L &&
+                it.accuracy in 1f..220f &&
+                !GpsSpoofGuard.isLima(it.lat,it.lon)
+        }
+        val navigator=State.navFix?.takeIf{
+            now-it.elapsedMs in 0L..12_000L &&
+                it.accuracy in 1f..250f &&
+                it.lat in -85.0..85.0 && it.lon in -180.0..180.0 &&
+                !GpsSpoofGuard.isLima(it.lat,it.lon) &&
+                (it.source=="Wi-Fi/сеть" ||
+                    (!gpsQuarantined &&
+                        (it.source=="GPS" || it.source=="Fused Android")))
+        }
+        // In quarantine never seed from an old GPS or a fused fix which
+        // may itself incorporate GNSS. Network provider is independent.
+        val live=if(gpsQuarantined)network
+            else navigator ?: realGps?.let{
+                State.NavFix(it.latitude,it.longitude,
+                    if(it.hasBearing())it.bearing.toDouble() else null,
+                    it.accuracy,"GPS",gpsTime)
+            } ?: network
+        val manual=State.manualStart
+        val lat=live?.lat?:manual?.lat
+        val lon=live?.lon?:manual?.lon
+        val heading=realGps?.takeIf{
+            live?.source=="GPS" && it.hasBearing() &&
+                it.hasSpeed() && it.speed>=2.0f
+        }?.bearing?.toDouble()
+            ?: lastTrustedHeading?.takeIf{
+                now-lastTrustedHeadingMs in 0L..60_000L
+            }
+            ?: live?.bearing?.takeIf{
+                it.isFinite() && (live.source=="GPS" ||
+                    live.source=="Fused Android") &&
+                    (correctedSpeed()?:0.0)>=5.0
+            }
+            ?: motion.compassBearing
+            ?: manual?.bearing
+        if(lat==null || lon==null){
+            State.diagnosticText="Ожидаю текущие координаты GPS или Wi-Fi/сети. "+
+                "В навигаторе позиция должна обновляться; "+
+                "можно также задать начальную точку вручную."
+            State.message=State.diagnosticText
+            return
+        }
+        if(heading==null || !heading.isFinite()){
+            State.diagnosticText="Начальные координаты найдены, "+
+                "но направление автомобиля неизвестно. "+
+                "Нужен GPS-курс во время движения, калиброванный компас "+
+                "или вручную заданный курс."
+            State.message=State.diagnosticText
+            return
+        }
+        comparisonDr.start(lat,lon,heading,now)
+        learnedDr.resetSegment()
+        State.startDiagnostic()
+        State.addNetworkDrPoint(lat,lon,heading,correctedSpeed()?:0.0,now)
+        State.diagnosticNetworkStatus=comparisonDr.lastNetworkStatus
+        State.message="Два трека запущены от "+
+            (live?.source?:"ручной точки")+
+            ". GPS теперь не используется для синего DR-трека."
+    }
+
+    private fun quarantineGps(now:Long,reason:String){
+        // Break supervised pairs whenever a GPS sample is quarantined:
+        // learning must never bridge across a spoofing episode.
+        learnedDr.resetSegment()
+        gpsQuarantined=true
+        gpsConsensus.clear()
+        quarantineRecoveryCount=0
+        quarantineRecoveryLast=0L
+        quarantineRecoverySince=0L
+        quarantineCandidate=null
+        gpsRecoveryCount=0
+        gpsRecoveryLast=0L
+        gpsRecoverySince=0L
+        // A cached Fused fix might contain the same GNSS spoof. Discard it,
+        // and use only independently reported NETWORK_PROVIDER fixes.
+        if(State.networkFix?.source!="Wi-Fi/сеть")State.networkFix=null
+        if(previousNetworkFix?.source!="Wi-Fi/сеть")previousNetworkFix=null
+        networkCorrectionSamples=0
+        lastGpsTeleport=now
+        lastRejectedGps=now
+        State.gpsText=reason
+        State.gpsSpoofStatus="GPS отклонён · "+reason+
+            " · проверяю восстановление по независимой позиции"
+        // A suspicious GPS fix never seeds DR. Only an earlier accepted
+        // GPS/manual position or corroborated independent NETWORK fix can.
+        if(!State.dr && autoEnabled)startDr(force=false)
+    }
+
+    private fun resetQuarantineEvidence(message:String){
+        quarantineRecoveryCount=0
+        quarantineRecoveryLast=0L
+        quarantineRecoverySince=0L
+        quarantineCandidate=null
+        gpsConsensus.clear()
+        State.gpsSpoofStatus=message
+    }
+
+    private fun correctDrWithTrustedGps(
+        location:Location,kmh:Double?,now:Long,
+        positionBlend:Double,headingStep:Double
+    ){
+        if(!State.dr || dr.pose==null || lastGpsCorrectionMs>0L &&
+            now-lastGpsCorrectionMs<2500L)return
+        dr.correctPosition(location.latitude,location.longitude,positionBlend)
+        val headingValid=location.hasBearing() && kmh!=null &&
+            kmh>=12.0 && !reverse && abs(State.yawDegPerSec)<8.0 &&
+            (!location.hasBearingAccuracy() ||
+                location.bearingAccuracyDegrees<22f)
+        if(headingValid)dr.correctHeading(location.bearing.toDouble(),headingStep)
+        lastGpsCorrectionMs=now
+        // Correction is deliberately fractional; never jump to one GPS fix.
+        State.driftMeters=(State.driftMeters*
+            if(positionBlend<0.08)0.94 else 0.88).coerceAtLeast(0.0)
+    }
+
+    /**
+     * While spoofing quarantine is active, occasional good fixes may provide
+     * cautious DR corrections. They MUST NOT set the trusted GPS anchor or
+     * restore GPS navigation until a much longer continuous healthy window.
+     */
+    private fun allowGpsRecovery(location:Location,kmh:Double?,now:Long):Boolean{
+        if(!gpsQuarantined)return true
+        if(kmh==null || kmh !in 0.0..180.0 ||
+            GpsSpoofGuard.isLima(location.latitude,location.longitude)){
+            resetQuarantineEvidence(
+                "GPS в карантине · скорость/координаты подозрительны")
+            return false
+        }
+        // Fused may include spoofed GNSS: only direct NETWORK_PROVIDER
+        // observations, or the DR pose propagated independently by OBD
+        // and gyro, can corroborate a quarantined GPS sample.
+        val network=State.networkFix?.takeIf{
+            it.source=="Wi-Fi/сеть" && now-it.elapsedMs<15_000L &&
+                it.accuracy in 1f..100f
+        }
+        val pose=dr.pose?.takeIf{State.dr}
+        if(pose==null && network==null){
+            resetQuarantineEvidence("GPS в карантине · нет независимого ориентира")
+            return false
+        }
+        if(pose!=null){
+            val independent=Location(LocationManager.NETWORK_PROVIDER).apply{
+                latitude=pose.lat;longitude=pose.lon
+            }
+            val distance=independent.distanceTo(location).toDouble()
+            val tolerance=(65.0+State.driftMeters*1.5).coerceIn(65.0,250.0)
+            if(distance>tolerance){
+                resetQuarantineEvidence(
+                    "GPS в карантине · от DR: ${distance.toInt()} м")
+                return false
+            }
+        }
+        if(network!=null){
+            val independent=Location(LocationManager.NETWORK_PROVIDER).apply{
+                latitude=network.lat;longitude=network.lon
+            }
+            val distance=independent.distanceTo(location).toDouble()
+            val tolerance=(network.accuracy*2.0+75.0).coerceIn(85.0,250.0)
+            if(distance>tolerance){
+                resetQuarantineEvidence(
+                    "GPS в карантине · от Wi-Fi/сети: ${distance.toInt()} м")
+                return false
+            }
+        }
+        // Check successive GPS candidates against realistic vehicle travel,
+        // not merely each one against the same last trusted fix.
+        val prev=quarantineCandidate
+        if(prev!=null && quarantineRecoveryLast>0L){
+            val dt=(now-quarantineRecoveryLast)/1000.0
+            if(dt>0.0 && dt<=gpsRecoveryMaxGapMs/1000.0){
+                val maxTravel=(kmh/3.6)*dt+
+                    location.accuracy*2.0+85.0
+                if(prev.distanceTo(location)>maxTravel){
+                    resetQuarantineEvidence(
+                        "GPS в карантине · кандидаты не согласуются")
+                    return false
+                }
+            }
+        }
+        if(quarantineRecoveryLast==0L ||
+            now-quarantineRecoveryLast>gpsRecoveryMaxGapMs){
+            quarantineRecoveryCount=0
+            quarantineRecoverySince=now
+        }
+        if(quarantineRecoveryLast==0L ||
+            now-quarantineRecoveryLast>=750L){
+            quarantineRecoveryCount++
+            quarantineRecoveryLast=now
+            quarantineCandidate=Location(location)
+        }
+        if(quarantineRecoveryCount>=gpsCorrectionFixes){
+            // Safe-looking short GPS window: use ONLY a tiny soft correction.
+            // Never release quarantine solely because of these fixes.
+            // Combine only independently corroborated, accepted fixes.
+            val recovered=gpsConsensus.add(location,now)
+            correctDrWithTrustedGps(recovered,kmh,now,0.06,0.35)
+            State.markRawGpsApproved(now)
+        }
+        val stableMs=(now-quarantineRecoverySince).coerceAtLeast(0L)
+        if(quarantineRecoveryCount>=gpsReturnFixes &&
+            stableMs>=gpsReturnStableMs){
+            gpsQuarantined=false
+            gpsRecoveryCount=quarantineRecoveryCount
+            gpsRecoveryLast=now
+            gpsRecoverySince=quarantineRecoverySince
+            quarantineCandidate=null
+            quarantineRecoveryCount=0
+            quarantineRecoveryLast=0L
+            quarantineRecoverySince=0L
+            lastGpsTeleport=0L
+            State.gpsSpoofStatus=
+                "GPS восстановлен: стабильность ${stableMs/1000} с; можно вернуть навигацию"
+            return true
+        }
+        State.gpsSpoofStatus=
+            "GPS карантин · проверено ${quarantineRecoveryCount} точек за "+
+            "${stableMs/1000} с; DR корректируется, GPS не включён"
+        return false
+    }
+
     private fun acceptNetworkLocation(location:Location,provider:String) {
         // Android Location.isMock prevents feeding our injected position
         // back into the filter as an apparently independent measurement.
         if(location.isMock || !location.hasAccuracy())return
-        val maxAccuracy=if(State.dr)70f else 220f
-        if(location.accuracy<=0f || location.accuracy>maxAccuracy)return
+        if(GpsSpoofGuard.isLima(location.latitude,location.longitude))return
         val age=SystemClock.elapsedRealtimeNanos()-location.elapsedRealtimeNanos
         if(age<0L || age>12_000_000_000L)return
         if(location.latitude !in -85.0..85.0 ||
             location.longitude !in -180.0..180.0)return
-
         val now=SystemClock.elapsedRealtime()
+
+        // Independent GPS-cut test intentionally sees direct network fixes
+        // before the MAIN navigator's more restrictive accuracy threshold.
+        // The comparison estimator itself validates network age, quality,
+        // and that location.provider is exactly NETWORK_PROVIDER.
+        if(State.diagnosticRunning){
+            comparisonDr.onIndependentNetworkLocation(location,provider,now)
+            State.diagnosticNetworkStatus=comparisonDr.lastNetworkStatus
+        }
+        if(gpsQuarantined && provider!="Wi-Fi/сеть")return
+        val maxAccuracy=if(State.dr)70f else 220f
+        if(location.accuracy<=0f || location.accuracy>maxAccuracy)return
         val candidate=State.NavFix(location.latitude,location.longitude,
             if(location.hasBearing())location.bearing.toDouble() else null,
             location.accuracy,provider,now)
@@ -672,7 +988,7 @@ class NavService: Service(), LocationListener {
             return
         }
 
-        val gpsRecent=gps!=null && now-gpsTime<8000L
+        val gpsRecent=!gpsQuarantined && gps!=null && now-gpsTime<8000L
         if(gpsRecent)return
         val anchor=gps
         if(anchor!=null) {
@@ -711,7 +1027,7 @@ class NavService: Service(), LocationListener {
             }
             return
         }
-        val currentGps=gps
+        val currentGps=if(gpsQuarantined)null else gps
         if(currentGps!=null && now-gpsTime<7500L) {
             State.navFix=State.NavFix(currentGps.latitude,currentGps.longitude,
                 if(currentGps.hasBearing())currentGps.bearing.toDouble() else null,
@@ -719,7 +1035,9 @@ class NavService: Service(), LocationListener {
             State.sourceDescription="GPS · точность ~${currentGps.accuracy.toInt()} м"
             return
         }
-        val net=State.networkFix
+        val net=State.networkFix?.takeIf{
+            !gpsQuarantined || it.source=="Wi-Fi/сеть"
+        }
         if(net!=null && now-net.elapsedMs<12_000L) {
             State.navFix=net
             State.sourceDescription=net.source+" · ~${net.accuracy.toInt()} м"
@@ -753,7 +1071,7 @@ class NavService: Service(), LocationListener {
         if(freshObd) motion.directionFromAcceleration(obdKmh,now)?.let {
             applyDetectedDirection(it,"акселерометр")
         }
-        val gpsRecent = gps != null && now-gpsTime < 6000L
+        val gpsRecent = !gpsQuarantined && gps != null && now-gpsTime < 6000L
         val gpsSpeedRecent = State.gpsSpeedKmh != null &&
             now-State.gpsSpeedUpdatedElapsedMs < 6000L
         val gpsMoving=gpsRecent && gpsSpeedRecent &&
@@ -763,26 +1081,34 @@ class NavService: Service(), LocationListener {
         val gpsSpeedUnavailable=!gpsSpeedRecent ||
             State.gpsSpeedKmh==null || State.gpsSpeedKmh!!<1.5
 
-        if(!State.dr && autoEnabled && !fusedStarting &&
-            AirAlerts.autoNavigationAlertActive() &&
-            freshObd && obdKmh>=7.0) {
-            // City alert + independently confirmed OBD motion +
-            // (GPS speed zero/missing OR rejected >1 km teleport).
-            // Prevent stationary vehicles from triggering on zero GPS speed.
-            val badGps=!gpsRecent || gpsSpeedUnavailable || recentTeleport ||
-                (gpsSpeedRecent && !gpsMoving)
-            if(badGps) {
-                if(gpsInvalidSince==0L)gpsInvalidSince=now
-                val debounce=if(recentTeleport)1500L else 5000L
-                if(now-gpsInvalidSince>=debounce)
-                    startDr(force=false)
-            } else gpsInvalidSince=0L
-        } else if(!State.dr)gpsInvalidSince=0L
+        // During an active route, missing GNSS + real OBD motion should
+        // switch to DR even when NO air alert is active. The previous
+        // alert-only condition left Xiaomi 13T stopped in GPS mode.
+        val recentInvalidGps=gpsQuarantined || !gpsRecent ||
+            gpsSpeedUnavailable || recentTeleport ||
+            (gpsSpeedRecent && !gpsMoving)
+        val eligible=MobileDrAutoStart.eligible(
+            autoEnabled=autoEnabled,alreadyDr=State.dr,
+            routeActive=State.activeRouting,
+            alertActive=AirAlerts.autoNavigationAlertActive(),
+            freshObd=freshObd,obdKmh=obdKmh,
+            badGps=recentInvalidGps
+        )
+        if(eligible){
+            if(gpsInvalidSince==0L)gpsInvalidSince=now
+            if(now-gpsInvalidSince>=MobileDrAutoStart.debounceMs(
+                    recentTeleport))startDr(force=false)
+        }else if(!State.dr)gpsInvalidSince=0L
+        if(gpsQuarantined && !State.dr && autoEnabled &&
+            freshObd && obdKmh>=0.0)startDr(force=false)
 
         if(State.dr) {
             // Recovery requires consecutive real GNSS fixes; discard old evidence.
-            if(gpsRecoveryLast > 0L && now-gpsRecoveryLast > 6000L)
+            if(gpsRecoveryLast > 0L &&
+                now-gpsRecoveryLast > gpsRecoveryMaxGapMs){
                 gpsRecoveryCount=0
+                gpsRecoverySince=0L
+            }
             if(!freshObd) {
                 State.message="Инерциальное ведение: нет свежей скорости OBD"
                 State.navigationMode="DR: нет OBD"
@@ -790,14 +1116,25 @@ class NavService: Service(), LocationListener {
                 return
             }
             if(!State.directionConfirmed && obdKmh>=2.0) {
-                State.navigationMode="DR: направление не определено"
-                State.message="Направление не определено: нужна калибровка компаса и данные датчиков"
-                tickTime=now
-                return
+                // A known DR seed course and gyro already define travel
+                // direction. Forward is the normal OBD convention; reverse
+                // remains explicitly selectable. Do not freeze a good
+                // calibrated DR merely for lack of 3 fresh GPS courses.
+                if(dr.pose!=null && !reverse)
+                    applyDetectedDirection(false,"курс старта; вперёд по умолчанию")
+                else {
+                    State.navigationMode="DR: направление не определено"
+                    State.message="Укажи направление движения: Вперёд / Назад"
+                    tickTime=now
+                    return
+                }
             }
             val dt=((now-tickTime)/1000.0).coerceIn(0.0,0.45)
             if(dt > 0) {
-                dr.move(obdKmh,dt,reverse)
+                val gain=if(State.learnedDrEnabled)
+                    learnedDr.speedGain(obdKmh,State.yawDegPerSec)
+                    else 1.0
+                dr.move((obdKmh*gain).coerceIn(0.0,260.0),dt,reverse)
                 State.driftMeters += obdKmh/3.6*dt*.045 + .12*dt
                 // Magnetic readings can be distorted by steel and electronics:
                 // apply only a very small bounded correction, never a snap.
@@ -841,60 +1178,86 @@ class NavService: Service(), LocationListener {
             State.message="Нет свежей скорости OBD: проверь адаптер"
             return
         }
-        // Use the last *accepted* GNSS fix or a corroborated, fresh
-        // network location. A rejected GPS teleport is never seeded.
-        val network=State.networkFix?.takeIf {
-            now-it.elapsedMs<12_000L && it.accuracy<=85f
+        // Accepted live GNSS is best, then independent Wi-Fi/cellular,
+        // then a deliberate manual start; a route start is the LAST
+        // resort when guidance is already active and GPS is unavailable.
+        // Never seed from stale or quarantined/spoofed GNSS.
+        val network=State.networkFix?.takeIf{
+            now-it.elapsedMs in 0L..15_000L &&
+                it.accuracy in 1f..180f &&
+                (!gpsQuarantined || it.source=="Wi-Fi/сеть")
         }
-        val gpsCurrent=gps?.takeIf {now-gpsTime<30_000L}
-        val manual=if(force || (gpsCurrent==null && network==null &&
-            (gps==null || now-gpsTime>=90_000L)))State.manualStart else null
-        val fix=when {
-            manual!=null -> Location(LocationManager.GPS_PROVIDER).apply {
+        val gpsCurrent=gps?.takeIf{
+            !gpsQuarantined && now-gpsTime in 0L..30_000L
+        }
+        val manual=State.manualStart?.takeIf {
+            force || (gpsCurrent==null && network==null)
+        }
+        val routeSeed=State.routeDrSeed?.takeIf{
+            State.activeRouting && gpsCurrent==null &&
+                network==null && manual==null &&
+                it.lat in -85.0..85.0 && it.lon in -180.0..180.0 &&
+                it.bearing?.isFinite()==true
+        }
+        val fix=when{
+            manual!=null -> Location(LocationManager.GPS_PROVIDER).apply{
                 latitude=manual.lat;longitude=manual.lon
                 bearing=manual.bearing.toFloat()
                 accuracy=25f
                 speed=((correctedSpeed()?:0.0)/3.6).toFloat()
             }
             gpsCurrent!=null -> Location(gpsCurrent)
-            network!=null -> Location(LocationManager.NETWORK_PROVIDER).apply {
+            network!=null -> Location(LocationManager.NETWORK_PROVIDER).apply{
                 latitude=network.lat;longitude=network.lon
                 accuracy=network.accuracy
                 network.bearing?.let{bearing=it.toFloat()}
             }
-            gps!=null && now-gpsTime<90_000L -> Location(gps!!)
-            else -> null
+            routeSeed!=null -> Location("route-start").apply {
+                latitude=routeSeed.lat;longitude=routeSeed.lon
+                bearing=routeSeed.bearing!!.toFloat()
+                accuracy=routeSeed.accuracy
+            }
+            else->null
         }
         if(fix==null) {
             State.message="Нет исходной позиции: задай старт на карте или дождись GPS/сети"
             return
         }
         val trustedCourse=lastTrustedHeading?.takeIf {
-            now-lastTrustedHeadingMs<60_000L
+            now-lastTrustedHeadingMs in 0L..60_000L && !gpsQuarantined
         }
         val locationCourse=fix.bearing.toDouble().takeIf {
             fix.hasBearing() && fix.hasSpeed() && fix.speed*3.6f>7f
         }
+        // Road direction is a last-resort bearing when no aligned
+        // compass/GPS course exists, including when NETWORK supplies a
+        // geographical fix but no course. It never replaces fresh GNSS.
+        val routeCourse=State.routeDrSeed?.takeIf{
+            State.activeRouting && it.bearing?.isFinite()==true
+        }?.bearing
         val course=when {
             manual!=null -> manual.bearing
             locationCourse!=null -> locationCourse
             trustedCourse!=null -> trustedCourse
             motion.compassBearing!=null -> motion.compassBearing!!
+            routeCourse!=null -> routeCourse
             else -> Double.NaN
         }
         if(!course.isFinite()) {
             State.message="Курс неизвестен: задай старт и направление на карте"
             return
         }
-        if(manual!=null) {
+        if(!State.directionConfirmed) {
+            // Normal OBD-II speed is unsigned: without evidence of reverse,
+            // use the seeded forward course, rather than block DR until
+            // GPS returns. Explicit REVERSE/FORWARD actions remain available.
             reverse=false
-            applyDetectedDirection(false,"направление с карты")
-        } else if(!State.directionConfirmed &&
-            (locationCourse!=null || trustedCourse!=null)) {
-            // The last trusted GPS travel course defines forward travel
-            // for this DR segment unless sensors already detected reverse.
-            reverse=false
-            applyDetectedDirection(false,"последний проверенный GPS-курс")
+            applyDetectedDirection(false,when {
+                manual!=null->"курс задан вручную"
+                motion.compassBearing!=null->"привязанный компас"
+                routeCourse!=null->"курс маршрута (без GPS)"
+                else->"последний проверенный курс"
+            })
         }
         val carBearing=(course+if(reverse)180.0 else 0.0)%360.0
         dr.seed(fix.latitude,fix.longitude,carBearing)
@@ -906,6 +1269,7 @@ class NavService: Service(), LocationListener {
         lastMockSent=0L
         gpsRecoveryCount=0
         gpsRecoveryLast=0L
+        gpsRecoverySince=0L
         State.driftMeters=0.0
         networkCorrectionSamples=0
         previousNetworkFix=null
@@ -915,8 +1279,11 @@ class NavService: Service(), LocationListener {
         State.manualForced=force
         State.dr=true
         State.navigationMode=if(force)"Датчики (вручную)" else "Датчики (авто)"
-        State.message=if(manual!=null)"DR: старт и курс взяты с карты" else
-            "Инерциальное ведение запущено"
+        State.message=when {
+            manual!=null->"DR: старт и курс взяты с карты"
+            routeSeed!=null->"DR: старт с маршрута; курс приблизительный, GPS нет"
+            else->"Инерциальное ведение включено: OBD + гироскоп + компас"
+        }
         // In-app navigation DOES NOT need Android mock-location permission.
         // Google Maps injection is an optional extra, not a start prerequisite.
         fused.start { ok,detail ->
@@ -937,6 +1304,8 @@ class NavService: Service(), LocationListener {
         manualMode=false
         fusedStarting=false
         gpsRecoveryCount=0
+        gpsRecoveryLast=0L
+        gpsRecoverySince=0L
         gpsInvalidSince=0L
         lastGpsTeleport=0L
         networkCorrectionSamples=0
@@ -950,8 +1319,50 @@ class NavService: Service(), LocationListener {
         val now=SystemClock.elapsedRealtime()
         val ageNanos=SystemClock.elapsedRealtimeNanos()-location.elapsedRealtimeNanos
         if(ageNanos<0L || ageNanos>8_000_000_000L) return
+        if(location.latitude !in -85.0..85.0 ||
+            location.longitude !in -180.0..180.0)return
+        State.addRawGps(location.latitude,location.longitude,now)
+        // Filter individual Android-computed GNSS fixes. These are NOT
+        // per-satellite coordinates; satellite-level elimination is not
+        // possible using LocationManager alone.
+        val reportedSpeedKmh=if(location.hasSpeed())
+            location.speed.toDouble()*3.6 else null
+        if(reportedSpeedKmh!=null &&
+            (!reportedSpeedKmh.isFinite() ||
+                reportedSpeedKmh<0.0 ||
+                reportedSpeedKmh>GpsFixConsensus.MAX_GPS_SPEED_KMH)){
+            quarantineGps(now,"GPS: скорость >180 км/ч · точка отклонена")
+            return
+        }
+        // Route checks use the active planned route created from TRUSTED
+        // navigation coordinates, not a spoofed GPS location. Without a
+        // route, the existing OBD/DR plausibility gates remain in force.
+        val road=State.gpsFilterRoutePoints.takeIf{
+            State.activeRouting && it.size>=2
+        }
+        if(road!=null){
+            val deviation=GpsFixConsensus.routeDistanceMeters(
+                location.latitude,location.longitude,road)
+            if(deviation.isFinite() &&
+                deviation>GpsFixConsensus.MAX_ROUTE_DEVIATION_METERS){
+                quarantineGps(now,"GPS: отклонение от маршрута "+
+                    "${deviation.toInt()} м (>500 м) · точка отклонена")
+                return
+            }
+        }
+        // This gross geographic anomaly must be rejected even if GNSS
+        // advertises poor accuracy or a fabricated low velocity.
+        if(GpsSpoofGuard.isLima(location.latitude,location.longitude)){
+            val reported=if(location.hasSpeed())location.speed*3.6 else null
+            quarantineGps(now,"GPS: координаты в районе Лимы"+
+                (if(reported!=null && reported>180.0)
+                    " · скорость >180 км/ч" else ""))
+            return
+        }
         if(!location.hasAccuracy() || location.accuracy>45f) {
             State.gpsText="GPS: низкая точность"
+            if(gpsQuarantined)resetQuarantineEvidence(
+                "GPS в карантине · недостаточная точность")
             return
         }
         val kmh=if(location.hasSpeed()) location.speed*3.6 else null
@@ -964,7 +1375,6 @@ class NavService: Service(), LocationListener {
         }
         val freshObd=State.speed!=null && now-speedTime<3500L
         val obd=if(freshObd)correctedSpeed()?:0.0 else 0.0
-
         // A sudden >1 km teleport cannot become our new GNSS anchor.
         // Compare against plausible travel over elapsed time so a normal
         // long drive between sparse fixes isn't misclassified.
@@ -975,9 +1385,7 @@ class NavService: Service(), LocationListener {
                 val plausible=max(obd,kmh?:0.0)/3.6*dt+
                     location.accuracy*2.5+250.0
                 if(jump>1000.0 && jump>plausible) {
-                    lastGpsTeleport=now
-                    lastRejectedGps=now
-                    State.gpsText="GPS: скачок >1 км отклонён"
+                    quarantineGps(now,"GPS: невозможный скачок >1 км")
                     return
                 }
             }
@@ -988,10 +1396,12 @@ class NavService: Service(), LocationListener {
         if(freshObd && obd>=7) {
             if(kmh==null || kmh<1.5) {
                 State.gpsText="GPS: скорость 0/неизвестна, OBD движется"
+                if(gpsQuarantined)resetQuarantineEvidence(State.gpsText)
                 return
             }
             if(abs(kmh-obd)>max(18.0,obd*.50)) {
                 State.gpsText="GPS: скорость расходится с OBD"
+                if(gpsQuarantined)resetQuarantineEvidence(State.gpsText)
                 return
             }
         }
@@ -1005,6 +1415,7 @@ class NavService: Service(), LocationListener {
                 if(previous.distanceTo(location)>maxDistance) {
                     State.gpsText="GPS: скачок координат отклонён"
                     lastRejectedGps=now
+                    if(gpsQuarantined)resetQuarantineEvidence(State.gpsText)
                     return
                 }
             }
@@ -1018,13 +1429,39 @@ class NavService: Service(), LocationListener {
             val acceptable=max(65.0,50.0+State.driftMeters*1.5)
             if(predicted.distanceTo(location)>acceptable) {
                 State.gpsText="GPS: слишком далеко от инерциального пути"
+                if(gpsQuarantined)resetQuarantineEvidence(State.gpsText)
                 return
             }
         }
-        gps=Location(location)
+        // Valid-looking fixes alone never release quarantine. First compare
+        // multiple samples against the independent network/DR anchor.
+        if(gpsQuarantined && !allowGpsRecovery(location,kmh,now)){
+            State.gpsText=State.gpsSpoofStatus
+            return
+        }
+        // The GNSS position is derived only from retained validated
+        // samples. A robust motion-compensated rolling estimate removes
+        // remaining isolated outliers without trusting a single GPS fix.
+        val acceptedPosition=gpsConsensus.add(location,now)
+        gps=Location(acceptedPosition)
         gpsTime=now
         lastAcceptedGps=now
-        State.gpsText="GPS: точность "+location.accuracy.toInt()+" м"
+        State.markRawGpsApproved(now)
+        // Learn ONLY from trusted GPS fixes in the explicit two-track
+        // experiment. These measurements never enter the test DR estimator.
+        if(State.diagnosticRunning && !gpsQuarantined &&
+            State.speed!=null && now-speedTime<3500L) {
+            learnedDr.observeTrustedGps(location,comparisonDr.pose,
+                correctedSpeed(),comparisonDr.correctionCount,
+                gpsConsensus.sampleCount,now)
+            State.learnedDrStatus=learnedDr.status()
+            State.learnedDrDetail=learnedDr.detail()
+        }
+        State.gpsText="GPS: принятые координаты, усреднение "+
+            "${gpsConsensus.sampleCount} точек; ~"+
+            location.accuracy.toInt()+" м"
+        if(!gpsQuarantined)
+            State.gpsSpoofStatus="GPS: приняты только проверенные координаты"
         motion.setGeomagneticDeclination(location)
 
         if(location.hasBearing() && kmh!=null && kmh>=5.0 &&
@@ -1036,36 +1473,52 @@ class NavService: Service(), LocationListener {
 
         val hasCourse=location.hasBearing() && kmh!=null && kmh>=12.0
         if(hasCourse) {
-            val accuracyOk=!location.hasBearingAccuracy() || location.bearingAccuracyDegrees<22f
-            if(accuracyOk) motion.directionFromGps(location.bearing.toDouble(),kmh!!,now)?.let {
-                applyDetectedDirection(it,"GPS + компас")
-            }
-            // Never recalibrate the front-of-car offset from a reverse travel course.
-            if(!reverse && abs(State.yawDegPerSec)<3.0 && accuracyOk)
+            val accuracyOk=!location.hasBearingAccuracy() ||
+                location.bearingAccuracyDegrees<22f
+            // A single valid-looking GPS course during DR must not re-align
+            // the phone or change driving direction. Wait for corroborated
+            // repeated samples, just as with the position correction.
+            val confirmedCourse=accuracyOk &&
+                (!State.dr || gpsRecoveryCount>=gpsCorrectionFixes)
+            if(confirmedCourse)
+                motion.directionFromGps(location.bearing.toDouble(),kmh!!,now)?.let {
+                    applyDetectedDirection(it,"проверенный GPS + компас")
+                }
+            if(!reverse && abs(State.yawDegPerSec)<3.0 && confirmedCourse)
                 motion.alignToGps(location.bearing.toDouble(),kmh!!,true)
         }
 
         if(State.dr) {
-            // Require several consistent real fixes before trusting recovery.
-            if(gpsRecoveryLast>0L && now-gpsRecoveryLast>6000L)
+            // Position can be refined after three good samples. Switching
+            // the primary source to GPS requires far stronger evidence:
+            // >=18 samples sustained over >=30 seconds, without long gaps.
+            if(gpsRecoveryLast>0L &&
+                now-gpsRecoveryLast>gpsRecoveryMaxGapMs){
                 gpsRecoveryCount=0
-            if(kmh!=null && kmh >= 2.5 && (now-gpsRecoveryLast>=750L)) {
+                gpsRecoverySince=0L
+            }
+            if(kmh!=null && kmh in 2.5..180.0 &&
+                (gpsRecoveryLast==0L || now-gpsRecoveryLast>=750L)){
+                if(gpsRecoveryCount==0)gpsRecoverySince=now
                 gpsRecoveryCount++
                 gpsRecoveryLast=now
-            } else if(kmh==null || kmh<1.5)gpsRecoveryCount=0
-
-            if(gpsRecoveryCount>=3) {
-                dr.correctPosition(location.latitude,location.longitude,0.14)
-                lastGpsCorrectionMs=now
-                lastGpsTeleport=0L
-                if(hasCourse && !reverse)
-                    dr.correctHeading(location.bearing.toDouble(),0.7)
-                State.driftMeters*=0.85
+            }else if(kmh==null || kmh<1.5 || kmh>180.0){
+                gpsRecoveryCount=0
+                gpsRecoverySince=0L
             }
-            if(!manualMode && gpsRecoveryCount>=5 &&
-                now-lastDrStart>3500L) {
+
+            if(gpsRecoveryCount>=gpsCorrectionFixes){
+                correctDrWithTrustedGps(acceptedPosition,kmh,now,0.08,0.4)
+                State.gpsSpoofStatus="DR + мягкая GPS-коррекция; "+
+                    "восстановление ${(now-gpsRecoverySince)/1000} с"
+            }
+            if(!manualMode && gpsRecoveryCount>=gpsReturnFixes &&
+                gpsRecoverySince>0L &&
+                now-gpsRecoverySince>=gpsReturnStableMs &&
+                now-lastDrStart>=gpsReturnStableMs &&
+                !gpsQuarantined){
                 stopDr()
-                State.message="GPS стабильно восстановился: автоматический возврат"
+                State.message="GPS стабилен 30+ с: возврат к спутниковой навигации"
             }
         }
     }
@@ -1074,6 +1527,9 @@ class NavService: Service(), LocationListener {
         handler.removeCallbacks(loop);stopScan();stopDr()
         disconnectTransport()
         motion.stop()
+        comparisonDr.stop()
+        learnedDr.save()
+        State.stopDiagnostic()
         hybridLocator.stop()
         try {lm.removeUpdates(this)} catch(_:Exception){}
         super.onDestroy()

@@ -22,8 +22,10 @@ object OfflineVectorStore {
         File(context.filesDir,"offline-vectors").apply{mkdirs()}
     fun mapFile(context:Context):File=File(root(context),"selected.map")
     fun poiFile(context:Context):File=File(root(context),"selected.poi")
-    fun hasMap(context:Context)=mapFile(context).let{it.isFile&&it.length()>100}
-    fun hasPois(context:Context)=poiFile(context).let{it.isFile&&it.length()>100}
+    // Preserve prior APK storage paths. Check the actual file signature
+    // instead of treating any non-empty (possibly partial) file as ready.
+    fun hasMap(context:Context)=OfflineUkraineAssets.validMapHeader(mapFile(context))
+    fun hasPois(context:Context)=OfflineUkraineAssets.validPoiHeader(poiFile(context))
     private fun validType(kind:String)=kind=="map"||kind=="poi"
 
     fun delete(context:Context,kind:String):Boolean{
