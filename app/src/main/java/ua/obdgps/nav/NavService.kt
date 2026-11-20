@@ -1065,7 +1065,11 @@ class NavService: Service(), LocationListener {
         // The comparison estimator itself validates network age, quality,
         // and that location.provider is exactly NETWORK_PROVIDER.
         if(State.diagnosticRunning){
-            comparisonDr.onIndependentNetworkLocation(location,provider,now)
+            val gyroFresh=State.sensorGyroAvailable &&
+                State.gyroSampleMs>0L &&
+                now-State.gyroSampleMs in 0L..4000L
+            comparisonDr.onIndependentNetworkLocation(
+                location,provider,now,gyroFresh=gyroFresh)
             State.diagnosticNetworkStatus=comparisonDr.lastNetworkStatus
         }
         if(gpsQuarantined && provider!="Wi-Fi/сеть")return
