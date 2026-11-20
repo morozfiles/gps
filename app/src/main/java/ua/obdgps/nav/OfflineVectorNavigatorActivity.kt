@@ -62,15 +62,6 @@ class OfflineVectorNavigatorActivity:Activity() {
     private var vectorMap:MapFile?=null
     private var routeLine:Polyline?=null
     private var route:RoutingEngine.Route?=null
-    private val routeFollower=RouteLockedFollower()
-    private val turnSensors by lazy { MotionSensors(this){rate,dt->routeFollower.onYaw(rate,dt)} }
-    private var sensorsStarted=false
-    private fun startTurnSensors(){
-        if(!sensorsStarted){turnSensors.start();sensorsStarted=true}
-    }
-    private fun stopTurnSensors(){
-        if(sensorsStarted){turnSensors.stop();sensorsStarted=false}
-    }
     private var dest:RoutingEngine.Point?=null
     private var follow=true
     private var active=false
@@ -283,8 +274,6 @@ class OfflineVectorNavigatorActivity:Activity() {
                     buildRoute(false)
                 }else{
                     active=true
-                    route?.let{routeFollower.bind(it,State.navFix)}
-                    startTurnSensors()
                     followCar()
                     info.text="Ведение по маршруту · GPS / OBD / DR"
                 }
@@ -413,7 +402,6 @@ class OfflineVectorNavigatorActivity:Activity() {
             requesting=false
             result.fold(onSuccess={itinerary->
                 route=itinerary
-                routeFollower.bind(itinerary,State.navFix)
                 clearRoute()
                 val p=AndroidGraphicFactory.INSTANCE.createPaint().apply{
                     color=Color.rgb(11,132,246)
@@ -453,25 +441,10 @@ class OfflineVectorNavigatorActivity:Activity() {
         override fun run(){
             if(!::mapView.isInitialized)return
             alerts.refresh()
-            val rawFix=State.navFix?.takeIf{
+            val fix=State.navFix?.takeIf{
                 SystemClock.elapsedRealtime()-it.elapsedMs<15_000 ||
                     it.source.contains("Ручная")
             }
-            val now=SystemClock.elapsedRealtime()
-            val freshObd=State.speedUpdatedElapsedMs>0L &&
-                now-State.speedUpdatedElapsedMs<3500L
-            val obd=State.obdSpeedKmh()
-            val estimate=if(active && route!=null)routeFollower.update(
-                now,obd,freshObd,rawFix,State.networkFix,
-                AirAlerts.autoNavigationAlertActive()) else null
-            val gpsHealthy=rawFix!=null && rawFix.source=="GPS" &&
-                rawFix.accuracy<=25f &&
-                !AirAlerts.autoNavigationAlertActive() &&
-                (State.gpsSpeedKmh==null || State.gpsSpeedKmh!!<=180.0) &&
-                (estimate==null || RoutingEngine.meters(
-                    RoutingEngine.Point(rawFix.lat,rawFix.lon),
-                    RoutingEngine.Point(estimate.lat,estimate.lon))<65.0)
-            val fix=if(active && !gpsHealthy)estimate?:rawFix else rawFix
             if(fix!=null){
                 lastGpsPosition=RoutingEngine.Point(fix.lat,fix.lon)
                 val now=SystemClock.elapsedRealtime()
@@ -541,7 +514,7 @@ class OfflineVectorNavigatorActivity:Activity() {
                     if(progress.arrived){
                         active=false
                         info.text="Вы прибыли"
-                    }else if(fix.source=="GPS" && progress.lateralMeters>140 &&
+                    }else if(progress.lateralMeters>140 &&
                         now-lastReroute>75_000 && !requesting &&
                         fix.accuracy<70f){
                         lastReroute=now
@@ -558,19 +531,16 @@ class OfflineVectorNavigatorActivity:Activity() {
 
     override fun onResume(){
         super.onResume()
-        if(active)startTurnSensors()
         if(::mapView.isInitialized){
             handler.removeCallbacks(refresh)
             handler.post(refresh)
         }
     }
     override fun onPause(){
-        stopTurnSensors()
         handler.removeCallbacks(refresh)
         super.onPause()
     }
     override fun onDestroy(){
-        stopTurnSensors()
         handler.removeCallbacks(refresh)
         if(::mapView.isInitialized){
             runCatching{mapView.destroyAll()}
