@@ -17,11 +17,16 @@ class NavigatorPrefs(context: Context) {
         set(value){store.edit().putString("adapterName",value).apply()}
 
     var obdFactor: Double
-        get()=store.getFloat("obdFactor",0.96f).toDouble().coerceIn(0.70,1.30)
+        get()=store.getFloat("obdFactor",0.97f).toDouble().coerceIn(0.70,1.30)
         set(value){
             if(value.isFinite() && value in 0.70..1.30)
                 store.edit().putFloat("obdFactor",value.toFloat()).apply()
         }
+
+    /** Off by default: only a deliberate user tap enables learned DR gains. */
+    var learnedDrEnabled: Boolean
+        get()=store.getBoolean("learnedDrEnabled",false)
+        set(value){store.edit().putBoolean("learnedDrEnabled",value).apply()}
 
     var autoEnabled: Boolean
         get()=store.getBoolean("autoEnabled",true)

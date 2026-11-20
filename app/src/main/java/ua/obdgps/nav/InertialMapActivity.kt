@@ -1,7 +1,9 @@
 package ua.obdgps.nav
 
+import android.Manifest
 import android.app.Activity
 import android.content.Context
+import android.content.pm.PackageManager
 import android.content.Intent
 import android.graphics.*
 import android.net.Uri
@@ -39,12 +41,27 @@ class InertialMapActivity : Activity() {
     private val handler=Handler(Looper.getMainLooper())
     private lateinit var map: InertialTrackMapView
     private lateinit var info: TextView
+    // Preview belongs only to the UI. It never feeds the independent DR.
+    private fun previewFix():State.NavFix? {
+        val candidate=State.navFix?:return null
+        val elapsed=SystemClock.elapsedRealtime()-candidate.elapsedMs
+        if(elapsed<0L || elapsed>15_000L ||
+            candidate.lat !in -85.0..85.0 ||
+            candidate.lon !in -180.0..180.0 ||
+            GpsSpoofGuard.isLima(candidate.lat,candidate.lon))return null
+        return candidate
+    }
     private fun dp(n:Int)=(resources.displayMetrics.density*n+0.5f).toInt()
 
     private fun button(label:String, action:()->Unit): Button = Button(this).apply {
         text=label
         isAllCaps=false
-        textSize=14f
+        textSize=12f
+        maxLines=2
+        gravity=Gravity.CENTER
+        includeFontPadding=false
+        minWidth=0;minimumWidth=0
+        setPadding(dp(2),0,dp(2),0)
         setTextColor(primaryTextColor)
         setBackgroundColor(surface)
         setOnClickListener { action() }
@@ -71,20 +88,43 @@ class InertialMapActivity : Activity() {
 
     private val refresh=object: Runnable {
         override fun run() {
-            val point=State.inertialPoint
-            val trail=State.inertialTrail.toList()
-            map.updateFromInertial(point,trail)
-            if(point==null) {
-                info.text="Нет точек DR. Запусти ведение по датчикам на главном экране."
-            } else {
-                val old=SystemClock.elapsedRealtime()-point.elapsedMs>5000L
-                val speed=String.format(Locale.getDefault(),"%.1f",point.speedKmh)
-                val lat=String.format(Locale.US,"%.6f",point.latitude)
-                val lon=String.format(Locale.US,"%.6f",point.longitude)
-                val mode=if(State.dr && !old)"DR работает" else "Последняя точка DR"
-                info.text=mode+" · "+speed+" км/ч · "+point.bearing.toInt()+"°\n"+
-                    lat+", "+lon+" · точек: "+trail.size
-            }
+            val obdDr=State.networkDrPoint
+            val obdDrTrail=State.networkDrTrail.toList()
+            val raw=State.rawGpsTrail.toList()
+            val preview=previewFix()
+            map.updateDiagnostic(obdDr,obdDrTrail,raw,preview)
+            val lastRaw=raw.lastOrNull()
+            val gpsLabel=lastRaw?.let{
+                String.format(Locale.US,"%.5f, %.5f",it.latitude,it.longitude)
+            }?:"нет точек"
+            val obdDrLabel=obdDr?.let{
+                String.format(Locale.US,"%.5f, %.5f · %.1f км/ч",
+                    it.latitude,it.longitude,it.speedKmh)
+            }?:"нет стартовой точки"
+            val offset=if(lastRaw!=null && obdDr!=null){
+                val from=android.location.Location("gps").apply{
+                    latitude=lastRaw.latitude;longitude=lastRaw.longitude
+                }
+                val to=android.location.Location("sensor").apply{
+                    latitude=obdDr.latitude;longitude=obdDr.longitude
+                }
+                val metres=from.distanceTo(to).toDouble()
+                if(metres>=1000.0)
+                    String.format(Locale.getDefault(),"%.1f км",metres/1000.0)
+                else String.format(Locale.getDefault(),"%.0f м",metres)
+            } else "—"
+            val previewLabel=preview?.let {
+                String.format(Locale.US,"%.5f, %.5f · %s · ±%.0f м",
+                    it.lat,it.lon,it.source,it.accuracy)
+            } ?: "ожидаю достоверное GPS / Wi-Fi / сеть"
+            info.text=State.diagnosticText+
+                "\nТекущая позиция: $previewLabel"+
+                "\nGPS: $gpsLabel · точек: ${raw.size}"+
+                "\nDR без GPS: $obdDrLabel · точек: ${obdDrTrail.size}"+
+                "\nРасхождение GPS / DR: $offset"+
+                "\n"+State.diagnosticNetworkStatus+
+                "\n"+State.learnedDrStatus+
+                "\n"+State.gpsSpoofStatus
             handler.postDelayed(this,1000L)
         }
     }
@@ -108,20 +148,6 @@ class InertialMapActivity : Activity() {
                 insets
             }
         }
-        val titleRow=LinearLayout(this).apply {
-            orientation=LinearLayout.HORIZONTAL
-            gravity=Gravity.CENTER_VERTICAL
-        }
-        titleRow.addView(TextView(this).apply {
-            text="Тестовая карта · DR"
-            textSize=20f
-            typeface=Typeface.DEFAULT_BOLD
-            setTextColor(primaryTextColor)
-        },LinearLayout.LayoutParams(0,LinearLayout.LayoutParams.WRAP_CONTENT,1f))
-        titleRow.addView(button("Назад") { finish() },
-            LinearLayout.LayoutParams(dp(82),dp(44)))
-        column.addView(titleRow)
-
         info=TextView(this).apply {
             setTextColor(secondary)
             textSize=13f
@@ -129,6 +155,32 @@ class InertialMapActivity : Activity() {
             text="Ожидание расчётных координат..."
         }
         column.addView(info)
+        val buttons=LinearLayout(this).apply{
+            orientation=LinearLayout.HORIZONTAL
+        }
+        buttons.addView(button("Начать\nдва трека"){
+            try {
+                startForegroundService(Intent(this,NavService::class.java)
+                    .setAction(NavService.START_DIAGNOSTIC))
+            }catch(e:Exception){
+                info.text="Не удалось запустить тест: "+(e.localizedMessage?:"ошибка")
+            }
+        },LinearLayout.LayoutParams(0,dp(47),1f))
+        buttons.addView(button("■ Остановить"){
+            startService(Intent(this,NavService::class.java)
+                .setAction(NavService.STOP_DIAGNOSTIC))
+        },LinearLayout.LayoutParams(0,dp(47),1f))
+        buttons.addView(button("Профиль\nошибок"){
+            android.app.AlertDialog.Builder(this)
+                .setTitle("Обучение GPS против DR")
+                .setMessage(State.learnedDrStatus+"\n\n"+
+                    State.learnedDrDetail+"\n\n"+
+                    "Сеть обучается только на проверенном GPS и независимом DR. "+
+                    "Поправки используются отдельно и только после включения "+
+                    "кнопкой «ИИ» в навигаторе.")
+                .setPositiveButton("Закрыть",null).show()
+        },LinearLayout.LayoutParams(0,dp(47),1f))
+        column.addView(buttons)
         val container=FrameLayout(this)
         map=InertialTrackMapView(this)
         container.addView(map,FrameLayout.LayoutParams(
@@ -150,8 +202,11 @@ class InertialMapActivity : Activity() {
             LinearLayout.LayoutParams.MATCH_PARENT,0,1f))
 
         val legend=TextView(this).apply {
-            text="● Голубой — расчёт DR    ━ Бирюзовый — маршрут\n"+
-                 "GPS для маркера не используется · без сети остаётся сетка"
+            text="● Зелёный — GPS    ● Синий — DR + OBD + сеть (БЕЗ GPS)\n"+
+                 "● Оранжевый — отклонённый GPS"+
+                 "\nВторой трек: гироскоп, OBD через Bluetooth, Wi-Fi/сотовая сеть"+
+                 "\n● Серый — позиция до запуска теста"+
+                 "\nОдна начальная координата и курс · затем GPS запрещён"
             setTextColor(secondary)
             textSize=12f
             gravity=Gravity.CENTER
@@ -174,6 +229,16 @@ class InertialMapActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        // Launch the same real GPS/network monitor that feeds navigation,
+        // even when the test screen was reopened directly. This does not
+        // start recording either diagnostic track.
+        if(checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)==
+            PackageManager.PERMISSION_GRANTED) {
+            runCatching {
+                startForegroundService(Intent(this,NavService::class.java)
+                    .setAction(NavService.MONITOR))
+            }
+        }
         handler.removeCallbacks(refresh)
         handler.post(refresh)
     }
@@ -190,16 +255,24 @@ internal class InertialTrackMapView(context:Context): View(context) {
     // multiplier is retained as automatic speed-based zoom changes.
     // 384px per OSM tile in 0.9.2 -> 576px in this version.
     private val tilePixelSize=576.0
+    // Track widths are dp, not raw px: the vehicle route must remain
+    // visible on high-density phones and large Android head units.
+    private fun lineDp(value:Float)=value*resources.displayMetrics.density
     private val tilePaint=Paint(Paint.FILTER_BITMAP_FLAG)
     private val gridPaint=Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color=Color.rgb(65,75,87);strokeWidth=1f
     }
     private val routeOutline=Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color=Color.rgb(6,32,44);strokeWidth=11f;style=Paint.Style.STROKE
+        color=Color.rgb(6,32,44);strokeWidth=lineDp(12f);style=Paint.Style.STROKE
         strokeJoin=Paint.Join.ROUND;strokeCap=Paint.Cap.ROUND
     }
+    private val navigationOutline=Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color=Color.rgb(20,36,56);strokeWidth=lineDp(15f)
+        style=Paint.Style.STROKE;strokeJoin=Paint.Join.ROUND
+        strokeCap=Paint.Cap.ROUND
+    }
     private val navigationPaint=Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color=Color.rgb(255,177,58);strokeWidth=10f
+        color=Color.rgb(255,177,58);strokeWidth=lineDp(12f)
         style=Paint.Style.STROKE;strokeJoin=Paint.Join.ROUND
         strokeCap=Paint.Cap.ROUND
     }
@@ -210,7 +283,7 @@ internal class InertialTrackMapView(context:Context): View(context) {
         color=Color.rgb(171,117,242);style=Paint.Style.FILL
     }
     private val routePaint=Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color=Color.rgb(22,207,206);strokeWidth=6f;style=Paint.Style.STROKE
+        color=Color.rgb(22,207,206);strokeWidth=lineDp(9f);style=Paint.Style.STROKE
         strokeJoin=Paint.Join.ROUND;strokeCap=Paint.Cap.ROUND
     }
     private val pinHalo=Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -244,6 +317,10 @@ internal class InertialTrackMapView(context:Context): View(context) {
     private var current:State.TrailPoint?=null
     private var markerBearing:Double?=null
     private var history=emptyList<State.TrailPoint>()
+    private var diagnosticMode=false
+    private var startupFix:State.NavFix?=null
+    private var gpsRawHistory=emptyList<State.RawGpsPoint>()
+    private var obdNetworkHistory=emptyList<State.TrailPoint>()
     private var follow=true
     private var navigation=false
     private var routeGuidanceActive=false
@@ -277,6 +354,13 @@ internal class InertialTrackMapView(context:Context): View(context) {
     private var touchY=0f
     private var multitouchSeen=false
     private var pinchAccumulator=1.0
+    // Two-finger transform: pinch zoom, midpoint panning and twist rotation
+    // may happen in one gesture without re-enabling auto heading-up.
+    private var twoFingerAngle:Double?=null
+    private var twoFingerX=0f
+    private var twoFingerY=0f
+    private var twoFingerRotationStarted=false
+    private var twoFingerRotationAccum=0.0
     private val scaleDetector=ScaleGestureDetector(context,
         object:ScaleGestureDetector.SimpleOnScaleGestureListener() {
             override fun onScaleBegin(detector:ScaleGestureDetector):Boolean {
@@ -414,7 +498,42 @@ internal class InertialTrackMapView(context:Context): View(context) {
         invalidate()
     }
 
+    fun updateDiagnostic(
+        sensorPoint:State.TrailPoint?,
+        sensorTrail:List<State.TrailPoint>,
+        gpsTrail:List<State.RawGpsPoint>,
+        preview:State.NavFix?=null
+    ){
+        diagnosticMode=true
+        obdNetworkHistory=sensorTrail
+        gpsRawHistory=gpsTrail
+        // The location shown before the test starts is a separate UI marker.
+        // It is never appended to either GPS or independent DR history.
+        startupFix=preview?.takeIf{
+            !State.diagnosticRunning && sensorTrail.isEmpty()
+        }
+        current=sensorPoint
+        markerBearing=sensorPoint?.bearing
+        if(follow){
+            // Independent DR is always the map anchor after test startup.
+            // Before startup use the same fresh accepted fix as the navigator.
+            val anchor=sensorPoint?.let{it.latitude to it.longitude}
+                ?:sensorTrail.lastOrNull()?.let{it.latitude to it.longitude}
+                ?:startupFix?.let{it.lat to it.lon}
+                ?:gpsTrail.lastOrNull{it.approved}?.let{
+                    it.latitude to it.longitude
+                }
+            if(anchor!=null){
+                centerLat=anchor.first
+                centerLon=anchor.second
+            }
+            // Spoofed raw GPS points cannot drag the camera across the world.
+        }
+        invalidate()
+    }
+
     fun updateFromInertial(point:State.TrailPoint?,trail:List<State.TrailPoint>) {
+        diagnosticMode=false
         current=point;history=trail
         markerBearing=point?.bearing?.takeIf { it.isFinite() }
         if(follow && point!=null) {
@@ -475,6 +594,7 @@ internal class InertialTrackMapView(context:Context): View(context) {
         routeCourse:Double?=null,
         guidanceActive:Boolean=false
     ) {
+        diagnosticMode=false
         navigation=true
         routeGuidanceActive=guidanceActive
         routePoints=route
@@ -534,19 +654,79 @@ internal class InertialTrackMapView(context:Context): View(context) {
             anchorX().toFloat(),anchorY().toFloat())
     }
 
-    /** Keep the geographic point below the fingers fixed while zooming. */
-    private fun zoomAround(targetZoom:Int,focusX:Float,focusY:Float) {
-        if(zoom==targetZoom || width<=0 || height<=0)return
-        val (anchorLat,anchorLon)=geoAt(focusX,focusY)
-        zoom=targetZoom
+    /** Keep the same ground point below the touch centroid after a gesture. */
+    private fun keepGeoUnderFinger(
+        latitude:Double,longitude:Double,focusX:Float,focusY:Float
+    ){
         val world=tilePixelSize*(1 shl zoom)
         val offset=screenOffsets(focusX.toDouble(),focusY.toDouble())
-        val centerWorldX=worldX(anchorLon)-offset.first
-        val centerWorldY=worldY(anchorLat)-offset.second
+        val centerWorldX=worldX(longitude)-offset.first
+        val centerWorldY=worldY(latitude)-offset.second
         centerLon=(((centerWorldX%world)+world)%world)/world*360.0-180.0
         val my=centerWorldY.coerceIn(1.0,world-1.0)
         centerLat=Math.toDegrees(atan(sinh(Math.PI*(1.0-2.0*my/world))))
         invalidate()
+    }
+
+    /** Keep the geographic point below the fingers fixed while zooming. */
+    private fun zoomAround(targetZoom:Int,focusX:Float,focusY:Float) {
+        if(zoom==targetZoom || width<=0 || height<=0)return
+        val (lat,lon)=geoAt(focusX,focusY)
+        zoom=targetZoom
+        keepGeoUnderFinger(lat,lon,focusX,focusY)
+    }
+
+    private fun gestureAngle(event:MotionEvent):Double =
+        Math.toDegrees(atan2(
+            (event.getY(1)-event.getY(0)).toDouble(),
+            (event.getX(1)-event.getX(0)).toDouble()
+        ))
+
+    private fun beginTwoFingerGesture(event:MotionEvent) {
+        if(event.pointerCount<2)return
+        multitouchSeen=true
+        movedDuringTouch=true
+        follow=false
+        manualZoomUntilMs=SystemClock.elapsedRealtime()+60_000L
+        twoFingerAngle=gestureAngle(event)
+        twoFingerX=(event.getX(0)+event.getX(1))*0.5f
+        twoFingerY=(event.getY(0)+event.getY(1))*0.5f
+        twoFingerRotationStarted=false
+        twoFingerRotationAccum=0.0
+    }
+
+    private fun moveTwoFingers(event:MotionEvent){
+        if(event.pointerCount<2)return
+        val angle=gestureAngle(event)
+        val x=(event.getX(0)+event.getX(1))*0.5f
+        val y=(event.getY(0)+event.getY(1))*0.5f
+        val previous=twoFingerAngle
+        if(previous==null){
+            beginTwoFingerGesture(event)
+            return
+        }
+        val delta=deltaAngle(angle,previous)
+        // Keep the geographic point under the initial midpoint when both
+        // fingers move together, including simultaneous pinch and rotation.
+        val (lat,lon)=geoAt(twoFingerX,twoFingerY)
+        twoFingerRotationAccum+=delta
+        // Threshold avoids accidental rotation during straight pinch zoom.
+        if(twoFingerRotationStarted || abs(twoFingerRotationAccum)>=4.0){
+            twoFingerRotationStarted=true
+            headingUp=true
+            headingInitialized=true
+            // Canvas rotates by -cameraHeading, so clockwise finger twist
+            // must decrease cameraHeading to turn the map clockwise.
+            cameraHeading=normalizedCourse(cameraHeading-
+                if(abs(twoFingerRotationAccum)>=4.0)
+                    twoFingerRotationAccum else delta)
+            targetHeading=cameraHeading
+            twoFingerRotationAccum=0.0
+        }
+        keepGeoUnderFinger(lat,lon,x,y)
+        twoFingerAngle=angle
+        twoFingerX=x
+        twoFingerY=y
     }
 
     private fun worldX(lon:Double)=((lon+180.0)/360.0)*tilePixelSize*(1 shl zoom)
@@ -631,6 +811,8 @@ internal class InertialTrackMapView(context:Context): View(context) {
                 } else path.lineTo(x,y)
                 lastX=x;lastY=y
             }
+            // Dark outer edge separates the thick orange route from roads.
+            canvas.drawPath(path,navigationOutline)
             canvas.drawPath(path,navigationPaint)
         }
         if(navigation) {
@@ -643,7 +825,14 @@ internal class InertialTrackMapView(context:Context): View(context) {
                 canvas.drawCircle(x,y,12f,startPaint)
             }
         }
-        if(history.size>=2) {
+        if(diagnosticMode) {
+            drawDiagnosticTraces(canvas)
+            startupFix?.let{
+                val (x,y)=point(it.lat,it.lon)
+                canvas.drawCircle(x,y,13f,initialFixOutline)
+                canvas.drawCircle(x,y,10f,initialFixPaint)
+            }
+        } else if(history.size>=2) {
             val line=Path()
             var first=true
             var previousX=0f;var previousY=0f
@@ -687,7 +876,122 @@ internal class InertialTrackMapView(context:Context): View(context) {
                 canvas.restore()
             }
         }
+        if(diagnosticMode) current?.let {
+            // Draw last so the blue ring is visible around the car arrow
+            // even when GPS and DR currently have identical coordinates.
+            val (x,y)=point(it.latitude,it.longitude)
+            canvas.drawCircle(x,y,40f,diagnosticDrRing)
+        }
         canvas.restore()
+    }
+
+    private val rawGpsLine=Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color=Color.rgb(51,220,119)
+        style=Paint.Style.STROKE
+        strokeWidth=lineDp(9f)
+        strokeCap=Paint.Cap.ROUND
+        strokeJoin=Paint.Join.ROUND
+    }
+    private val obdNetworkLine=Paint(Paint.ANTI_ALIAS_FLAG).apply{
+        color=Color.rgb(20,146,255)
+        style=Paint.Style.STROKE
+        strokeWidth=lineDp(10f)
+        strokeCap=Paint.Cap.ROUND
+        strokeJoin=Paint.Join.ROUND
+    }
+    // Keep the independent (blue) position visible even before the car
+    // moves or if OBD has temporarily stopped supplying fresh speed.
+    private val diagnosticDrMarker=Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color=Color.rgb(20,146,255)
+        style=Paint.Style.FILL
+    }
+    private val diagnosticDrRing=Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color=Color.rgb(20,146,255)
+        style=Paint.Style.STROKE
+        strokeWidth=lineDp(7f)
+    }
+    private val initialFixPaint=Paint(Paint.ANTI_ALIAS_FLAG).apply{
+        color=Color.rgb(208,220,236)
+        style=Paint.Style.FILL
+    }
+    private val initialFixOutline=Paint(Paint.ANTI_ALIAS_FLAG).apply{
+        color=Color.rgb(40,52,66)
+        strokeWidth=4f
+        style=Paint.Style.STROKE
+    }
+    private val rejectedGpsPaint=Paint(Paint.ANTI_ALIAS_FLAG).apply{
+        color=Color.rgb(255,172,50)
+        style=Paint.Style.FILL
+    }
+
+    private fun drawDiagnosticTraces(canvas:Canvas){
+        // GPS is never blended with the OBD+network DR track. Suspicious
+        // observations are orange, isolated and cannot drag the camera
+        // across the world during a spoofing event.
+        val gpsPath=Path()
+        var gpsStarted=false
+        var oldX=0f
+        var oldY=0f
+        var prev:State.RawGpsPoint?=null
+        for(sample in gpsRawHistory){
+            val (x,y)=point(sample.latitude,sample.longitude)
+            if(!sample.approved){
+                if(x in -30f..(width+30f) && y in -30f..(height+30f))
+                    canvas.drawCircle(x,y,10f,rejectedGpsPaint)
+                gpsStarted=false
+                prev=null
+                continue
+            }
+            val discontinuity=prev?.let{
+                val dy=(sample.latitude-it.latitude)*111195.0
+                val dx=(sample.longitude-it.longitude)*111195.0*
+                    cos(Math.toRadians(sample.latitude))
+                hypot(dx,dy)>3000.0
+            }?:true
+            if(!gpsStarted || discontinuity ||
+                abs(x-oldX)>width*.8f || abs(y-oldY)>height*.8f)
+                gpsPath.moveTo(x,y)
+            else gpsPath.lineTo(x,y)
+            gpsStarted=true
+            oldX=x;oldY=y
+            prev=sample
+        }
+        canvas.drawPath(gpsPath,rawGpsLine)
+
+        val drPath=Path()
+        var drStarted=false
+        var lastX=0f
+        var lastY=0f
+        for(sample in obdNetworkHistory){
+            val (x,y)=point(sample.latitude,sample.longitude)
+            if(!drStarted || abs(x-lastX)>width*.8f ||
+                abs(y-lastY)>height*.8f)
+                drPath.moveTo(x,y)
+            else drPath.lineTo(x,y)
+            drStarted=true
+            lastX=x;lastY=y
+        }
+        canvas.drawPath(drPath,obdNetworkLine)
+        // A Path with only moveTo() is invisible. Show the blue origin
+        // even at rest, and breadcrumbs so the independent history is clear.
+        obdNetworkHistory.firstOrNull()?.let {
+            val (x,y)=point(it.latitude,it.longitude)
+            canvas.drawCircle(x,y,10f,diagnosticDrMarker)
+        }
+        if(obdNetworkHistory.size>2){
+            for(i in 1 until obdNetworkHistory.size step 8){
+                val sample=obdNetworkHistory[i]
+                val (x,y)=point(sample.latitude,sample.longitude)
+                canvas.drawCircle(x,y,4.5f,diagnosticDrMarker)
+            }
+        }
+        gpsRawHistory.lastOrNull{it.approved}?.let{
+            val (x,y)=point(it.latitude,it.longitude)
+            canvas.drawCircle(x,y,11f,rawGpsLine.apply{
+                style=Paint.Style.FILL
+            })
+            rawGpsLine.style=Paint.Style.STROKE
+        }
     }
 
     private fun tileBitmap(z:Int,x:Int,y:Int):Bitmap? {
@@ -801,13 +1105,14 @@ internal class InertialTrackMapView(context:Context): View(context) {
                 return true
             }
             MotionEvent.ACTION_POINTER_DOWN -> {
-                multitouchSeen=true
-                movedDuringTouch=true
+                beginTwoFingerGesture(event)
                 return true
             }
             MotionEvent.ACTION_POINTER_UP -> {
                 multitouchSeen=true
                 movedDuringTouch=true
+                twoFingerAngle=null
+                twoFingerRotationStarted=false
                 val removed=event.actionIndex
                 val active=if(removed==0)1 else 0
                 if(active<event.pointerCount) {
@@ -817,8 +1122,11 @@ internal class InertialTrackMapView(context:Context): View(context) {
                 return true
             }
             MotionEvent.ACTION_MOVE -> {
-                if(event.pointerCount>1 || scaleDetector.isInProgress)
+                if(event.pointerCount>=2) {
+                    moveTwoFingers(event)
                     return true
+                }
+                if(scaleDetector.isInProgress)return true
                 if(multitouchSeen)return true
                 val dx=event.x-touchX
                 val dy=event.y-touchY
@@ -844,10 +1152,14 @@ internal class InertialTrackMapView(context:Context): View(context) {
                     selectionCallback?.invoke(lat,lon)
                 }
                 multitouchSeen=false
+                twoFingerAngle=null
+                twoFingerRotationStarted=false
                 return true
             }
             MotionEvent.ACTION_CANCEL -> {
                 multitouchSeen=false
+                twoFingerAngle=null
+                twoFingerRotationStarted=false
                 return true
             }
         }

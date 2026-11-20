@@ -179,6 +179,25 @@ class OfflineCountryDownloadService:Service() {
     private fun transfer(kind:String,stage:String) {
         val dest=outputFile(kind)
         val partial=File(dest.parentFile,"download-ukraine.$kind.part")
+        // An upgrade from an older APK must reuse the saved country file.
+        // Validating on the background download worker is safe; never
+        // replace a valid ~1GB map or SQLite database without need.
+        val alreadyValid=dest.isFile && runCatching{
+            validate(kind,dest)
+            true
+        }.getOrDefault(false)
+        if(alreadyValid){
+            progress=progress.copy(
+                title=if(kind=="map")
+                    "Карта Украины уже сохранена" else
+                    "База адресов Украины уже сохранена",
+                downloaded=dest.length(),total=dest.length(),
+                overallLabel=stage,
+                message="Файл из прошлой версии проверен и будет использован без загрузки"
+            )
+            updateNotification(force=true)
+            return
+        }
         val minimum=if(kind=="map")MIN_MAP else MIN_POI
         val maximum=if(kind=="map")MAX_MAP else MAX_POI
         if(dest.exists() && dest.length()>minimum) {

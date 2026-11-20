@@ -1,6 +1,8 @@
 package ua.obdgps.nav
 
 import android.Manifest
+import android.hardware.Sensor
+import android.hardware.SensorManager
 import android.app.Activity
 import android.app.AlertDialog
 import android.bluetooth.BluetoothAdapter
@@ -11,7 +13,6 @@ import android.location.LocationManager
 import android.os.SystemClock
 import java.util.Locale
 import android.content.Intent
-import android.content.ActivityNotFoundException
 import android.net.Uri
 import android.content.pm.PackageManager
 import android.os.Bundle
@@ -41,13 +42,17 @@ class MainActivity : Activity() {
     private val handler = Handler(Looper.getMainLooper())
     private lateinit var root: LinearLayout
     private lateinit var status: TextView
-    private lateinit var sensorStatus: TextView
+    private lateinit var sensorHint: TextView
+    private val sensorButtons=linkedMapOf<CalibrationSensor,Button>()
+    private var selectedSensor=CalibrationSensor.COMPASS
     private var compassDialogStatus: TextView? = null
+    private var inertialDialogStatus: TextView? = null
     private lateinit var gpsSpeedValue: TextView
     private lateinit var obdSpeedValue: TextView
     private var gpsSpeedKmh: Double? = null
     private var gpsSpeedUpdatedElapsedMs = 0L
     private val locationManager by lazy { getSystemService(LocationManager::class.java) }
+    private val sensorManager by lazy { getSystemService(SensorManager::class.java) }
     private val bluetoothManager by lazy { getSystemService(BluetoothManager::class.java) }
     private val gpsSpeedListener = object : LocationListener {
         override fun onLocationChanged(location: Location) {
@@ -258,27 +263,184 @@ class MainActivity : Activity() {
             status.text="Режим: ${State.navigationMode} · Авто: ${if(State.autoEnabled)"вкл" else "выкл"}\n"+
                 "Bluetooth: $bluetooth · GPS: $gps\n"+
                 "Положение: ${State.sourceDescription}\n"+
+                "Офлайн: ${State.offlineUkraineStatus}\n"+
                 "ELM: ${State.deviceName}\n"+
                 "GPS: ${State.gpsText}\n"+
+                "Контроль GPS / DR: ${State.gpsSpoofStatus}\n"+
                 "Протокол: ${State.modeLabel}\n"+
                 "OBD: ${"%.1f".format(Locale.getDefault(),State.obdFactor*100)}% от ЭБУ\n"+
                 "Статус: ${State.message}\n"+
                 if(State.dr) "Путь: ${State.position}\nРост погрешности: ~${State.driftMeters.toInt()} м" else ""
-            sensorStatus.text="Движение: ${State.motionText}\n"+
-                "Ускорение: ${State.accelerationText}\n"+
-                "Компас: ${State.compassStatus}\n"+
-                "${State.compassAccuracyText}\n"+
-                "Привязка курса: ${State.compassAlignmentText}\n"+
-                "Направление: ${State.directionText}\n"+
-                "Калибровка: ${State.calibrationText}\n"+
-                State.sensorAvailability
-            compassDialogStatus?.text=
-                State.compassAccuracyText+"\n"+State.compassCalibrationText
+            updateSensorCards()
+            compassDialogStatus?.text=State.compassAccuracyText+"\n"+
+                State.compassCalibrationText+"\n"+State.compassAlignmentText
+            inertialDialogStatus?.text=State.calibrationText
 
             if (picker != null) updateDevicePicker()
             handler.postDelayed(this,750)
         }
     }
+    private fun sensorSnapshot():SensorCalibrationSnapshot {
+        val now=SystemClock.elapsedRealtime()
+        fun fresh(at:Long)=at>0L && now-at in 0L..3500L
+        // The hardware can be present even before the navigation service
+        // starts (e.g. while Bluetooth/location permissions are pending).
+        fun available(type:Int)=sensorManager.getDefaultSensor(type)!=null
+        val motionPrefs=getSharedPreferences("motion",MODE_PRIVATE)
+        val gyroPresent=available(Sensor.TYPE_GYROSCOPE)
+        val accelPresent=available(Sensor.TYPE_ACCELEROMETER)
+        val linearPresent=available(Sensor.TYPE_LINEAR_ACCELERATION)
+        val gravityPresent=available(Sensor.TYPE_GRAVITY)||accelPresent
+        val compassPresent=available(Sensor.TYPE_MAGNETIC_FIELD) &&
+            available(Sensor.TYPE_ROTATION_VECTOR)
+        val savedGyro=motionPrefs.contains("yawBias") &&
+            motionPrefs.getFloat("yawBias",0f).isFinite()
+        val savedAccel=motionPrefs.contains("accelBias") &&
+            motionPrefs.getFloat("accelBias",0f).isFinite()
+        return SensorCalibrationSnapshot(
+            gyroAvailable=gyroPresent,
+            accelAvailable=accelPresent,
+            linearAccelAvailable=linearPresent,
+            gravityAvailable=gravityPresent,
+            compassAvailable=compassPresent,
+            gyroCalibrated=State.gyroCalibrated || savedGyro,
+            accelCalibrated=State.accelCalibrated || savedAccel,
+            compassCheckPassed=State.compassMagnetCheckPassed ||
+                motionPrefs.getBoolean("compassCheckPassed",false),
+            compassAligned=State.compassAligned || motionPrefs.contains("carOffset"),
+            compassReliable=State.compassReliableNow,
+            gyroFresh=fresh(State.gyroSampleMs),
+            accelFresh=fresh(State.accelSampleMs),
+            compassFresh=fresh(State.compassSampleMs),
+            calibrationRunning=State.stationaryCalibrationRunning,
+            compassChecking=State.compassCheckRunning,
+            yawDegreesPerSecond=State.yawDegPerSec,
+            accelerationMetersPerSecond2=State.linearAccelerationMps2,
+            headingDegrees=State.compassHeadingDeg,
+            fieldMicroTesla=State.compassFieldMicroTesla,
+            calibrationMessage=State.calibrationText,
+            compassCheckMessage=State.compassCalibrationText,
+            compassAlignmentMessage=State.compassAlignmentText
+        )
+    }
+
+    private fun addSensorCards(){
+        val row=LinearLayout(this).apply {
+            orientation=LinearLayout.HORIZONTAL
+            setPadding(0,dip(6),0,dip(3))
+        }
+        for(sensor in CalibrationSensor.values()){
+            val button=Button(this).apply {
+                isAllCaps=false
+                textSize=if(sensor==CalibrationSensor.ACCELEROMETER)10f else 11f
+                includeFontPadding=false
+                maxLines=3
+                gravity=Gravity.CENTER
+                minWidth=0;minimumWidth=0
+                minHeight=0;minimumHeight=0
+                setTextColor(primaryText)
+                background=GradientDrawable().apply {
+                    cornerRadius=dip(10).toFloat()
+                    setColor(panelColor)
+                    setStroke(dip(1),Color.rgb(81,96,114))
+                }
+                setPadding(dip(1),dip(3),dip(1),dip(3))
+                setOnClickListener {
+                    selectedSensor=sensor
+                    updateSensorCards()
+                    when(sensor){
+                        CalibrationSensor.COMPASS -> showCompassCheck()
+                        CalibrationSensor.GYROSCOPE,
+                        CalibrationSensor.ACCELEROMETER -> showStationaryCalibration(sensor)
+                    }
+                }
+            }
+            row.addView(button,LinearLayout.LayoutParams(
+                0,dip(83),1f).apply{setMargins(dip(2),0,dip(2),0)})
+            sensorButtons[sensor]=button
+        }
+        root.addView(row)
+        sensorHint=TextView(this).apply {
+            textSize=12f
+            setTextColor(secondaryText)
+            gravity=Gravity.START
+            setPadding(dip(10),dip(9),dip(10),dip(10))
+            background=GradientDrawable().apply {
+                cornerRadius=dip(9).toFloat()
+                setColor(panelColor)
+                setStroke(dip(1),Color.rgb(74,87,102))
+            }
+        }
+        root.addView(sensorHint,LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+            setMargins(dip(2),dip(3),dip(2),dip(7))
+        })
+        updateSensorCards()
+    }
+
+    private fun updateSensorCards(){
+        if(!::sensorHint.isInitialized)return
+        val snapshot=sensorSnapshot()
+        for((sensor,button) in sensorButtons){
+            val complete=SensorCalibrationCards.checked(sensor,snapshot)
+            button.text=SensorCalibrationCards.buttonText(sensor,snapshot)
+            button.contentDescription=button.text.toString().replace("\n"," ") +
+                if(complete) ". Калибровка выполнена" else ". Калибровка не завершена"
+            val selected=sensor==selectedSensor
+            val border=when {
+                complete -> Color.rgb(65,196,124)
+                selected -> Color.rgb(133,191,255)
+                else -> Color.rgb(81,96,114)
+            }
+            (button.background as? GradientDrawable)?.setStroke(
+                dip(if(selected)2 else 1),border)
+        }
+        sensorHint.text=SensorCalibrationCards.hint(selectedSensor,snapshot)
+    }
+
+    private fun showStationaryCalibration(sensor:CalibrationSensor) {
+        val name=if(sensor==CalibrationSensor.GYROSCOPE)
+            "гироскопа" else "акселерометра"
+        val content=LinearLayout(this).apply {
+            orientation=LinearLayout.VERTICAL
+            setPadding(dip(20),dip(8),dip(20),dip(10))
+        }
+        content.addView(TextView(this).apply {
+            text="Калибровка $name выполняется вместе с другим датчиком. "+
+                "Автомобиль должен стоять, свежие данные OBD — 0 км/ч. "+
+                "Телефон не двигать 5 секунд. Нужны не менее 40 измерений "+
+                "гироскопа и 20 измерений линейного ускорения. "+
+                "Среднее вращение — не более 0,14 рад/с. "+
+                "Галочки появятся на обоих датчиках только после "+
+                "успешного завершения всех проверок."
+            textSize=14f
+            setTextColor(primaryText)
+        })
+        val result=TextView(this).apply {
+            text=State.calibrationText
+            textSize=14f
+            setTextColor(Color.rgb(142,195,251))
+            setPadding(0,dip(12),0,0)
+        }
+        content.addView(result)
+        inertialDialogStatus=result
+        val dialog=AlertDialog.Builder(this)
+            .setTitle("Калибровка $name")
+            .setView(content)
+            .setPositiveButton("Начать 5 с",null)
+            .setNegativeButton("Закрыть",null)
+            .create()
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                send(NavService.CALIBRATE)
+                result.text="Проверяю OBD и датчики. "+State.calibrationText
+            }
+        }
+        dialog.setOnDismissListener {inertialDialogStatus=null}
+        dialog.show()
+    }
+
     private fun addButton(parent: LinearLayout, caption: String, click: ()->Unit) {
         parent.addView(Button(this).apply {
             text = caption
@@ -458,10 +620,14 @@ class MainActivity : Activity() {
         }
         content.addView(TextView(this).apply {
             text="Этап 1: на стоящей машине вынь телефон из магнитного крепления. " +
-                "Вдали от автомобиля и металлических предметов плавно повращай " +
-                "его восьмёркой во всех плоскостях 15 секунд.\n\n" +
-                "Этот шаг проверяет точность магнитного датчика Android. " +
-                "Он не задаёт направление машины."
+                "Вдали от металла вращай его восьмёркой во всех плоскостях "+
+                "15 секунд. Нужны 25+ замеров, изменение поля по двум осям "+
+                "и достоверный компас.\n\n"+
+                "Этап 2: закрепи телефон в рабочем положении, нажми "+
+                "«Привязка к GPS». При хорошем GPS едь прямо со скоростью "+
+                "от 15 км/ч. Привязка завершится автоматически после "+
+                "четырёх устойчивых измерений. Во время движения "+
+                "телефоном пользоваться не нужно."
             textSize=15f
             setTextColor(primaryText)
         })
@@ -477,12 +643,17 @@ class MainActivity : Activity() {
             .setTitle("Проверка и калибровка компаса")
             .setView(content)
             .setPositiveButton("Начать 15 с",null)
+            .setNeutralButton("Привязка к GPS",null)
             .setNegativeButton("Закрыть",null)
             .create()
         dialog.setOnShowListener {
             dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
                 send(NavService.CHECK_COMPASS)
-                result.text="Запущена проверка. Вращай телефон восьмёркой 15 секунд..."
+                result.text="Запрос на проверку. "+State.compassCalibrationText
+            }
+            dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener {
+                send(NavService.ALIGN_COMPASS)
+                result.text="GPS-привязка: "+State.compassAlignmentText
             }
         }
         dialog.setOnDismissListener { compassDialogStatus=null }
@@ -660,12 +831,7 @@ class MainActivity : Activity() {
             setPadding(dip(4), dip(8), dip(4), dip(15))
         }
         root.addView(status)
-        sensorStatus=TextView(this).apply {
-            textSize=14f
-            setTextColor(secondaryText)
-            setPadding(dip(4),dip(7),dip(4),dip(15))
-        }
-        root.addView(sensorStatus)
+        addSensorCards()
         addButton(root,"Настройки") { showSettingsMenu() }
         addButton(root,"Принудительно: вести по датчикам") { send(NavService.START_DR) }
         addButton(root,"Вернуться к GPS") { send(NavService.STOP_DR) }
@@ -675,52 +841,25 @@ class MainActivity : Activity() {
         addButton(root,"Векторная офлайн-карта · дороги и адреса") {
             startActivity(Intent(this,OfflineVectorNavigatorActivity::class.java))
         }
-        addButton(root,"Тестовая карта · только расчёт DR") {
+        addButton(root,"Тест двух треков · GPS и DR без GPS") {
             startActivity(Intent(this, InertialMapActivity::class.java))
         }
-        addButton(root,"Открыть Google Maps") { openGoogleMaps() }
         addButton(root,"Остановить мониторинг") { send(NavService.EXIT) }
         handler.post {showStartupPermissionsIfMissing()}
-    }
-    private fun openGoogleMaps() {
-        val mapsPackage = "com.google.android.apps.maps"
-
-        // Android 11+ package visibility: declared in AndroidManifest <queries>.
-        // Prefer launching Maps normally, without forcing a destination.
-        try {
-            val launch = packageManager.getLaunchIntentForPackage(mapsPackage)
-            if (launch != null) {
-                startActivity(launch)
-                return
-            }
-        } catch (_: Exception) {
-            // Fall through to a verified ACTION_VIEW intent.
-        }
-
-        try {
-            val mapsLink = Intent(Intent.ACTION_VIEW, Uri.parse("https://www.google.com/maps/"))
-                .setPackage(mapsPackage)
-            startActivity(mapsLink)
-            return
-        } catch (_: ActivityNotFoundException) {
-            // Maps may be missing or disabled. Try a browser instead.
-        } catch (_: SecurityException) {
-            // The package may reject the intent; try the browser instead.
-        }
-
-        try {
-            val browser = Intent(Intent.ACTION_VIEW, Uri.parse("https://www.google.com/maps/"))
-                .addCategory(Intent.CATEGORY_BROWSABLE)
-            startActivity(browser)
-            State.message = "Google Maps открылся через браузер"
-        } catch (e: Exception) {
-            val error = "Не удалось открыть Google Maps: ${e.localizedMessage ?: "нет подходящего приложения"}"
-            State.message = error
-            Toast.makeText(this, error, Toast.LENGTH_LONG).show()
-        }
+        // Offline maps are checked on the offline screen, and are never
+        // downloaded from a user-configured oblast HTTPS server at startup.
+        // Existing Ukraine map/address files survive APK updates.
     }
     override fun onResume() {
         super.onResume()
+        State.offlineUkraineStatus="Проверяю карту Украины и базу адресов..."
+        OfflineUkraineAssets.scanAsync(this){found->
+            if(!isDestroyed){
+                val map=if(found.mapValid)"найдена" else "не найдена"
+                val poi=if(found.poiValid)"найдены" else "не найдены"
+                State.offlineUkraineStatus="карта Украины $map · адреса $poi"
+            }
+        }
         monitorGpsSpeed()
         if(hasPermissions()) send(NavService.MONITOR)
         handler.removeCallbacks(refresh)

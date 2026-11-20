@@ -22,8 +22,10 @@ object OfflineVectorStore {
         File(context.filesDir,"offline-vectors").apply{mkdirs()}
     fun mapFile(context:Context):File=File(root(context),"selected.map")
     fun poiFile(context:Context):File=File(root(context),"selected.poi")
-    fun hasMap(context:Context)=mapFile(context).let{it.isFile&&it.length()>100}
-    fun hasPois(context:Context)=poiFile(context).let{it.isFile&&it.length()>100}
+    // Preserve prior APK storage paths. Check the actual file signature
+    // instead of treating any non-empty (possibly partial) file as ready.
+    fun hasMap(context:Context)=OfflineUkraineAssets.validMapHeader(mapFile(context))
+    fun hasPois(context:Context)=OfflineUkraineAssets.validPoiHeader(poiFile(context))
     private fun validType(kind:String)=kind=="map"||kind=="poi"
 
     fun delete(context:Context,kind:String):Boolean{
@@ -115,7 +117,16 @@ object OfflineVectorStore {
      * by carriage returns. Older POI archives may not contain every building.
      */
     fun findPlaces(context:Context,query:String,limit:Int=8):List<Place> {
-        val file=poiFile(context)
+        val found=ArrayList<Place>()
+        for(file in OfflineRegionPacks.poiFiles(context)) {
+            found.addAll(findPlacesInFile(context,file,query,limit))
+            if(found.size>=limit)break
+        }
+        return found.distinctBy{it.lat to it.lon}.take(limit)
+    }
+
+    private fun findPlacesInFile(context:Context,file:File,query:String,
+                                 limit:Int):List<Place> {
         val term=query.trim().lowercase(Locale.getDefault())
         if(!file.isFile||term.length<3)return emptyList()
         val terms=term.split(Regex("[\\s,]+")).filter{

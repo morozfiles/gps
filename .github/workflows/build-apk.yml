@@ -1,7 +1,8 @@
-name: Build PHONE APK
+name: Build Android debug APK
 on:
   push:
-    branches: [main]
+    branches: [main, 'feature/**']
+  pull_request:
   workflow_dispatch:
 jobs:
   build:
@@ -25,10 +26,48 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.13'
+      - name: Prepare permanent APK signing key
+        env:
+          OBDGPS_KEYSTORE_B64: ${{ secrets.OBDGPS_KEYSTORE_B64 }}
+          OBDGPS_SIGNING_PASSWORD: ${{ secrets.OBDGPS_SIGNING_PASSWORD }}
+        shell: bash
+        run: |
+          # Never produce an APK artifact signed with an ephemeral debug key.
+          # An APK without the stable signer cannot update the installed app
+          # while preserving private ML training, maps and user settings.
+          if [ -z "$OBDGPS_KEYSTORE_B64" ] || [ -z "$OBDGPS_SIGNING_PASSWORD" ]; then
+            echo "::error title=Permanent APK signing required::Add BOTH OBDGPS_KEYSTORE_B64 and OBDGPS_SIGNING_PASSWORD in GitHub Settings > Secrets and variables > Actions. Unsigned-by-stable-key APK publishing is disabled to protect installed app data."
+            exit 1
+          fi
+          umask 077
+          printf '%s' "$OBDGPS_KEYSTORE_B64" | base64 --decode > "$RUNNER_TEMP/obdgps-signing.p12"
+          test -s "$RUNNER_TEMP/obdgps-signing.p12"
+          echo "OBDGPS_SIGNING_STORE_FILE=$RUNNER_TEMP/obdgps-signing.p12" >> "$GITHUB_ENV"
+          echo "PERMANENT_SIGNING=true" >> "$GITHUB_ENV"
+          echo "Permanent APK signing key loaded from GitHub Actions secrets."
+      - name: Run vector map projection regression tests
+        env:
+          OBDGPS_SIGNING_PASSWORD: ${{ secrets.OBDGPS_SIGNING_PASSWORD }}
+        run: gradle --no-daemon :app:testDebugUnitTest
       - name: Build debug APK
+        env:
+          OBDGPS_SIGNING_PASSWORD: ${{ secrets.OBDGPS_SIGNING_PASSWORD }}
         run: gradle --no-daemon :app:assembleDebug
+      - name: Verify APK signature
+        shell: bash
+        run: |
+          signed_info=$("$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --print-certs app/build/outputs/apk/debug/app-debug.apk)
+          printf '%s\n' "$signed_info"
+          # Hard requirement: even a successfully compiled APK must not
+          # be published unless it matches the one permanent certificate.
+          expected="0f97878527a8c268705c3bebbf4570d78034dc26159edb56d78743cfd202784e"
+          if ! printf '%s\n' "$signed_info" | grep -Fiq "Signer #1 certificate SHA-256 digest: $expected"; then
+            echo "::error title=Wrong app signing key::Refusing to publish APK signed with a different certificate."
+            exit 1
+          fi
+          echo "Verified the permanent signing certificate fingerprint."
       - uses: actions/upload-artifact@v4
         with:
-          name: PHONE-APK
+          name: OBD-GPS-Navigator-APK
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error

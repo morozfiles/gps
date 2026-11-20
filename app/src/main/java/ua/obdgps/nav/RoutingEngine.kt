@@ -16,7 +16,7 @@ import kotlin.math.*
  * available while the app remains running without the internet.
  * Public demo service has rate limits and NO availability guarantee.
  */
-class RoutingEngine {
+open class RoutingEngine {
     data class Point(val lat:Double,val lon:Double)
     data class Turn(val shapeIndex:Int,val instruction:String,val voice:String,val type:Int)
     data class Progress(
@@ -58,7 +58,7 @@ class RoutingEngine {
     }
     private val main=Handler(Looper.getMainLooper())
 
-    fun request(from:Point,to:Point,callback:(Result<Route>)->Unit) {
+    open fun request(from:Point,to:Point,callback:(Result<Route>)->Unit) {
         if(!valid(from)||!valid(to)) {
             callback(Result.failure(IllegalArgumentException("Некорректные координаты")))
             return

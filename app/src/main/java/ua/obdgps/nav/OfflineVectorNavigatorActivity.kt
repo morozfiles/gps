@@ -2,6 +2,9 @@ package ua.obdgps.nav
 
 import android.app.Activity
 import android.app.AlertDialog
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.content.Intent
 import android.graphics.Canvas
 import android.graphics.Color
@@ -13,6 +16,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
+import android.speech.tts.TextToSpeech
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
@@ -29,14 +33,16 @@ import java.util.concurrent.Executors
 import kotlin.math.*
 
 import org.mapsforge.core.model.LatLong
-import org.mapsforge.core.model.Point
+import org.mapsforge.core.util.MercatorProjection
+import org.mapsforge.core.util.Parameters
 import org.mapsforge.core.model.Rotation
 import org.mapsforge.map.android.graphics.AndroidGraphicFactory
 import org.mapsforge.map.android.util.AndroidUtil
 import org.mapsforge.map.android.view.MapView
 import org.mapsforge.map.layer.renderer.TileRendererLayer
-import org.mapsforge.map.layer.overlay.Polyline
 import org.mapsforge.map.reader.MapFile
+import org.mapsforge.map.datastore.MapDataStore
+import org.mapsforge.map.datastore.MultiMapDataStore
 import org.mapsforge.map.rendertheme.internal.MapsforgeThemes
 
 /**
@@ -53,14 +59,17 @@ class OfflineVectorNavigatorActivity:Activity() {
     private val searchWorker=Executors.newSingleThreadExecutor { r->
         Thread(r,"Mapsforge-POI-Search").apply{isDaemon=true}
     }
-    private val routing=RoutingEngine()
+    private var routing=RoutingEngine()
     private lateinit var mapView:MapView
     private lateinit var info:TextView
     private lateinit var guidance:TextView
     private lateinit var arrow:View
     private lateinit var alerts:AirAlertIndicatorsView
-    private var vectorMap:MapFile?=null
-    private var routeLine:Polyline?=null
+    private lateinit var learnedButton:Button
+    private var vectorMap:MapDataStore?=null
+    private var loadedMapSignature=""
+    private var loadedRegion=""
+    private var routeGeneration=0
     private var route:RoutingEngine.Route?=null
     private var dest:RoutingEngine.Point?=null
     private var follow=true
@@ -78,8 +87,63 @@ class OfflineVectorNavigatorActivity:Activity() {
     private var lastAutoZoom=0L
     private var manualZoomUntil=0L
     private var lastReroute=0L
+    private val inertialRouteMatcher=InertialRouteMatcher()
+    private var lastRouteWarning=InertialRouteMatcher.Warning.NONE
+    private var lastWarnedAt=0L
+    private var alertVoice:TextToSpeech?=null
+    private var alertVoiceReady=false
     private var requesting=false
     private var lastTick=0L
+    private var previousCrashHandler:Thread.UncaughtExceptionHandler?=null
+    private var vectorCrashHandler:Thread.UncaughtExceptionHandler?=null
+
+    private fun captureCrashReports(){
+        if(vectorCrashHandler!=null)return
+        val previous=Thread.getDefaultUncaughtExceptionHandler()
+        previousCrashHandler=previous
+        val recorder=Thread.UncaughtExceptionHandler{thread,error->
+            try {
+                getSharedPreferences("vector_diagnostics",MODE_PRIVATE)
+                    .edit().putString("last","Экран: векторная карта\\n"+
+                        "Поток: "+thread.name+"\\n"+
+                        android.util.Log.getStackTraceString(error).take(12000))
+                    .commit()
+            }catch(_:Throwable){}
+            if(previous!=null)previous.uncaughtException(thread,error)
+            else android.os.Process.killProcess(android.os.Process.myPid())
+        }
+        vectorCrashHandler=recorder
+        Thread.setDefaultUncaughtExceptionHandler(recorder)
+    }
+    private fun stopCrashReports(){
+        val recorder=vectorCrashHandler?:return
+        if(Thread.getDefaultUncaughtExceptionHandler()===recorder)
+            Thread.setDefaultUncaughtExceptionHandler(previousCrashHandler)
+        vectorCrashHandler=null
+        previousCrashHandler=null
+    }
+    private fun reportError(stage:String,error:Throwable){
+        val detail=stage+"\\n"+android.util.Log.getStackTraceString(error).take(8000)
+        android.util.Log.e("VectorNavigator",stage,error)
+        getSharedPreferences("vector_diagnostics",MODE_PRIVATE).edit()
+            .putString("last",detail).apply()
+    }
+    private fun showDiagnostic(){
+        val detail=getSharedPreferences("vector_diagnostics",MODE_PRIVATE)
+            .getString("last","Ошибки не зарегистрированы")
+            ?:"Ошибки не зарегистрированы"
+        AlertDialog.Builder(this)
+            .setTitle("Диагностика векторной карты")
+            .setMessage(detail)
+            .setPositiveButton("Закрыть",null)
+            .setNeutralButton("Копировать"){_,_->
+                val clipboard=getSystemService(Context.CLIPBOARD_SERVICE)
+                    as ClipboardManager
+                clipboard.setPrimaryClip(ClipData.newPlainText(
+                    "Ошибка векторной карты",detail))
+                Toast.makeText(this,"Отчёт скопирован",Toast.LENGTH_SHORT).show()
+            }.show()
+    }
 
     private fun dp(x:Int)=(resources.displayMetrics.density*x+0.5f).toInt()
     private fun button(s:String,click:()->Unit):Button=Button(this).apply{
@@ -116,21 +180,22 @@ class OfflineVectorNavigatorActivity:Activity() {
 
     override fun onCreate(savedInstanceState:Bundle?){
         super.onCreate(savedInstanceState)
+        captureCrashReports()
         window.statusBarColor=bg
         window.navigationBarColor=bg
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         AirAlerts.initialize(this)
-        if(!OfflineVectorStore.hasMap(this)){
+        if(OfflineRegionPacks.mapFiles(this).isEmpty()){
             AlertDialog.Builder(this).setTitle("Нужна офлайн-карта")
-                .setMessage("Сначала импортируй векторный файл региона .map " +
-                    "в разделе «Карты офлайн». Можно также добавить файл .poi " +
-                    "для поиска адресов без интернета.")
+                .setMessage("Карта Украины ещё не найдена. В разделе «Офлайн-карты» " +
+                    "можно проверить сохранённые файлы из прошлой версии " +
+                    "или скачать только недостающую карту и базу адресов.")
                 .setPositiveButton("Скачать Украину"){_,_->
                     startActivity(Intent(this,OfflineMapsActivity::class.java)
                         .putExtra("download_ukraine",true))
                     finish()
                 }
-                .setNeutralButton("Импортировать регион"){_,_->
+                .setNeutralButton("Проверить сохранённое"){_,_->
                     startActivity(Intent(this,OfflineMapsActivity::class.java))
                     finish()
                 }.setNegativeButton("Назад"){_,_->finish()}
@@ -169,46 +234,102 @@ class OfflineVectorNavigatorActivity:Activity() {
             AndroidGraphicFactory.createInstance(application)
             mapView=MapView(this)
             mapView.setBuiltInZoomControls(false)
+            // Mapsforge 0.25 natively recognizes a two-finger twist while
+            // preserving its pinch zoom, pan and map-feature hit testing.
+            mapView.getTouchGestureHandler().setRotationEnabled(true)
             mapView.getMapScaleBar().setVisible(false)
             mapView.setMapViewCenterY(0.68f)
-            val store=MapFile(OfflineVectorStore.mapFile(this))
+            val files=OfflineRegionPacks.mapFiles(this)
+            loadedRegion=OfflineRegionPacks.selected(this)
+            loadedMapSignature=signature(files)
+            val store:MapDataStore=if(files.size==1)MapFile(files.first())
+            else MultiMapDataStore(MultiMapDataStore.DataPolicy.DEDUPLICATE).apply {
+                files.forEachIndexed { index,file->
+                    val detail=MapFile(file)
+                    detail.setPriority(files.size-index)
+                    addMapDataStore(detail,false,false)
+                }
+            }
             vectorMap=store
             val tileCache=AndroidUtil.createTileCache(this,"offline-vector",
                 mapView.getModel().displayModel.getTileSize(),1.25f,
                 mapView.getModel().frameBufferModel.getOverdrawFactor())
-            val renderer=object:TileRendererLayer(tileCache,store,
-                mapView.getModel().mapViewPosition,AndroidGraphicFactory.INSTANCE){
-                override fun onTap(pos:LatLong,layerXY:Point,tapXY:Point):Boolean {
-                    if(!picking)return false
-                    dest=RoutingEngine.Point(pos.latitude,pos.longitude)
-                    State.navigationDestination=pos.latitude to pos.longitude
-                    picking=false
-                    route=null
-                    clearRoute()
-                    info.text="Цель выбрана на карте"
-                    return true
-                }
-            }
+            // The tile layer renders vector roads ONLY. Map selections
+            // are handled by a separate Android View above MapView, not
+            // by Mapsforge's layer-tap dispatcher.
+            val renderer=TileRendererLayer(tileCache,store,
+                mapView.getModel().mapViewPosition,AndroidGraphicFactory.INSTANCE)
             renderer.setXmlRenderTheme(MapsforgeThemes.MOTORIDER)
             mapView.getLayerManager().getLayers().add(renderer)
-            mapView.setCenter(LatLong(50.4501,30.5234))
+            val region=OfflineRegionPacks.region(OfflineRegionPacks.selected(this))
+            val point=State.navFix
+            mapView.setCenter(LatLong(point?.lat?:region?.lat?:50.4501,
+                point?.lon?:region?.lon?:30.5234))
             mapView.setZoomLevel(17.toByte())
+            // Touch the Mapsforge view directly. No intercepting overlay:
+            // a single-finger tap selects a destination while drag and
+            // pinch remain standard map interactions.
+            val slop=android.view.ViewConfiguration.get(this)
+                .scaledTouchSlop.coerceAtLeast(dp(6)).toFloat()
+            var downX=0f
+            var downY=0f
+            var downTime=0L
+            var tapMoved=false
             mapView.setOnTouchListener{_,event->
-                if(event.actionMasked==MotionEvent.ACTION_DOWN && !picking)
-                    follow=false
-                false
+                when(event.actionMasked){
+                    MotionEvent.ACTION_DOWN->{
+                        downX=event.x
+                        downY=event.y
+                        downTime=event.eventTime
+                        tapMoved=false
+                        if(!picking){
+                            follow=false
+                            manualZoomUntil=SystemClock.elapsedRealtime()+60_000L
+                        }
+                    }
+                    MotionEvent.ACTION_POINTER_DOWN,
+                    MotionEvent.ACTION_POINTER_UP->tapMoved=true
+                    MotionEvent.ACTION_MOVE->{
+                        if(kotlin.math.hypot((event.x-downX).toDouble(),
+                                (event.y-downY).toDouble())>slop)
+                            tapMoved=true
+                        if(::arrow.isInitialized)arrow.invalidate()
+                    }
+                    MotionEvent.ACTION_UP->{
+                        val elapsed=event.eventTime-downTime
+                        val distance=kotlin.math.hypot(
+                            (event.x-downX).toDouble(),
+                            (event.y-downY).toDouble())
+                        if(!tapMoved && distance<=slop && elapsed in 0L..700L){
+                            val px=event.x
+                            val py=event.y
+                            val autoRoute=picking
+                            // Don't modify view state inside Mapsforge dispatch.
+                            mapView.post {
+                                if(!isFinishing && !isDestroyed)
+                                    handleMapSelection(px,py,autoRoute)
+                            }
+                        }
+                    }
+                    MotionEvent.ACTION_CANCEL->tapMoved=true
+                }
+                // Selection mode intercepts taps before Mapsforge gestures.
+                picking
             }
             frame.addView(mapView,FrameLayout.LayoutParams(-1,-1))
         }catch(e:Exception){
             AlertDialog.Builder(this).setTitle("Ошибка векторной карты")
                 .setMessage((e.localizedMessage?:"Не удалось открыть .map")+
-                    "\nВыбери другой файл Mapsforge.")
+                    "\nПроверь сохранённую карту Украины или скачай недостающий файл.")
                 .setPositiveButton("Карты"){_,_->
                     startActivity(Intent(this,OfflineMapsActivity::class.java))
                     finish()
                 }.setNegativeButton("Закрыть"){_,_->finish()}.show()
             return
         }
+        // A regular Android overlay draws route and destination; its
+        // position is reprojected on every frame. No runtime add/remove
+        // operations on Mapsforge Layers are needed.
         arrow=object:View(this) {
             private val shape=Paint(Paint.ANTI_ALIAS_FLAG).apply{
                 color=Color.rgb(22,135,245);style=Paint.Style.FILL
@@ -216,13 +337,73 @@ class OfflineVectorNavigatorActivity:Activity() {
             private val edge=Paint(Paint.ANTI_ALIAS_FLAG).apply{
                 color=Color.WHITE;style=Paint.Style.STROKE;strokeWidth=4.5f
             }
+            private val roadBorder=Paint(Paint.ANTI_ALIAS_FLAG).apply{
+                color=Color.rgb(24,41,56)
+                style=Paint.Style.STROKE
+                strokeWidth=dp(16).toFloat()
+                strokeCap=Paint.Cap.ROUND
+                strokeJoin=Paint.Join.ROUND
+            }
+            private val roadFill=Paint(Paint.ANTI_ALIAS_FLAG).apply{
+                color=Color.rgb(11,132,246)
+                style=Paint.Style.STROKE
+                strokeWidth=dp(12).toFloat()
+                strokeCap=Paint.Cap.ROUND
+                strokeJoin=Paint.Join.ROUND
+            }
+            private val pinBorder=Paint(Paint.ANTI_ALIAS_FLAG).apply{
+                color=Color.WHITE
+                style=Paint.Style.FILL
+            }
+            private val pin=Paint(Paint.ANTI_ALIAS_FLAG).apply{
+                color=Color.rgb(247,83,91)
+                style=Paint.Style.FILL
+            }
+            private val halo=Paint(Paint.ANTI_ALIAS_FLAG).apply{
+                color=Color.argb(40,20,130,250)
+            }
             override fun onDraw(c:Canvas) {
+                super.onDraw(c)
+                val planned=route
+                if(planned!=null && planned.points.size>=2) {
+                    val path=Path()
+                    val segmentStride=(planned.points.size/3500)
+                        .coerceAtLeast(1)
+                    var started=false
+                    var i=0
+                    while(i<planned.points.size){
+                        val node=planned.points[i]
+                        val xy=screenPoint(node)
+                        // Avoid sending enormous offscreen coordinates to
+                        // the Android graphics rasterizer at high zoom levels.
+                        if(xy!=null && xy.first in -width.toFloat()..(2f*width) &&
+                            xy.second in -height.toFloat()..(2f*height)){
+                            if(!started){path.moveTo(xy.first,xy.second);started=true}
+                            else path.lineTo(xy.first,xy.second)
+                        } else started=false
+                        i+=segmentStride
+                    }
+                    val last=planned.points.last()
+                    screenPoint(last)?.let{xy->
+                        if(xy.first in -width.toFloat()..(2f*width) &&
+                            xy.second in -height.toFloat()..(2f*height)){
+                            if(started)path.lineTo(xy.first,xy.second)
+                            else path.moveTo(xy.first,xy.second)
+                        }
+                    }
+                    c.drawPath(path,roadBorder)
+                    c.drawPath(path,roadFill)
+                }
+                dest?.let{target->
+                    screenPoint(target)?.let{xy->
+                        c.drawCircle(xy.first,xy.second,dp(14).toFloat(),pinBorder)
+                        c.drawCircle(xy.first,xy.second,dp(10).toFloat(),pin)
+                    }
+                }
                 if(!follow||lastGpsPosition==null)return
                 val x=width/2f
                 val y=height*.68f
-                c.drawCircle(x,y,dp(27).toFloat(),
-                    Paint(Paint.ANTI_ALIAS_FLAG).apply{
-                        color=Color.argb(40,20,130,250)})
+                c.drawCircle(x,y,dp(27).toFloat(),halo)
                 val p=Path().apply{
                     moveTo(x,y-dp(31));lineTo(x+dp(16),y+dp(19))
                     lineTo(x,y+dp(10));lineTo(x-dp(16),y+dp(19));close()
@@ -234,6 +415,7 @@ class OfflineVectorNavigatorActivity:Activity() {
         arrow.isClickable=false
         arrow.isFocusable=false
         frame.addView(arrow,FrameLayout.LayoutParams(-1,-1))
+
         frame.addView(button("+"){adjustZoom(1)},
             FrameLayout.LayoutParams(dp(45),dp(45),Gravity.TOP or Gravity.RIGHT).apply{
                 topMargin=dp(8);rightMargin=dp(8)
@@ -246,6 +428,29 @@ class OfflineVectorNavigatorActivity:Activity() {
             FrameLayout.LayoutParams(dp(45),dp(45),Gravity.TOP or Gravity.RIGHT).apply{
                 topMargin=dp(104);rightMargin=dp(8)
             })
+        State.learnedDrEnabled=NavigatorPrefs(this).learnedDrEnabled
+        learnedButton=button("ИИ"){
+            State.learnedDrEnabled=!State.learnedDrEnabled
+            NavigatorPrefs(this).learnedDrEnabled=State.learnedDrEnabled
+            updateAiButton()
+            Toast.makeText(this,State.learnedDrStatus,
+                Toast.LENGTH_LONG).show()
+        }.apply{
+            setOnLongClickListener{
+                AlertDialog.Builder(this@OfflineVectorNavigatorActivity)
+                    .setTitle("Профиль обучения GPS / DR")
+                    .setMessage(State.learnedDrStatus+"\n\n"+
+                        State.learnedDrDetail)
+                    .setPositiveButton("Закрыть",null).show()
+                true
+            }
+        }
+        frame.addView(learnedButton,
+            FrameLayout.LayoutParams(dp(45),dp(45),
+                Gravity.TOP or Gravity.RIGHT).apply{
+                topMargin=dp(152);rightMargin=dp(8)
+            })
+        updateAiButton()
         frame.addView(label("© OpenStreetMap contributors",10f).apply {
             setTextColor(Color.rgb(56,68,80))
             setBackgroundColor(Color.argb(185,255,255,255))
@@ -263,8 +468,14 @@ class OfflineVectorNavigatorActivity:Activity() {
         root.addView(row(
             button("Поиск адреса"){searchAddress()},
             button("Цель на карте"){
-                picking=true
-                info.text="Коснись карты, чтобы выбрать точку назначения"
+                picking=!picking
+                if(picking){
+                    follow=false
+                    info.text="Коснись карты: установлю цель и построю маршрут"
+                    guidance.text="Можно также коснуться карты без режима выбора"
+                }else{
+                    info.text="Режим выбора выключен · обычное касание задаёт цель"
+                }
             },
             button("Маршрут"){buildRoute(false)}
         ))
@@ -274,6 +485,10 @@ class OfflineVectorNavigatorActivity:Activity() {
                     buildRoute(false)
                 }else{
                     active=true
+                    inertialRouteMatcher.reset()
+                    lastRouteWarning=InertialRouteMatcher.Warning.NONE
+                    State.activeRouting=true
+                    State.gpsFilterRoutePoints=route!!.points
                     followCar()
                     info.text="Ведение по маршруту · GPS / OBD / DR"
                 }
@@ -285,9 +500,28 @@ class OfflineVectorNavigatorActivity:Activity() {
             },
             button("Офлайн-карты"){
                 startActivity(Intent(this,OfflineMapsActivity::class.java))
-            }
+            },
+            button("Диагностика"){showDiagnostic()}
         ))
         setContentView(root)
+        alertVoice=TextToSpeech(this){result->
+            if(result==TextToSpeech.SUCCESS){
+                alertVoiceReady=true
+                alertVoice?.language=Locale("ru","RU")
+            }
+        }
+    }
+
+    private fun updateAiButton(){
+        if(!::learnedButton.isInitialized)return
+        learnedButton.text=if(State.learnedDrEnabled)"ИИ\nВКЛ"
+            else "ИИ\nВЫКЛ"
+        learnedButton.contentDescription=if(State.learnedDrEnabled)
+            "Выключить обученные инерциальные поправки"
+        else "Включить обученные инерциальные поправки"
+        (learnedButton.background as? GradientDrawable)?.setColor(
+            if(State.learnedDrEnabled)Color.rgb(23,99,128)
+            else Color.rgb(47,54,65))
     }
 
     private fun adjustZoom(by:Int){
@@ -343,8 +577,8 @@ class OfflineVectorNavigatorActivity:Activity() {
                         if(found.isEmpty()){
                             AlertDialog.Builder(this)
                                 .setTitle("Адрес не найден офлайн")
-                                .setMessage(if(!OfflineVectorStore.hasPois(this))
-                                    "Сначала импортируй файл .poi через «Офлайн-карты»."
+                                .setMessage(if(OfflineRegionPacks.poiFiles(this).isEmpty())
+                                    "Скачай или восстанови базу адресов Украины (.poi) в «Офлайн-карты»."
                                     else "В базе POI нет этого адреса. "+
                                         "Часть номеров домов отсутствует в OpenStreetMap.")
                                 .setPositiveButton("Карты"){_,_->
@@ -366,22 +600,113 @@ class OfflineVectorNavigatorActivity:Activity() {
     }
 
     private fun selectAddress(label:String,coordinate:RoutingEngine.Point){
-        dest=coordinate
-        State.navigationDestination=coordinate.lat to coordinate.lon
+        if(!RoutingEngine.valid(coordinate)){
+            info.text="Некорректные координаты выбранного адреса"
+            return
+        }
         NavigatorPrefs(this).rememberAddress(NavigatorPrefs.RecentAddress(
             label,coordinate.lat,coordinate.lon))
+        selectDestination(coordinate,label,false,centerOnDestination=true)
+    }
+
+    /**
+     * Use the LIVE map position rather than Mapsforge's delayed framebuffer
+     * position. Undo the rotation/center offset used when drawing pins.
+     */
+    private fun pointAtScreen(x:Float,y:Float):RoutingEngine.Point?{
+        if(!::mapView.isInitialized)return null
+        val model=mapView.getModel()
+        val pos=model.mapViewPosition.getMapPosition()
+        val mapSize=if(Parameters.FRACTIONAL_ZOOM)
+            MercatorProjection.getMapSizeWithScaleFactor(
+                model.mapViewPosition.getScaleFactor(),
+                model.displayModel.getTileSize())
+        else MercatorProjection.getMapSize(
+            pos.zoomLevel,model.displayModel.getTileSize())
+        val geo=VectorMapTapProjection.toLatLong(
+            x.toDouble(),y.toDouble(),mapView.width,mapView.height,
+            pos.latLong,mapSize,mapView.getOffsetX().toDouble(),
+            mapView.getOffsetY().toDouble(),mapView.getMapRotation())
+            ?:return null
+        return RoutingEngine.Point(geo.latitude,geo.longitude)
+            .takeIf{RoutingEngine.valid(it)}
+    }
+
+    private fun handleMapSelection(x:Float,y:Float,autoRoute:Boolean){
+        try{
+            val target=pointAtScreen(x,y)
+            if(target==null){
+                info.text="Не удалось выбрать точку. Коснись карты ещё раз"
+                Toast.makeText(this,"Точка недоступна — попробуй ещё раз",
+                    Toast.LENGTH_LONG).show()
+                return
+            }
+            val coordinateText=String.format(Locale.US,"%.5f, %.5f",
+                target.lat,target.lon)
+            selectDestination(target,coordinateText,autoRoute)
+            if(!autoRoute){
+                guidance.text="Цель отмечена красным · нажми «Маршрут»"
+            }
+            Toast.makeText(this,
+                "Цель выбрана: $coordinateText",Toast.LENGTH_SHORT).show()
+        }catch(e:Exception){
+            reportError("Нажатие на векторную карту",e)
+            info.text="Не удалось выбрать цель: "+
+                (e.localizedMessage?:"ошибка преобразования координат")
+            Toast.makeText(this,info.text,Toast.LENGTH_LONG).show()
+        }
+    }
+
+    /** Coordinate -> visible pixels, following the map's rotation. */
+    private fun screenPoint(point:RoutingEngine.Point):Pair<Float,Float>?{
+        if(!RoutingEngine.valid(point) || !::mapView.isInitialized ||
+            mapView.width<=0 || mapView.height<=0)return null
+        val pixels=mapView.getMapViewProjection().toPixels(
+            LatLong(point.lat,point.lon),true)?:return null
+        if(!pixels.x.isFinite() || !pixels.y.isFinite())return null
+        return pixels.x.toFloat() to pixels.y.toFloat()
+    }
+
+    private fun selectDestination(
+        coordinate:RoutingEngine.Point,label:String,buildImmediately:Boolean,
+        centerOnDestination:Boolean=false
+    ){
+        if(!RoutingEngine.valid(coordinate)){
+            info.text="Некорректная точка назначения"
+            return
+        }
+        // Invalidate an unfinished network request for any previous goal.
+        routeGeneration++
+        dest=coordinate
+        State.navigationDestination=coordinate.lat to coordinate.lon
+        picking=false
         route=null
-        clearRoute()
-        mapView.setCenter(LatLong(coordinate.lat,coordinate.lon))
+        active=false
+        // Do not jump the view back to the vehicle while the user is
+        // inspecting a destination and its planned route.
         follow=false
-        info.text="Цель: "+label.take(60)
+        inertialRouteMatcher.reset()
+        lastRouteWarning=InertialRouteMatcher.Warning.NONE
+        State.activeRouting=false
+        State.gpsFilterRoutePoints=emptyList()
+        clearRoute()
+        // A regular Android View draws the destination. Mapsforge's
+        // renderer layer list is never changed after map initialization.
+        arrow.invalidate()
+        info.text="Цель: "+label.take(55)
+        // Auto-build after a map tap. The search workflow still lets the
+        // driver confirm the address before pressing «Маршрут».
+        if(centerOnDestination){
+            // Center only for text/address search. Tapping directly on the
+            // map must leave the selected pin exactly under the finger.
+            mapView.setCenter(LatLong(coordinate.lat,coordinate.lon))
+            follow=false
+        }
+        if(buildImmediately)buildRoute(false)
     }
 
     private fun clearRoute(){
-        routeLine?.let{
-            mapView.getLayerManager().getLayers().remove(it)
-        }
-        routeLine=null
+        if(::arrow.isInitialized)arrow.invalidate()
     }
 
     private fun buildRoute(reroute:Boolean){
@@ -390,35 +715,56 @@ class OfflineVectorNavigatorActivity:Activity() {
             info.text="Выбери пункт назначения"
             return
         }
-        val fix=State.navFix
-        if(fix==null){
+        // Never try to plan from an old or spoofed GPS fix. The service
+        // publishes only validated positions; a manually set start can be
+        // used while GPS is unavailable.
+        val now=SystemClock.elapsedRealtime()
+        val fix=State.navFix?.takeIf {
+            (now-it.elapsedMs in 0L..15_000L ||
+                it.source.contains("Ручная")) &&
+                !GpsSpoofGuard.isLima(it.lat,it.lon)
+        }
+        val manual=State.manualStart
+        val start=if(fix!=null)RoutingEngine.Point(fix.lat,fix.lon)
+            else manual?.let{RoutingEngine.Point(it.lat,it.lon)}
+        if(start==null || !RoutingEngine.valid(start)){
             info.text="Нет исходной позиции: дождись GPS/сети или задай старт"
+            guidance.text="Цель сохранена. Маршрут построится после определения позиции"
             return
         }
-        if(requesting)return
+        if(requesting && reroute)return
+        if(RoutingEngine.meters(start,destination)<35.0){
+            guidance.text="Цель слишком близко к текущей позиции"
+            info.text="Выбери точку дальше 35 метров"
+            return
+        }
         requesting=true
+        val requestId=++routeGeneration
         info.text="Строю маршрут через интернет..."
-        routing.request(RoutingEngine.Point(fix.lat,fix.lon),destination){result->
+        routing.request(start,destination){result->
+            if(isFinishing || isDestroyed || requestId!=routeGeneration)
+                return@request
             requesting=false
             result.fold(onSuccess={itinerary->
                 route=itinerary
+                inertialRouteMatcher.reset()
+                lastRouteWarning=InertialRouteMatcher.Warning.NONE
+                if(active){
+                    State.activeRouting=true
+                    State.gpsFilterRoutePoints=itinerary.points
+                }
+                // The static Android overlay renders both the route and
+                // red destination circle. No dynamic Mapsforge overlays.
                 clearRoute()
-                val p=AndroidGraphicFactory.INSTANCE.createPaint().apply{
-                    color=Color.rgb(11,132,246)
-                    strokeWidth=dp(8).toFloat()
-                    setStyle(org.mapsforge.core.graphics.Style.STROKE)
-                }
-                routeLine=Polyline(p,AndroidGraphicFactory.INSTANCE).apply{
-                    addPoints(itinerary.points.map{it->LatLong(it.lat,it.lon)})
-                }
-                mapView.getLayerManager().getLayers().add(routeLine)
                 guidance.text="Маршрут: "+
                     String.format(Locale.getDefault(),"%.1f км",itinerary.lengthKm)
                 if(reroute)info.text="Маршрут перестроен"
                 else info.text="Маршрут готов. Нажми «Начать ведение»."
             },onFailure={e->
-                info.text="Маршрут не получен (нужен интернет)"
-                guidance.text=e.localizedMessage?:"Нет подключения"
+                reportError("Сервер маршрутизации",e)
+                info.text="Маршрут не построен. Цель сохранена на карте"
+                guidance.text="Маршрутизация требует интернет: "+
+                    (e.localizedMessage?:"сервер недоступен").take(90)
             })
         }
     }
@@ -441,25 +787,36 @@ class OfflineVectorNavigatorActivity:Activity() {
         override fun run(){
             if(!::mapView.isInitialized)return
             alerts.refresh()
+            updateAiButton()
             val fix=State.navFix?.takeIf{
                 SystemClock.elapsedRealtime()-it.elapsedMs<15_000 ||
                     it.source.contains("Ручная")
             }
             if(fix!=null){
-                lastGpsPosition=RoutingEngine.Point(fix.lat,fix.lon)
                 val now=SystemClock.elapsedRealtime()
-                val speed=if(State.speedUpdatedElapsedMs>0 &&
-                    now-State.speedUpdatedElapsedMs<3500)
-                    State.obdSpeedKmh()
-                else State.gpsSpeedKmh
+                val obdFresh=State.speedUpdatedElapsedMs>0L &&
+                    now-State.speedUpdatedElapsedMs<3500L
+                val speed=if(obdFresh)State.obdSpeedKmh()
+                    else State.gpsSpeedKmh
+                // Route projection never modifies the raw service position.
+                val planned=route
+                val matched=if(active && State.dr && planned!=null)
+                    inertialRouteMatcher.match(fix,planned,
+                        if(obdFresh)State.obdSpeedKmh() else null,now)
+                    else {
+                        inertialRouteMatcher.reset()
+                        null
+                    }
+                val shown=matched?.displayFix?:fix
+                lastGpsPosition=RoutingEngine.Point(shown.lat,shown.lon)
                 if(follow){
                     mapView.setCenter(LatLong(fix.lat,fix.lon))
                     val p=lastGpsPosition!!
                     val course=if(active) {
                         if(speed!=null&&speed>=8.0)
-                            fix.bearing?:shortestCourse(p,route)
-                        else shortestCourse(p,route)?:fix.bearing
-                    }else fix.bearing
+                            shown.bearing?:shortestCourse(p,route)
+                        else shortestCourse(p,route)?:shown.bearing
+                    }else shown.bearing
                     if(course!=null && course.isFinite() &&
                         (speed?:0.0)>=5.0){
                         if(!headingReady){
@@ -507,14 +864,44 @@ class OfflineVectorNavigatorActivity:Activity() {
                     }
                 }
                 if(active && route!=null){
-                    val progress=route!!.progress(RoutingEngine.Point(fix.lat,fix.lon))
-                    guidance.text=String.format(Locale.getDefault(),
-                        "До цели %.1f км · далее: %s",progress.remainingMeters/1000,
-                        progress.nextTurn?.instruction?:"прямо")
-                    if(progress.arrived){
+                    val progress=route!!.progress(
+                        RoutingEngine.Point(shown.lat,shown.lon))
+                    val warning=matched?.warning
+                        ?:InertialRouteMatcher.Warning.NONE
+                    if(warning!=InertialRouteMatcher.Warning.NONE){
+                        guidance.text=matched!!.warningText+
+                            " · отклонение "+
+                            matched.rawDeviationMeters.roundToInt()+" м"
+                        guidance.setTextColor(Color.rgb(255,162,111))
+                        info.text=matched.warningText+
+                            ". Не полагайся на привязку к маршруту."
+                        if(warning!=lastRouteWarning ||
+                            now-lastWarnedAt>=45_000L){
+                            Toast.makeText(this@OfflineVectorNavigatorActivity,
+                                matched.warningText,Toast.LENGTH_LONG).show()
+                            if(alertVoiceReady){
+                                alertVoice?.speak(matched.warningText,
+                                    TextToSpeech.QUEUE_FLUSH,null,"route-warning")
+                            }
+                            lastWarnedAt=now
+                        }
+                    }else{
+                        guidance.setTextColor(ink)
+                        guidance.text=String.format(Locale.getDefault(),
+                            "До цели %.1f км · далее: %s",
+                            progress.remainingMeters/1000,
+                            progress.nextTurn?.instruction?:"прямо")+
+                            if(matched?.snapped==true)" · DR по маршруту"
+                            else ""
+                    }
+                    lastRouteWarning=warning
+                    if(progress.arrived && warning==InertialRouteMatcher.Warning.NONE){
                         active=false
+                        inertialRouteMatcher.reset()
+                        State.activeRouting=false
+                        State.gpsFilterRoutePoints=emptyList()
                         info.text="Вы прибыли"
-                    }else if(progress.lateralMeters>140 &&
+                    }else if(!State.dr && progress.lateralMeters>140 &&
                         now-lastReroute>75_000 && !requesting &&
                         fix.accuracy<70f){
                         lastReroute=now
@@ -523,27 +910,51 @@ class OfflineVectorNavigatorActivity:Activity() {
                 }
                 arrow.invalidate()
             }else {
-                info.text="Ожидание GPS, сети или координат OBD/DR"
+                arrow.invalidate()
+                info.text=if(dest!=null)
+                    "Цель сохранена · жду GPS/сеть или ручную стартовую точку"
+                else "Ожидание GPS, сети или координат OBD/DR"
             }
             handler.postDelayed(this,750L)
         }
     }
 
+    private fun signature(files:List<java.io.File>):String =
+        files.joinToString("|"){"${it.absolutePath}:${it.length()}:${it.lastModified()}"}
+
     override fun onResume(){
         super.onResume()
+        captureCrashReports()
         if(::mapView.isInitialized){
+            val newFiles=OfflineRegionPacks.mapFiles(this)
+            if(loadedRegion!=OfflineRegionPacks.selected(this) ||
+                loadedMapSignature!=signature(newFiles)){
+                recreate()
+                return
+            }
             handler.removeCallbacks(refresh)
             handler.post(refresh)
         }
     }
     override fun onPause(){
         handler.removeCallbacks(refresh)
+        stopCrashReports()
         super.onPause()
     }
     override fun onDestroy(){
         handler.removeCallbacks(refresh)
+        stopCrashReports()
+        routeGeneration++
+        inertialRouteMatcher.reset()
+        if(active){
+            State.activeRouting=false
+            State.gpsFilterRoutePoints=emptyList()
+        }
+        alertVoice?.stop()
+        alertVoice?.shutdown()
         if(::mapView.isInitialized){
             runCatching{mapView.destroyAll()}
+            runCatching{vectorMap?.close()}
         }
         runCatching{AndroidGraphicFactory.clearResourceMemoryCache()}
         searchWorker.shutdown()
