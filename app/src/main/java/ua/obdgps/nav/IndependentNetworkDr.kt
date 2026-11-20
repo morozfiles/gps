@@ -3,6 +3,7 @@ package ua.obdgps.nav
 import android.location.Location
 import android.location.LocationManager
 import android.os.SystemClock
+import kotlin.math.max
 
 /**
  * FYT diagnostic GPS-cut simulation. Blue track receives ONLY:
@@ -32,6 +33,13 @@ class IndependentNetworkDr {
         private set
     var estimatedDriftMeters=0.0
         private set
+    var networkLeftTurns=0
+        private set
+    var networkRightTurns=0
+        private set
+    private val networkTurnCounter=TrustedTurnCounter()
+    private var lastCourseAnchor:Location?=null
+    private var lastCourseAnchorMs=0L
 
     private var startedNanos=0L
     private var lastTickMs=0L
@@ -47,6 +55,11 @@ class IndependentNetworkDr {
         correctionCount=0
         currentSpeedKmh=null
         estimatedDriftMeters=0.0
+        networkLeftTurns=0
+        networkRightTurns=0
+        networkTurnCounter.reset()
+        lastCourseAnchor=null
+        lastCourseAnchorMs=0L
         lastNetworkStatus="GPS исключён из DR · жду Wi-Fi/сеть"
         running=true
     }
@@ -86,7 +99,8 @@ class IndependentNetworkDr {
      */
     fun onIndependentNetworkLocation(
         location:Location,sourceLabel:String,
-        now:Long=SystemClock.elapsedRealtime()
+        now:Long=SystemClock.elapsedRealtime(),
+        gyroFresh:Boolean=true
     ):Boolean{
         if(!running)return false
         if(sourceLabel!="Wi-Fi/сеть" ||
@@ -107,11 +121,46 @@ class IndependentNetworkDr {
         val discrepancy=anchor.distanceTo(location).toDouble()
         val weight=NetworkCorrectionPolicy.weight(location.accuracy.toDouble())
         estimator.correctPosition(location.latitude,location.longitude,weight)
+        // Recover heading from two accurate, speed-consistent network
+        // positions when an Android FYT ROM exposes no working gyro.
+        // The network-derived course never enters trainingEstimator.
+        val courseAnchor=lastCourseAnchor
+        val seconds=(now-lastCourseAnchorMs)/1000.0
+        if(location.accuracy<=65f && currentSpeedKmh!=null) {
+            if(courseAnchor==null) {
+                lastCourseAnchor=Location(location)
+                lastCourseAnchorMs=now
+            }else if(seconds in 1.0..40.0){
+                val travel=courseAnchor.distanceTo(location).toDouble()
+                val needed=max(24.0,
+                    (courseAnchor.accuracy+location.accuracy)*1.6)
+                val maximum=max(95.0,
+                    currentSpeedKmh!!/3.6*seconds*1.8+
+                        courseAnchor.accuracy+location.accuracy+65.0)
+                if(travel>=needed && travel<=maximum) {
+                    val course=courseAnchor.bearingTo(location).toDouble()
+                    estimator.correctHeadingFromNetworkForTest(
+                        course,if(gyroFresh)0.15 else 0.85)
+                    when(networkTurnCounter.observe(course,now)) {
+                        TrustedTurnCounter.Direction.LEFT->networkLeftTurns++
+                        TrustedTurnCounter.Direction.RIGHT->networkRightTurns++
+                        null->{}
+                    }
+                    lastCourseAnchor=Location(location)
+                    lastCourseAnchorMs=now
+                }
+            }else if(seconds>40.0) {
+                lastCourseAnchor=Location(location)
+                lastCourseAnchorMs=now
+                networkTurnCounter.reset()
+            }
+        }
         estimatedDriftMeters=(estimatedDriftMeters*(1.0-weight))
             .coerceAtLeast(location.accuracy.toDouble())
         correctionCount++
-        lastNetworkStatus="Wi-Fi/сеть: поправка #$correctionCount · "+
-            "от DR ${discrepancy.toInt()} м · точность ±${location.accuracy.toInt()} м"
+        lastNetworkStatus="Wi-Fi/сеть: +$correctionCount поправок · "+
+            "от DR ${discrepancy.toInt()} м · ±${location.accuracy.toInt()} м"+
+            " · повороты сети ←$networkLeftTurns →$networkRightTurns"
         return true
     }
 }
