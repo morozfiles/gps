@@ -45,8 +45,8 @@ android {
         manifestPlaceholders["appDisplayName"] = "OBD GPS · FYT 7870"
         minSdk = 31
         targetSdk = 33
-        versionCode = 5
-        versionName = "0.3.2-fyt"
+        versionCode = 6
+        versionName = "0.3.3-fyt"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
     compileOptions {
