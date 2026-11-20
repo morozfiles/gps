@@ -6,11 +6,11 @@ android {
     namespace = "ua.obdgps.nav"
     compileSdk = 36
     defaultConfig {
-        applicationId = "ua.obdgps.nav"
+        applicationId = (project.findProperty("appId") as String?) ?: "ua.obdgps.nav"
         minSdk = 31
         targetSdk = 35
-        versionCode = 22
-        versionName = "0.10.0-alpha"
+        versionCode = 44
+        versionName = "0.12.2-alpha"
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
