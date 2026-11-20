@@ -280,6 +280,8 @@ class NavService: Service(), LocationListener {
                 State.message="Ручная стартовая точка удалена"
             }
             START_DR -> startDr(force=true)
+            REVERSE -> applyDetectedDirection(true,"выбрано вручную")
+            FORWARD -> applyDetectedDirection(false,"выбрано вручную")
             START_DIAGNOSTIC -> startDiagnostic()
             STOP_DIAGNOSTIC -> {
                 State.stopDiagnostic()
@@ -1077,21 +1079,24 @@ class NavService: Service(), LocationListener {
         val gpsSpeedUnavailable=!gpsSpeedRecent ||
             State.gpsSpeedKmh==null || State.gpsSpeedKmh!!<1.5
 
-        if(!State.dr && autoEnabled && !fusedStarting &&
-            AirAlerts.autoNavigationAlertActive() &&
-            freshObd && obdKmh>=7.0) {
-            // City alert + independently confirmed OBD motion +
-            // (GPS speed zero/missing OR rejected >1 km teleport).
-            // Prevent stationary vehicles from triggering on zero GPS speed.
-            val badGps=gpsQuarantined || !gpsRecent || gpsSpeedUnavailable || recentTeleport ||
-                (gpsSpeedRecent && !gpsMoving)
-            if(badGps) {
-                if(gpsInvalidSince==0L)gpsInvalidSince=now
-                val debounce=if(recentTeleport)1500L else 5000L
-                if(now-gpsInvalidSince>=debounce)
-                    startDr(force=false)
-            } else gpsInvalidSince=0L
-        } else if(!State.dr)gpsInvalidSince=0L
+        // During an active route, missing GNSS + real OBD motion should
+        // switch to DR even when NO air alert is active. The previous
+        // alert-only condition left Xiaomi 13T stopped in GPS mode.
+        val recentInvalidGps=gpsQuarantined || !gpsRecent ||
+            gpsSpeedUnavailable || recentTeleport ||
+            (gpsSpeedRecent && !gpsMoving)
+        val eligible=MobileDrAutoStart.eligible(
+            autoEnabled=autoEnabled,alreadyDr=State.dr,
+            routeActive=State.activeRouting,
+            alertActive=AirAlerts.autoNavigationAlertActive(),
+            freshObd=freshObd,obdKmh=obdKmh,
+            badGps=recentInvalidGps
+        )
+        if(eligible){
+            if(gpsInvalidSince==0L)gpsInvalidSince=now
+            if(now-gpsInvalidSince>=MobileDrAutoStart.debounceMs(
+                    recentTeleport))startDr(force=false)
+        }else if(!State.dr)gpsInvalidSince=0L
         if(gpsQuarantined && !State.dr && autoEnabled &&
             freshObd && obdKmh>=0.0)startDr(force=false)
 
@@ -1109,10 +1114,18 @@ class NavService: Service(), LocationListener {
                 return
             }
             if(!State.directionConfirmed && obdKmh>=2.0) {
-                State.navigationMode="DR: направление не определено"
-                State.message="Направление не определено: нужна калибровка компаса и данные датчиков"
-                tickTime=now
-                return
+                // A known DR seed course and gyro already define travel
+                // direction. Forward is the normal OBD convention; reverse
+                // remains explicitly selectable. Do not freeze a good
+                // calibrated DR merely for lack of 3 fresh GPS courses.
+                if(dr.pose!=null && !reverse)
+                    applyDetectedDirection(false,"курс старта; вперёд по умолчанию")
+                else {
+                    State.navigationMode="DR: направление не определено"
+                    State.message="Укажи направление движения: Вперёд / Назад"
+                    tickTime=now
+                    return
+                }
             }
             val dt=((now-tickTime)/1000.0).coerceIn(0.0,0.45)
             if(dt > 0) {
@@ -1163,37 +1176,53 @@ class NavService: Service(), LocationListener {
             State.message="Нет свежей скорости OBD: проверь адаптер"
             return
         }
-        // Use the last *accepted* GNSS fix or a corroborated, fresh
-        // network location. A rejected GPS teleport is never seeded.
-        val network=State.networkFix?.takeIf {
-            now-it.elapsedMs<12_000L && it.accuracy<=85f &&
+        // Accepted live GNSS is best, then independent Wi-Fi/cellular,
+        // then a deliberate manual start; a route start is the LAST
+        // resort when guidance is already active and GPS is unavailable.
+        // Never seed from stale or quarantined/spoofed GNSS.
+        val network=State.networkFix?.takeIf{
+            now-it.elapsedMs in 0L..15_000L &&
+                it.accuracy in 1f..180f &&
                 (!gpsQuarantined || it.source=="Wi-Fi/сеть")
         }
-        val gpsCurrent=gps?.takeIf {now-gpsTime<30_000L}
-        val manual=if(force || (gpsCurrent==null && network==null &&
-            (gps==null || now-gpsTime>=90_000L)))State.manualStart else null
-        val fix=when {
-            manual!=null -> Location(LocationManager.GPS_PROVIDER).apply {
+        val gpsCurrent=gps?.takeIf{
+            !gpsQuarantined && now-gpsTime in 0L..30_000L
+        }
+        val manual=State.manualStart?.takeIf {
+            force || (gpsCurrent==null && network==null)
+        }
+        val routeSeed=State.routeDrSeed?.takeIf{
+            State.activeRouting && gpsCurrent==null &&
+                network==null && manual==null &&
+                it.lat in -85.0..85.0 && it.lon in -180.0..180.0 &&
+                it.bearing?.isFinite()==true
+        }
+        val fix=when{
+            manual!=null -> Location(LocationManager.GPS_PROVIDER).apply{
                 latitude=manual.lat;longitude=manual.lon
                 bearing=manual.bearing.toFloat()
                 accuracy=25f
                 speed=((correctedSpeed()?:0.0)/3.6).toFloat()
             }
             gpsCurrent!=null -> Location(gpsCurrent)
-            network!=null -> Location(LocationManager.NETWORK_PROVIDER).apply {
+            network!=null -> Location(LocationManager.NETWORK_PROVIDER).apply{
                 latitude=network.lat;longitude=network.lon
                 accuracy=network.accuracy
                 network.bearing?.let{bearing=it.toFloat()}
             }
-            gps!=null && now-gpsTime<90_000L -> Location(gps!!)
-            else -> null
+            routeSeed!=null -> Location("route-start").apply {
+                latitude=routeSeed.lat;longitude=routeSeed.lon
+                bearing=routeSeed.bearing!!.toFloat()
+                accuracy=routeSeed.accuracy
+            }
+            else->null
         }
         if(fix==null) {
             State.message="Нет исходной позиции: задай старт на карте или дождись GPS/сети"
             return
         }
         val trustedCourse=lastTrustedHeading?.takeIf {
-            now-lastTrustedHeadingMs<60_000L
+            now-lastTrustedHeadingMs in 0L..60_000L && !gpsQuarantined
         }
         val locationCourse=fix.bearing.toDouble().takeIf {
             fix.hasBearing() && fix.hasSpeed() && fix.speed*3.6f>7f
@@ -1203,21 +1232,24 @@ class NavService: Service(), LocationListener {
             locationCourse!=null -> locationCourse
             trustedCourse!=null -> trustedCourse
             motion.compassBearing!=null -> motion.compassBearing!!
+            routeSeed?.bearing?.isFinite()==true -> routeSeed.bearing!!
             else -> Double.NaN
         }
         if(!course.isFinite()) {
             State.message="Курс неизвестен: задай старт и направление на карте"
             return
         }
-        if(manual!=null) {
+        if(!State.directionConfirmed) {
+            // Normal OBD-II speed is unsigned: without evidence of reverse,
+            // use the seeded forward course, rather than block DR until
+            // GPS returns. Explicit REVERSE/FORWARD actions remain available.
             reverse=false
-            applyDetectedDirection(false,"направление с карты")
-        } else if(!State.directionConfirmed &&
-            (locationCourse!=null || trustedCourse!=null)) {
-            // The last trusted GPS travel course defines forward travel
-            // for this DR segment unless sensors already detected reverse.
-            reverse=false
-            applyDetectedDirection(false,"последний проверенный GPS-курс")
+            applyDetectedDirection(false,when {
+                manual!=null->"курс задан вручную"
+                routeSeed!=null->"курс маршрута (без GPS)"
+                motion.compassBearing!=null->"привязанный компас"
+                else->"последний проверенный курс"
+            })
         }
         val carBearing=(course+if(reverse)180.0 else 0.0)%360.0
         dr.seed(fix.latitude,fix.longitude,carBearing)
@@ -1239,8 +1271,11 @@ class NavService: Service(), LocationListener {
         State.manualForced=force
         State.dr=true
         State.navigationMode=if(force)"Датчики (вручную)" else "Датчики (авто)"
-        State.message=if(manual!=null)"DR: старт и курс взяты с карты" else
-            "Инерциальное ведение запущено"
+        State.message=when {
+            manual!=null->"DR: старт и курс взяты с карты"
+            routeSeed!=null->"DR: старт с маршрута; курс приблизительный, GPS нет"
+            else->"Инерциальное ведение включено: OBD + гироскоп + компас"
+        }
         // In-app navigation DOES NOT need Android mock-location permission.
         // Google Maps injection is an optional extra, not a start prerequisite.
         fused.start { ok,detail ->
