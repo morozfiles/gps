@@ -39,8 +39,11 @@ class DeadReckoner {
     }
     fun correctPosition(lat: Double, lon: Double, blend: Double) {
         val p=pose ?: return
-        val alpha=blend.coerceIn(0.0,0.25)
-        // Only for short distances, after plausibility checks in NavService.
+        // Callers in the main navigator still pass 0.06-0.08.
+        // Explicit two-track TEST may re-anchor its blue trace much more
+        // strongly to a high-quality independent network fix.
+        val alpha=blend.coerceIn(0.0,1.0)
+        // Main navigation is conservative; test-only network re-anchoring\n        // may use a larger fraction without contaminating the raw DR.
         pose=p.copy(lat=p.lat+(lat-p.lat)*alpha,lon=p.lon+(lon-p.lon)*alpha)
     }
     fun correctHeading(target: Double, maxChangeDegrees: Double) {
