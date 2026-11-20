@@ -213,9 +213,14 @@ class NavService: Service(), LocationListener {
                 State.diagnosticNetworkStatus=comparisonDr.lastNetworkStatus
                 State.learnedDrStatus=learnedDr.status()
                 State.learnedDrDetail=learnedDr.detail()
-                State.diagnosticText=if(obd==null)
-                    "GPS отключён для DR · нет свежей скорости OBD"
-                else "Имитация отсутствия GPS · DR: OBD + гироскоп + сеть"
+                val gyroOk=State.sensorGyroAvailable &&
+                    State.gyroSampleMs>0L &&
+                    now-State.gyroSampleMs in 0L..4000L
+                State.diagnosticText=when{
+                    obd==null->"GPS исключён из DR · нет свежей скорости OBD"
+                    !gyroOk->"DR: OBD + Wi-Fi/сеть · ГИРОСКОП НЕ РАБОТАЕТ"
+                    else->"DR: OBD + гироскоп + Wi-Fi/сеть · гироскоп работает"
+                }
             }
             publishActualNavigationPosition(now)
             tickTime=now
@@ -1558,7 +1563,7 @@ class NavService: Service(), LocationListener {
         // experiment. These measurements never enter the test DR estimator.
         if(State.diagnosticRunning && !gpsQuarantined &&
             State.speed!=null && now-speedTime<3500L) {
-            learnedDr.observeTrustedGps(location,comparisonDr.pose,
+            learnedDr.observeTrustedGps(location,comparisonDr.trainingPose,
                 correctedSpeed(),comparisonDr.correctionCount,
                 gpsConsensus.sampleCount,now,
                 trustedExternalMock=external)
