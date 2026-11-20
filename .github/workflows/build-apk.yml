@@ -27,8 +27,16 @@ jobs:
           gradle-version: '8.13'
       - name: Build debug APK
         run: gradle --no-daemon :app:assembleDebug
+      - name: Save main application APK
+        run: |
+          mkdir -p dist
+          cp app/build/outputs/apk/debug/app-debug.apk dist/OBD-GPS-Navigator-main-unsigned-test.apk
+      - name: Build FYT 7870 compatible package
+        run: gradle --no-daemon :app:assembleDebug -PappId=ua.obdgps.nav.fyt7870 --rerun-tasks
+      - name: Save FYT APK
+        run: cp app/build/outputs/apk/debug/app-debug.apk dist/OBD-GPS-Navigator-FYT7870-unsigned-test.apk
       - uses: actions/upload-artifact@v4
         with:
           name: OBD-GPS-Navigator-APK
-          path: app/build/outputs/apk/debug/app-debug.apk
+          path: dist/*.apk
           if-no-files-found: error
