@@ -7,6 +7,10 @@ import android.content.pm.PackageManager
 import android.content.Intent
 import android.graphics.*
 import android.net.Uri
+import android.text.SpannableString
+import android.text.Spanned
+import android.text.TextUtils
+import android.text.style.ForegroundColorSpan
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -41,6 +45,7 @@ class InertialMapActivity : Activity() {
     private val handler=Handler(Looper.getMainLooper())
     private lateinit var map: InertialTrackMapView
     private lateinit var info: TextView
+    private lateinit var infoRight: TextView
     // Preview belongs only to the UI. It never feeds the independent DR.
     private fun previewFix():State.NavFix? {
         val candidate=State.navFix?:return null
@@ -117,14 +122,17 @@ class InertialMapActivity : Activity() {
                 String.format(Locale.US,"%.5f, %.5f · %s · ±%.0f м",
                     it.lat,it.lon,it.source,it.accuracy)
             } ?: "ожидаю достоверное GPS / Wi-Fi / сеть"
-            info.text=State.diagnosticText+
-                "\nТекущая позиция: $previewLabel"+
-                "\nGPS: $gpsLabel · точек: ${raw.size}"+
-                "\nDR без GPS: $obdDrLabel · точек: ${obdDrTrail.size}"+
-                "\nРасхождение GPS / DR: $offset"+
-                "\n"+State.diagnosticNetworkStatus+
-                "\n"+State.learnedDrStatus+
+            // The left column describes satellite position and the test.
+            // The right column describes independent DR and AI learning.
+            // Splitting these frees vertical space for the actual map.
+            info.text="GPS: $gpsLabel · ${raw.size} точек"+
+                "\nПозиция: $previewLabel"+
+                "\n"+State.diagnosticText+
                 "\n"+State.gpsSpoofStatus
+            infoRight.text="DR: $obdDrLabel · ${obdDrTrail.size} точек"+
+                "\nРасхождение GPS/DR: $offset"+
+                "\n"+State.diagnosticNetworkStatus+
+                "\n"+State.learnedDrStatus
             handler.postDelayed(this,1000L)
         }
     }
@@ -139,22 +147,35 @@ class InertialMapActivity : Activity() {
         val column=LinearLayout(this).apply {
             orientation=LinearLayout.VERTICAL
             setBackgroundColor(pageBackgroundColor)
-            setPadding(dp(12),dp(7),dp(12),dp(8))
+            setPadding(dp(10),dp(3),dp(10),dp(4))
             setOnApplyWindowInsetsListener { view,insets ->
                 val bars=insets.getInsets(
                     WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout())
-                view.setPadding(bars.left+dp(12),bars.top+dp(7),
-                    bars.right+dp(12),bars.bottom+dp(8))
+                view.setPadding(bars.left+dp(10),bars.top+dp(3),
+                    bars.right+dp(10),bars.bottom+dp(4))
                 insets
             }
         }
-        info=TextView(this).apply {
+        fun diagnosticColumn():TextView=TextView(this).apply {
             setTextColor(secondary)
-            textSize=13f
-            setPadding(dp(2),dp(8),dp(2),dp(10))
-            text="Ожидание расчётных координат..."
+            textSize=11.5f
+            maxLines=6
+            ellipsize=TextUtils.TruncateAt.END
+            includeFontPadding=false
+            setPadding(dp(6),dp(4),dp(6),dp(3))
         }
-        column.addView(info)
+        val diagnosticRow=LinearLayout(this).apply{
+            orientation=LinearLayout.HORIZONTAL
+            gravity=Gravity.TOP
+        }
+        info=diagnosticColumn().apply{text="GPS: ожидание данных"}
+        infoRight=diagnosticColumn().apply{text="DR / ИИ: ожидание теста"}
+        diagnosticRow.addView(info,LinearLayout.LayoutParams(0,-2,1f))
+        diagnosticRow.addView(View(this).apply{
+            setBackgroundColor(Color.rgb(72,82,94))
+        },LinearLayout.LayoutParams(dp(1),-1))
+        diagnosticRow.addView(infoRight,LinearLayout.LayoutParams(0,-2,1f))
+        column.addView(diagnosticRow)
         val buttons=LinearLayout(this).apply{
             orientation=LinearLayout.HORIZONTAL
         }
@@ -165,11 +186,11 @@ class InertialMapActivity : Activity() {
             }catch(e:Exception){
                 info.text="Не удалось запустить тест: "+(e.localizedMessage?:"ошибка")
             }
-        },LinearLayout.LayoutParams(0,dp(47),1f))
+        },LinearLayout.LayoutParams(0,dp(42),1f))
         buttons.addView(button("■ Остановить"){
             startService(Intent(this,NavService::class.java)
                 .setAction(NavService.STOP_DIAGNOSTIC))
-        },LinearLayout.LayoutParams(0,dp(47),1f))
+        },LinearLayout.LayoutParams(0,dp(42),1f))
         buttons.addView(button("Профиль\nошибок"){
             android.app.AlertDialog.Builder(this)
                 .setTitle("Обучение GPS против DR")
@@ -179,7 +200,7 @@ class InertialMapActivity : Activity() {
                     "Поправки используются отдельно и только после включения "+
                     "кнопкой «ИИ» в навигаторе.")
                 .setPositiveButton("Закрыть",null).show()
-        },LinearLayout.LayoutParams(0,dp(47),1f))
+        },LinearLayout.LayoutParams(0,dp(42),1f))
         column.addView(buttons)
         val container=FrameLayout(this)
         map=InertialTrackMapView(this)
@@ -201,29 +222,47 @@ class InertialMapActivity : Activity() {
         column.addView(container,LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT,0,1f))
 
-        val legend=TextView(this).apply {
-            text="● Зелёный — GPS    ● Синий — DR + OBD + сеть (БЕЗ GPS)\n"+
-                 "● Оранжевый — отклонённый GPS"+
-                 "\nВторой трек: гироскоп, OBD через Bluetooth, Wi-Fi/сотовая сеть"+
-                 "\n● Серый — позиция до запуска теста"+
-                 "\nОдна начальная координата и курс · затем GPS запрещён"
-            setTextColor(secondary)
+        // One-line, color-coded legend. License credit overlays the map
+        // rather than using another full-width footer row.
+        val legend=TextView(this).apply{
+            val items=listOf(
+                "● Синий — DR / OBD / сеть" to Color.rgb(78,157,242),
+                "● Зелёный — GPS" to Color.rgb(87,212,131),
+                "● Оранжевый — отклонённый GPS" to Color.rgb(250,172,70))
+            val message=items.joinToString("   |   "){it.first}
+            val spans=SpannableString(message)
+            items.forEach{(part,color)->
+                val index=message.indexOf(part)
+                if(index>=0)spans.setSpan(ForegroundColorSpan(color),
+                    index,index+part.length,Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+            }
+            text=spans
+            setSingleLine(true)
+            ellipsize=TextUtils.TruncateAt.END
+            setTextColor(primaryTextColor)
             textSize=12f
             gravity=Gravity.CENTER
-            setPadding(0,dp(8),0,dp(4))
+            includeFontPadding=false
+            setPadding(dp(2),dp(4),dp(2),dp(1))
         }
         column.addView(legend)
         val attribution=TextView(this).apply {
-            text="© OpenStreetMap contributors · Нажми для лицензии"
-            setTextColor(Color.rgb(145,194,242))
-            textSize=11f
-            gravity=Gravity.CENTER
+            text="© OpenStreetMap contributors"
+            setTextColor(Color.rgb(170,208,244))
+            setBackgroundColor(Color.argb(188,28,33,40))
+            textSize=10f
+            setPadding(dp(5),dp(2),dp(5),dp(2))
             setOnClickListener {
                 startActivity(Intent(Intent.ACTION_VIEW,
                     Uri.parse("https://www.openstreetmap.org/copyright")))
             }
         }
-        column.addView(attribution)
+        container.addView(attribution,FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.WRAP_CONTENT,
+            FrameLayout.LayoutParams.WRAP_CONTENT,
+            Gravity.LEFT or Gravity.BOTTOM).apply{
+                setMargins(dp(6),0,0,dp(5))
+            })
         setContentView(column)
     }
 
