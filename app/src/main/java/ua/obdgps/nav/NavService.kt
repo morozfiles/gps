@@ -20,6 +20,7 @@ class NavService: Service(), LocationListener {
         const val SCAN="SCAN"
         const val CONNECT="CONNECT"
         const val START_DR="START_DR"
+        const val START_ROUTE_DR="START_ROUTE_DR"
         const val STOP_DR="STOP_DR"
         const val EXIT="EXIT"
         const val SET_MUT="SET_MUT"
@@ -280,6 +281,7 @@ class NavService: Service(), LocationListener {
                 State.message="Ручная стартовая точка удалена"
             }
             START_DR -> startDr(force=true)
+            START_ROUTE_DR -> if(State.activeRouting)startDr(force=false)
             REVERSE -> applyDetectedDirection(true,"выбрано вручную")
             FORWARD -> applyDetectedDirection(false,"выбрано вручную")
             START_DIAGNOSTIC -> startDiagnostic()
