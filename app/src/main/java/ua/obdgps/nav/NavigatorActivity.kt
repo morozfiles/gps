@@ -998,6 +998,11 @@ class NavigatorActivity : Activity() {
         lastRouteWarning=InertialRouteMatcher.Warning.NONE
         State.activeRouting=true
         State.gpsFilterRoutePoints=route.points
+        // Preserve a driver-selected road anchor if GPS disappears before
+        // DR starts. This is never accepted as a trusted GPS coordinate.
+        State.routeDrSeed=if(fallback!=null && ahead!=null)
+            State.NavFix(fallback.lat,fallback.lon,ahead,90f,
+                "Старт маршрута",SystemClock.elapsedRealtime()) else null
         lastVoiceKey=""
         pickStatus.text=if(fix==null)
             "Маршрут впереди. Нет свежих координат — показан старт маршрута"
@@ -1011,6 +1016,7 @@ class NavigatorActivity : Activity() {
         lastRouteWarning=InertialRouteMatcher.Warning.NONE
         State.activeRouting=false
         State.gpsFilterRoutePoints=emptyList()
+        State.routeDrSeed=null
         map.stopRouteGuidance()
         routeGeneration++
         requestingRoute=false
@@ -1037,6 +1043,7 @@ class NavigatorActivity : Activity() {
                 active=false
                 State.activeRouting=false
                 State.gpsFilterRoutePoints=emptyList()
+                State.routeDrSeed=null
                 map.stopRouteGuidance()
             }
             return
@@ -1196,6 +1203,7 @@ class NavigatorActivity : Activity() {
         if(active){
             State.activeRouting=false
             State.gpsFilterRoutePoints=emptyList()
+            State.routeDrSeed=null
         }
         handler.removeCallbacks(refresh)
         tts?.stop()
