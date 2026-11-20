@@ -46,8 +46,8 @@ android {
             "OBD GPS Navigator 2" else "OBD GPS Navigator"
         minSdk = 31
         targetSdk = 35
-        versionCode = 42
-        versionName = "0.12.0-alpha"
+        versionCode = 43
+        versionName = "0.12.1-alpha"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
     compileOptions {
