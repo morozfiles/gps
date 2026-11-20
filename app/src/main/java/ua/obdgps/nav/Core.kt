@@ -46,6 +46,19 @@ class DeadReckoner {
         // Main navigation is conservative; test-only network re-anchoring\n        // may use a larger fraction without contaminating the raw DR.
         pose=p.copy(lat=p.lat+(lat-p.lat)*alpha,lon=p.lon+(lon-p.lon)*alpha)
     }
+    /**
+     * Explicit diagnostic-only heading assist: two independently reported,
+     * geometrically consistent Wi-Fi/cellular points can reveal the travel
+     * direction even when the FYT head unit does not expose a gyroscope.
+     * Never call this with GPS, mock or fused location.
+     */
+    fun correctHeadingFromNetworkForTest(target:Double,blend:Double) {
+        val p=pose?:return
+        if(!target.isFinite())return
+        val difference=(((target-p.bearing+540)%360+360)%360)-180
+        val alpha=blend.coerceIn(0.0,1.0)
+        pose=p.copy(bearing=(p.bearing+difference*alpha+360)%360)
+    }
     fun correctHeading(target: Double, maxChangeDegrees: Double) {
         val p=pose ?: return
         val difference=(((target-p.bearing+540)%360+360)%360)-180
