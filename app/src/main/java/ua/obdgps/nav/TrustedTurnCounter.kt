@@ -75,7 +75,7 @@ internal class TrustedTurnCounter {
         } else accumulated+=step
         if(abs(accumulated)<26.0 ||
             nowMs-accumulationStarted<700L ||
-            nowMs-lastDetectedMs<4000L)return null
+            (lastDetectedMs>0L && nowMs-lastDetectedMs<4000L))return null
         val result=if(accumulated>0)Direction.RIGHT else Direction.LEFT
         lastDetectedMs=nowMs
         turnLocked=true
