@@ -45,7 +45,7 @@ class RouteLockedFollower {
     /** MotionSensors reports a signed gravity-axis yaw rate in radians/s. */
     fun onYaw(rate:Double,dt:Double) {
         if(!rate.isFinite() || !dt.isFinite() || dt<=0.0 || dt>0.4)return
-        yawAccum=(yawAccum+Math.toDegrees(rate*dt)).coerceIn(-150.0,150.0)
+        yawAccum=(yawAccum+-Math.toDegrees(rate*dt)).coerceIn(-150.0,150.0)
     }
 
     fun update(
@@ -130,7 +130,7 @@ class RouteLockedFollower {
         val gain=if(satellite) {
             if(alert)0.045 else if(accuracy<=25.0)0.20 else 0.08
         } else if(alert)0.025 else 0.055
-        val step=(discrepancy*gain).coerceIn(-if(speed==null)3.0 else 1.5, 
+        val step=(discrepancy*gain).coerceIn(-(if(speed==null)3.0 else 1.5), 
             if(satellite)8.0 else 4.0)
         distance=(distance+step).coerceIn(0.0,cumulative.last())
         uncertainty=(uncertainty*0.98).coerceAtLeast(20.0)
