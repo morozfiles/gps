@@ -6,7 +6,7 @@ android {
     namespace = "ua.obdgps.nav"
     compileSdk = 36
     defaultConfig {
-        applicationId = (project.findProperty("appId") as String?) ?: "ua.obdgps.nav"
+        applicationId = "ua.obdgps.nav.fyt7870"
         minSdk = 31
         targetSdk = 35
         versionCode = 44
