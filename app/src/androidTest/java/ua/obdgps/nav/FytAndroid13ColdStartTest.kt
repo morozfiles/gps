@@ -93,6 +93,49 @@ class FytAndroid13ColdStartTest {
         }
     }
 
+    @Test fun twoTrackMapHasTwoCompactColumnsAndSingleLineLegend(){
+        val instrumentation=InstrumentationRegistry.getInstrumentation()
+        ActivityScenario.launch(InertialMapActivity::class.java).use { scenario ->
+            instrumentation.waitForIdleSync()
+            scenario.onActivity { activity ->
+                val content=activity.findViewById<View>(android.R.id.content)
+                val left=activity.javaClass.getDeclaredField("info").apply{
+                    isAccessible=true
+                }.get(activity) as TextView
+                val right=activity.javaClass.getDeclaredField("infoRight").apply{
+                    isAccessible=true
+                }.get(activity) as TextView
+                assertSame("GPS and DR status must be in one row",
+                    left.parent,right.parent)
+                assertEquals("Status needs two horizontal columns",
+                    android.widget.LinearLayout.HORIZONTAL,
+                    (left.parent as android.widget.LinearLayout).orientation)
+                assertTrue("Left status column too narrow",left.width>100)
+                assertTrue("Right status column too narrow",right.width>100)
+                val map=activity.javaClass.getDeclaredField("map").apply{
+                    isAccessible=true
+                }.get(activity) as View
+                assertTrue("Comparison map should occupy most of the screen",
+                    map.height>content.height/2)
+                fun descendants(v:View):List<TextView>{
+                    val found=mutableListOf<TextView>()
+                    if(v is TextView)found.add(v)
+                    if(v is ViewGroup)for(i in 0 until v.childCount)
+                        found.addAll(descendants(v.getChildAt(i)))
+                    return found
+                }
+                val legend=descendants(content).firstOrNull{
+                    it.text.toString().contains("● Синий")
+                }
+                assertNotNull("Comparison track legend missing",legend)
+                assertEquals("Track legend must be only one line",1,legend!!.maxLines)
+                assertTrue(legend.text.toString().contains("● Зелёный"))
+                assertTrue(legend.text.toString().contains("● Оранжевый"))
+                assertFalse("Legend must not wrap",legend.text.contains("\n"))
+            }
+        }
+    }
+
     @Test fun dashboardAndRoutePreviewSurviveRecreation(){
         val context=InstrumentationRegistry.getInstrumentation().targetContext
         val start=RoutingEngine.Point(50.4501,30.5234)
