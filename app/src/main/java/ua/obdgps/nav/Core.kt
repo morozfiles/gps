@@ -186,6 +186,12 @@ object State {
     var navigationDestination:Pair<Double,Double>?=null
     var activeRouting=false
     /**
+     * An explicit route-origin and ahead direction selected by the driver.
+     * Used ONLY as a last-resort DR seed if accepted GPS/network/manual
+     * positions are unavailable. Never promote this to trusted GNSS.
+     */
+    @Volatile var routeDrSeed:NavFix?=null
+    /**
      * Current user-selected road geometry for a 500 m GPS quality gate.
      * Route is never generated from unapproved raw GPS coordinates.
      * Empty when route guidance is not active.
