@@ -1229,12 +1229,18 @@ class NavService: Service(), LocationListener {
         val locationCourse=fix.bearing.toDouble().takeIf {
             fix.hasBearing() && fix.hasSpeed() && fix.speed*3.6f>7f
         }
+        // Road direction is a last-resort bearing when no aligned
+        // compass/GPS course exists, including when NETWORK supplies a
+        // geographical fix but no course. It never replaces fresh GNSS.
+        val routeCourse=State.routeDrSeed?.takeIf{
+            State.activeRouting && it.bearing?.isFinite()==true
+        }?.bearing
         val course=when {
             manual!=null -> manual.bearing
             locationCourse!=null -> locationCourse
             trustedCourse!=null -> trustedCourse
             motion.compassBearing!=null -> motion.compassBearing!!
-            routeSeed?.bearing?.isFinite()==true -> routeSeed.bearing!!
+            routeCourse!=null -> routeCourse
             else -> Double.NaN
         }
         if(!course.isFinite()) {
@@ -1248,8 +1254,8 @@ class NavService: Service(), LocationListener {
             reverse=false
             applyDetectedDirection(false,when {
                 manual!=null->"курс задан вручную"
-                routeSeed!=null->"курс маршрута (без GPS)"
                 motion.compassBearing!=null->"привязанный компас"
+                routeCourse!=null->"курс маршрута (без GPS)"
                 else->"последний проверенный курс"
             })
         }
