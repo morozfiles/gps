@@ -1,7 +1,7 @@
-name: Build Android debug APK
+name: Build PHONE APK
 on:
   push:
-    branches: [main, 'feature/**']
+    branches: [main]
   pull_request:
   workflow_dispatch:
 jobs:
@@ -68,6 +68,6 @@ jobs:
           echo "Verified the permanent signing certificate fingerprint."
       - uses: actions/upload-artifact@v4
         with:
-          name: OBD-GPS-Navigator-APK
+          name: PHONE-APK
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
