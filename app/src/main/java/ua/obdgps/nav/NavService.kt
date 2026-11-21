@@ -1513,12 +1513,17 @@ class NavService: Service(), LocationListener {
                 gpsRecoveryCount=0
                 gpsRecoverySince=0L
             }
-            if(kmh!=null && kmh in 2.5..180.0 &&
+            // Stationary GNSS is valid when OBD also reports stationary.
+            // Rejected zero-speed GPS during genuine OBD motion never
+            // reaches this accepted-GNSS branch.
+            val motionConsistent=kmh!=null && kmh in 0.0..180.0 &&
+                (!freshObd || obd<2.5 || kmh>=2.5)
+            if(motionConsistent &&
                 (gpsRecoveryLast==0L || now-gpsRecoveryLast>=750L)){
                 if(gpsRecoveryCount==0)gpsRecoverySince=now
                 gpsRecoveryCount++
                 gpsRecoveryLast=now
-            }else if(kmh==null || kmh<1.5 || kmh>180.0){
+            }else if(!motionConsistent){
                 gpsRecoveryCount=0
                 gpsRecoverySince=0L
             }
