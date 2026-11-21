@@ -252,8 +252,11 @@ class MainActivity : Activity() {
     }
     private val refresh = object: Runnable {
         override fun run() {
+            FytCrashDiagnostics.mark(this@MainActivity,"MainActivity.refresh: начинаю")
             AirAlerts.refreshIfDue()
             showAlertStatus()
+            FytCrashDiagnostics.mark(this@MainActivity,
+                "MainActivity.refresh: статус тревог успешно обновлён")
             val updatedByService=State.gpsSpeedUpdatedElapsedMs>0L
             val speedValue=if(updatedByService)State.gpsSpeedKmh else gpsSpeedKmh
             val speedTime=if(updatedByService)State.gpsSpeedUpdatedElapsedMs else gpsSpeedUpdatedElapsedMs
@@ -273,12 +276,16 @@ class MainActivity : Activity() {
                 "OBD: ${"%.1f".format(Locale.getDefault(),State.obdFactor*100)}% от ЭБУ\n"+
                 "Статус: ${State.message}\n"+
                 if(State.dr) "Путь: ${State.position}\nРост погрешности: ~${State.driftMeters.toInt()} м" else ""
+            FytCrashDiagnostics.mark(this@MainActivity,
+                "MainActivity.refresh: GPS/OBD обновлены")
             updateSensorCards()
             compassDialogStatus?.text=State.compassAccuracyText+"\n"+
                 State.compassCalibrationText+"\n"+State.compassAlignmentText
             inertialDialogStatus?.text=State.calibrationText
 
             if (picker != null) updateDevicePicker()
+            FytCrashDiagnostics.mark(this@MainActivity,
+                "MainActivity.refresh: успешно завершён")
             handler.postDelayed(this,750)
         }
     }
@@ -786,6 +793,7 @@ class MainActivity : Activity() {
     }
 
     private fun showSettingsMenu() {
+        FytCrashDiagnostics.mark(this,"MainActivity: открываю диалог настроек")
         // Landscape split dialog: no long single narrow phone menu.
         val columns=LinearLayout(this).apply {
             orientation=LinearLayout.HORIZONTAL
@@ -900,7 +908,9 @@ class MainActivity : Activity() {
             showAlertCityPicker()
         }
 
+        FytCrashDiagnostics.mark(this,"MainActivity: собираю двухколоночный диалог")
         dialog.show()
+        FytCrashDiagnostics.mark(this,"MainActivity: диалог настроек показан")
         val display=resources.displayMetrics
         dialog.window?.setLayout(
             (display.widthPixels*0.94).toInt(),
@@ -910,6 +920,7 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        FytCrashDiagnostics.mark(this,"MainActivity.onCreate: после super.onCreate")
         // Landscape dashboard: independent scrolling status on the left and
         // large touch controls on the right, suitable for 1024x600 FYT units.
         val frame=LinearLayout(this).apply {
@@ -949,11 +960,16 @@ class MainActivity : Activity() {
         }
         frame.addView(controlsScroll,LinearLayout.LayoutParams(
             0,LinearLayout.LayoutParams.MATCH_PARENT,0.92f))
+        FytCrashDiagnostics.mark(this,"MainActivity: создаю двухколоночный интерфейс")
         setContentView(frame)
+        FytCrashDiagnostics.mark(this,"MainActivity: setContentView выполнен")
 
         State.obdFactor=NavigatorPrefs(this).obdFactor
+        FytCrashDiagnostics.mark(this,"MainActivity: создаю индикаторы тревоги")
         addAlertHeader()
+        FytCrashDiagnostics.mark(this,"MainActivity: индикаторы тревоги готовы")
         addSpeedPanels()
+        FytCrashDiagnostics.mark(this,"MainActivity: GPS и OBD показатели созданы")
         status=TextView(this).apply {
             textSize=13f
             setTextColor(secondaryText)
@@ -1009,6 +1025,7 @@ class MainActivity : Activity() {
         control("■  Остановить мониторинг","Маршрут останется сохранённым"){
             send(NavService.EXIT)
         }
+        FytCrashDiagnostics.mark(this,"MainActivity: onCreate завершён, кнопки готовы")
         // No automatic permission dialog or duplicate startForegroundService
         // on entering settings: the Google map screen already owns monitoring.
         // Users may request missing permissions through the explicit button.
@@ -1018,11 +1035,13 @@ class MainActivity : Activity() {
     }
     override fun onResume() {
         super.onResume()
+        FytCrashDiagnostics.mark(this,"MainActivity.onResume: экран появился")
         // Opening this diagnostics screen must not request permissions,
         // register a second GPS listener or launch a new foreground service.
         // Existing NavService readings remain available via State.
         handler.removeCallbacks(refresh)
         handler.post(refresh)
+        FytCrashDiagnostics.mark(this,"MainActivity.onResume: обновление запланировано")
     }
 
     override fun onPause() {
