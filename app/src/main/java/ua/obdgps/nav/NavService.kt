@@ -53,7 +53,7 @@ class NavService: Service(), LocationListener {
     private var transport = "BLE"
     private var scanner: BluetoothLeScanner? = null
     private var scanCallback: ScanCallback? = null
-    private val bt by lazy { getSystemService(BluetoothManager::class.java).adapter }
+    private val bt by lazy { getSystemService(BluetoothManager::class.java)?.adapter }
     private val dr = DeadReckoner()
     // Separate test estimate: receives OBD + gyro + direct NETWORK fixes only.
     private val comparisonDr=IndependentNetworkDr()
@@ -324,7 +324,7 @@ class NavService: Service(), LocationListener {
                 val key=settings.adapterKey
                 if(key!=null && !connected &&
                     checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT)==PackageManager.PERMISSION_GRANTED &&
-                    bt.isEnabled) {
+                    bt?.isEnabled==true) {
                     State.message="Подключение к сохранённому ELM327..."
                     connectChoice(key,save=false)
                 } else if(!connected) State.message="Мониторинг датчиков запущен"
@@ -369,7 +369,7 @@ class NavService: Service(), LocationListener {
             State.devices.clear()
             // Show paired classic devices and BLE devices separately. Some
             // iCar Pro 2S variants advertise as Android-Vlink over RFCOMM.
-            bt.bondedDevices.forEach { d ->
+            bt?.bondedDevices?.forEach { d ->
                 val name=d.name ?: "Bluetooth без имени"
                 if(d.type==BluetoothDevice.DEVICE_TYPE_CLASSIC ||
                    d.type==BluetoothDevice.DEVICE_TYPE_DUAL ||
@@ -379,9 +379,11 @@ class NavService: Service(), LocationListener {
                    d.type==BluetoothDevice.DEVICE_TYPE_DUAL)
                     State.devices["BLE|${d.address}"]="Сопряжён: $name [BLE]"
             }
-            val scan=bt.bluetoothLeScanner
+            val scan=bt?.bluetoothLeScanner
             if(scan==null) {
-                State.message="Bluetooth выключен; доступны только сопряжённые устройства"
+                State.message=if(bt==null)
+                    "FYT: системный Bluetooth недоступен (возможно, управление через MCU). Нужен Android-совместимый ELM327."
+                    else "Bluetooth выключен или BLE недоступен; попробуй сопряжённый Classic ELM327"
                 return
             }
             scanner=scan
@@ -437,12 +439,16 @@ class NavService: Service(), LocationListener {
         State.deviceName=State.devices["SPP|$address"] ?: settings.adapterName ?: address
         changeMode(mutMode)
         State.message="Подключение Bluetooth Classic к $address"
-        val socket=bt.getRemoteDevice(address).createRfcommSocketToServiceRecord(
+        val device=bt?.getRemoteDevice(address) ?: run {
+            State.message="FYT: Bluetooth адаптер Android недоступен. Проверь режим BT/ELM327."
+            return
+        }
+        val socket=device.createRfcommSocketToServiceRecord(
             UUID.fromString("00001101-0000-1000-8000-00805f9b34fb"))
         sppSocket=socket
         sppReader=Thread {
             try {
-                bt.cancelDiscovery()
+                bt?.cancelDiscovery()
                 socket.connect()
                 val output=socket.outputStream
                 handler.post {
@@ -485,7 +491,11 @@ class NavService: Service(), LocationListener {
             transport="BLE"
             changeMode(mutMode)
             State.deviceName=State.devices["BLE|$address"] ?: settings.adapterName ?: address
-            gatt=bt.getRemoteDevice(address).connectGatt(this,false,object:BluetoothGattCallback(){
+            val device=bt?.getRemoteDevice(address) ?: run {
+                State.message="FYT: системный Bluetooth отсутствует; BLE ELM327 недоступен"
+                return
+            }
+            gatt=device.connectGatt(this,false,object:BluetoothGattCallback(){
                 override fun onConnectionStateChange(g:BluetoothGatt,status:Int,newState:Int) {
                     handler.post {
                         if (gatt !== g) return@post
