@@ -436,6 +436,7 @@ class GoogleDrMapActivity:Activity() {
                     car=google.addMarker(MarkerOptions()
                         .position(LatLng(cached.lat,cached.lon))
                         .icon(arrowIcon()).anchor(0.5f,0.5f).flat(true)
+                        .alpha(0.88f)
                         .rotation((snapshot.bearing?:0.0).toFloat())
                         .title("Последняя сохранённая позиция — может быть устаревшей"))
                 }
@@ -1118,7 +1119,13 @@ class GoogleDrMapActivity:Activity() {
     private val refresh=object:Runnable{
         override fun run(){
             val now=SystemClock.elapsedRealtime()
-            val raw=State.navFix?.takeIf{now-it.elapsedMs in 0L..12000L}
+            val raw=State.navFix?.takeIf{
+                now-it.elapsedMs in 0L..12000L &&
+                    !it.source.contains("Ручн")
+            }
+            val approximate=State.approximateFix?.takeIf{
+                ApproximateFixStore.usable(it,now)
+            }
             val route=candidates.getOrNull(chosen)
             val obd=State.obdSpeedKmh()?.takeIf{
                 State.speedUpdatedElapsedMs>0L &&
@@ -1146,8 +1153,8 @@ class GoogleDrMapActivity:Activity() {
                 dp(if(selectedSpeed.source=="OBD")3 else 1),
                 if(selectedSpeed.source=="OBD")
                     Color.rgb(255,65,67) else Color.argb(65,197,211,230))
-            var visible=raw
-            var estimated=false
+            var visible=if(active)raw else raw?:approximate
+            var estimated=visible?.source?.startsWith("Примерно")==true
             if(active && route!=null){
                 refreshRestoredTurns(raw,now)
                 val projected=tracker.update(now,obd,raw,State.networkFix,
@@ -1178,6 +1185,19 @@ class GoogleDrMapActivity:Activity() {
                 checkOffRoute(route,raw,gnssTrusted,now)
             }
             latestDisplayed=visible
+            updateAccuracyCircle(visible)
+            if(!active && visible!=null){
+                if(visible.source.startsWith("Примерно")){
+                    status.text="Приблизительное положение · ±"+
+                        formatDistance(visible.accuracy.toDouble())
+                    direction.text="Круг — погрешность Android; жду более точный GPS"
+                }else{
+                    status.text="Положение найдено · "+
+                        formatDistance(visible.accuracy.toDouble())+" точность"
+                    direction.text=State.sourceDescription
+                }
+                maybeCenterStartupPosition(visible)
+            }
             if(visible!=null){
                 val p=LatLng(visible.lat,visible.lon)
                 val heading=visible.bearing?.takeIf{it.isFinite()}
@@ -1192,14 +1212,20 @@ class GoogleDrMapActivity:Activity() {
                 if(car==null){
                     car=map?.addMarker(MarkerOptions().position(p)
                         .icon(arrowIcon()).anchor(0.5f,0.5f).flat(true)
+                        .alpha(0.88f)
                         .rotation(displayHeading!!.toFloat()).zIndex(12f)
                         .title("Автомобиль"))
                 }else{
                     car?.position=p
                     car?.rotation=displayHeading!!.toFloat()
                 }
-                car?.title=if(estimated)"Расчётная позиция · GPS ненадёжен"
-                    else "Автомобиль · GPS/сеть"
+                car?.title=when {
+                    visible.source.startsWith("Примерно") ->
+                        "Положение приблизительное (±"+
+                            formatDistance(visible.accuracy.toDouble())+")"
+                    estimated->"Расчётная позиция · GPS ненадёжен"
+                    else->"Автомобиль · GPS/сеть"
+                }
             }
             handler.postDelayed(this,1000L)
         }
