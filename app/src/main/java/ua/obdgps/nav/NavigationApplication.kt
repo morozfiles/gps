@@ -15,6 +15,19 @@ class NavigationApplication:Application(),Application.ActivityLifecycleCallbacks
 
     override fun onCreate() {
         super.onCreate()
+        if(BuildConfig.FYT7870_HEAD_UNIT) {
+            val previous=Thread.getDefaultUncaughtExceptionHandler()
+            Thread.setDefaultUncaughtExceptionHandler { thread,error ->
+                // Keep the original Android crash/reporting semantics.
+                // Only save details if the user explicitly armed one test.
+                FytCrashDiagnostics.recordCrash(this,thread,error)
+                if(previous!=null)previous.uncaughtException(thread,error)
+                else {
+                    android.os.Process.killProcess(android.os.Process.myPid())
+                    kotlin.system.exitProcess(10)
+                }
+            }
+        }
         registerActivityLifecycleCallbacks(this)
     }
 
