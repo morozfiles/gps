@@ -30,6 +30,8 @@ import com.google.android.gms.maps.MapView
 import com.google.android.gms.maps.GoogleMap
 import com.google.android.gms.maps.CameraUpdateFactory
 import com.google.android.gms.maps.model.CameraPosition
+import com.google.android.gms.maps.model.Circle
+import com.google.android.gms.maps.model.CircleOptions
 import com.google.android.gms.maps.model.BitmapDescriptorFactory
 import com.google.android.gms.maps.model.LatLng
 import com.google.android.gms.maps.model.LatLngBounds
@@ -53,6 +55,7 @@ class GoogleDrMapActivity:Activity() {
     private val handler=Handler(Looper.getMainLooper())
     private val client by lazy { GoogleRouteClient(applicationContext) }
     private val session by lazy { PhoneRouteSession(applicationContext) }
+    private val startupProbe by lazy { StartupPositionProbe(this) { onApproximateStartupFix(it) } }
     private var restoredSnapshot:PhoneRouteSession.Snapshot?=null
     private var savedRouteRefreshAttempted=false
     private val geocodeWorker=Executors.newSingleThreadExecutor()
@@ -84,6 +87,9 @@ class GoogleDrMapActivity:Activity() {
     private var chosen=0
     private var polylines=ArrayList<Polyline>()
     private var car:Marker?=null
+    private var accuracyCircle:Circle?=null
+    private var initialPositionCentered=false
+    private var initialPositionAccuracy=Float.POSITIVE_INFINITY
     private var drivenLine:Polyline?=null
     private var drivenIndex=-1
     private var cameraHeading:Double?=null
@@ -430,6 +436,7 @@ class GoogleDrMapActivity:Activity() {
                     car=google.addMarker(MarkerOptions()
                         .position(LatLng(cached.lat,cached.lon))
                         .icon(arrowIcon()).anchor(0.5f,0.5f).flat(true)
+                        .alpha(0.88f)
                         .rotation((snapshot.bearing?:0.0).toFloat())
                         .title("Последняя сохранённая позиция — может быть устаревшей"))
                 }
@@ -440,9 +447,20 @@ class GoogleDrMapActivity:Activity() {
                     moveGuidanceCamera(fix,snapshot.route,prog,null)
                 }else orientRoutePreview(snapshot.route)
             }else {
-                val f=State.navFix
-                google.moveCamera(CameraUpdateFactory.newLatLngZoom(
-                    LatLng(f?.lat?:50.4501,f?.lon?:30.5234),15f))
+                val f=bestPositionForMap(SystemClock.elapsedRealtime())
+                if(f!=null){
+                    initialPositionCentered=true
+                    initialPositionAccuracy=f.accuracy
+                    google.moveCamera(CameraUpdateFactory.newLatLngZoom(
+                        LatLng(f.lat,f.lon),roughZoom(f.accuracy)))
+                    updateAccuracyCircle(f)
+                }else{
+                    // A neutral country-level view, not a fabricated fix
+                    // at the center of Kyiv.
+                    google.moveCamera(CameraUpdateFactory.newLatLngZoom(
+                        LatLng(49.0,31.5),6f))
+                    status.text="Определяю положение: GPS, Wi-Fi, сотовая сеть..."
+                }
             }
         }
         speech=TextToSpeech(this) { code ->
@@ -452,13 +470,112 @@ class GoogleDrMapActivity:Activity() {
         ensurePermissionsAndMonitoring()
     }
 
+    private fun hasLocationPermission():Boolean =
+        checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)==
+            PackageManager.PERMISSION_GRANTED ||
+        checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION)==
+            PackageManager.PERMISSION_GRANTED
+
+    /** A weak network/cell estimate can locate the map but not drive navigation. */
+    private fun bestPositionForMap(now:Long):State.NavFix? {
+        val accepted=State.navFix?.takeIf {
+            now-it.elapsedMs in 0L..12000L &&
+                !it.source.contains("Ручн") &&
+                !GpsSpoofGuard.isLima(it.lat,it.lon)
+        }
+        val rough=State.approximateFix?.takeIf {
+            ApproximateFixStore.usable(it,now)
+        }
+        return accepted?:rough
+    }
+
+    private fun roughZoom(metres:Float):Float=when {
+        metres<=30f -> 17f
+        metres<=120f -> 15.6f
+        metres<=450f -> 14f
+        metres<=1500f -> 12.6f
+        metres<=5000f -> 10.7f
+        metres<=15000f -> 9.3f
+        metres<=50000f -> 7.7f
+        else -> 6.4f
+    }
+
+    private fun maybeCenterStartupPosition(fix:State.NavFix) {
+        val g=map?:return
+        if(active || !followCar || destination!=null || fetching ||
+            !ApproximateFixStore.usable(fix))return
+        val newAccuracy=fix.accuracy
+        if(initialPositionCentered &&
+            newAccuracy>=initialPositionAccuracy*0.65f)return
+        initialPositionCentered=true
+        initialPositionAccuracy=newAccuracy
+        g.animateCamera(CameraUpdateFactory.newLatLngZoom(
+            LatLng(fix.lat,fix.lon),roughZoom(fix.accuracy)),700,null)
+    }
+
+    private fun updateAccuracyCircle(fix:State.NavFix?) {
+        val g=map?:return
+        if(fix==null || !ApproximateFixStore.usable(fix)){
+            accuracyCircle?.isVisible=false
+            return
+        }
+        val p=LatLng(fix.lat,fix.lon)
+        val drDrift=if(State.dr && fix.source.contains("OBD"))
+            State.driftMeters.coerceAtLeast(0.0) else 0.0
+        // In DR mode also visualize the growing estimated inertial drift;
+        // network/GPS radius is still Android's reported uncertainty.
+        val radius=max(fix.accuracy.toDouble(),drDrift).coerceIn(5.0,100_000.0)
+        val fill=Color.argb(20,98,181,255)
+        val border=Color.argb(66,145,205,255)
+        val old=accuracyCircle
+        if(old==null)accuracyCircle=g.addCircle(CircleOptions()
+            .center(p).radius(radius).fillColor(fill)
+            .strokeColor(border).strokeWidth(dp(1).toFloat())
+            .clickable(false).zIndex(0.2f))
+        else {
+            old.center=p
+            old.radius=radius
+            old.isVisible=true
+        }
+    }
+
+    private fun onApproximateStartupFix(fix:State.NavFix) {
+        if(!::status.isInitialized || active || isFinishing || isDestroyed)return
+        val now=SystemClock.elapsedRealtime()
+        val current=bestPositionForMap(now)?:fix
+        if(current.source.startsWith("Примерно")) {
+            status.text="Положение примерно · ±"+
+                formatDistance(current.accuracy.toDouble())
+            direction.text="По Wi-Fi/сотовой сети или системному кэшу; " +
+                "круг показывает заявленную Android погрешность"
+        }
+        updateAccuracyCircle(current)
+        maybeCenterStartupPosition(current)
+    }
+
     private fun ensurePermissionsAndMonitoring() {
-        val required=arrayListOf(Manifest.permission.ACCESS_FINE_LOCATION,
-            Manifest.permission.BLUETOOTH_CONNECT,Manifest.permission.BLUETOOTH_SCAN)
-        if(Build.VERSION.SDK_INT>=33)required.add(Manifest.permission.POST_NOTIFICATIONS)
-        val missing=required.filter{checkSelfPermission(it)!=PackageManager.PERMISSION_GRANTED}
+        // Request BOTH permissions: Android 12+ may grant approximate
+        // location even when precise access is declined.
+        val required=arrayListOf<String>()
+        if(!hasLocationPermission()){
+            required.add(Manifest.permission.ACCESS_FINE_LOCATION)
+            required.add(Manifest.permission.ACCESS_COARSE_LOCATION)
+        }
+        for(permission in arrayOf(Manifest.permission.BLUETOOTH_CONNECT,
+            Manifest.permission.BLUETOOTH_SCAN)) {
+            if(checkSelfPermission(permission)!=PackageManager.PERMISSION_GRANTED)
+                required.add(permission)
+        }
+        if(Build.VERSION.SDK_INT>=33 &&
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)!=
+                PackageManager.PERMISSION_GRANTED)
+            required.add(Manifest.permission.POST_NOTIFICATIONS)
+        val missing=required
         if(missing.isNotEmpty())requestPermissions(missing.toTypedArray(),492)
-        else startMonitoring()
+        else {
+            startupProbe.start()
+            startMonitoring()
+        }
     }
     private fun startMonitoring(){
         try {
@@ -470,9 +587,10 @@ class GoogleDrMapActivity:Activity() {
                 permissions:Array<out String>,grantResults:IntArray){
         super.onRequestPermissionsResult(requestCode,permissions,grantResults)
         if(requestCode==492){
-            if(checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)==
-                PackageManager.PERMISSION_GRANTED)startMonitoring()
-            else showError("Для навигации нужно разрешение на местоположение")
+            if(hasLocationPermission()){
+                startupProbe.start()
+                startMonitoring()
+            }else showError("Разреши хотя бы приблизительную геолокацию для поиска положения")
         }
     }
 
@@ -542,11 +660,30 @@ class GoogleDrMapActivity:Activity() {
         val now=SystemClock.elapsedRealtime()
         val start=listOfNotNull(State.navFix,State.networkFix).firstOrNull{
             now-it.elapsedMs in 0L..15000L &&
-                it.lat.isFinite() && it.lon.isFinite()
+                it.lat.isFinite() && it.lon.isFinite() &&
+                !it.source.contains("Ручн")
+        }?:State.approximateFix?.takeIf {
+            ApproximateFixStore.usable(it,now)
         }?:run{
-            showError("Нет свежей начальной позиции. Включи GPS/сеть и разрешения.")
+            showError("Определяю точку старта по GPS, Wi-Fi и сотовой сети...")
+            startupProbe.start()
             return
         }
+        if(start.source.startsWith("Примерно") || start.accuracy>250f){
+            AlertDialog.Builder(this).setTitle("Старт приблизительный")
+                .setMessage("Местоположение получено с погрешностью примерно ±"+
+                    formatDistance(start.accuracy.toDouble())+
+                    ". Начальная дорога может быть неверной. "+
+                    "Построить маршрут от приблизительного центра?")
+                .setNegativeButton("Подождать GPS",null)
+                .setPositiveButton("Построить"){_,_->requestRouteFrom(start,to)}
+                .show()
+            return
+        }
+        requestRouteFrom(start,to)
+    }
+
+    private fun requestRouteFrom(start:State.NavFix,to:RoutingEngine.Point){
         if(fetching)return
         fetching=true
         routeButton.isEnabled=false
@@ -763,32 +900,24 @@ class GoogleDrMapActivity:Activity() {
         if(meters>=1000.0)String.format(Locale.getDefault(),"%.1f км",meters/1000.0)
         else meters.roundToInt().coerceAtLeast(0).toString()+" м"
 
-    private fun arrowIcon() : com.google.android.gms.maps.model.BitmapDescriptor {
-        val size=dp(65)
+    /** Just a translucent direction arrow: no circular badge or halo. */
+    private fun arrowIcon():com.google.android.gms.maps.model.BitmapDescriptor {
+        val size=dp(48)
         val bitmap=Bitmap.createBitmap(size,size,Bitmap.Config.ARGB_8888)
         val canvas=Canvas(bitmap)
-        val paint=Paint(Paint.ANTI_ALIAS_FLAG)
-        val cx=size/2f;val cy=size/2f
-        paint.color=Color.argb(76,0,0,0)
-        canvas.drawCircle(cx,cy+dp(2),dp(23).toFloat(),paint)
-        paint.color=Color.WHITE
-        canvas.drawCircle(cx,cy,dp(22).toFloat(),paint)
-        paint.color=blue
-        canvas.drawCircle(cx,cy,dp(19).toFloat(),paint)
-        val arrow=Path().apply{
-            moveTo(cx,cy-dp(16))
-            lineTo(cx+dp(12),cy+dp(13))
-            lineTo(cx,cy+dp(7))
-            lineTo(cx-dp(12),cy+dp(13))
+        val paint=Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color=Color.argb(205,97,183,251)
+            style=Paint.Style.FILL
+        }
+        val cx=size/2f
+        val cy=size/2f
+        val arrow=Path().apply {
+            moveTo(cx,cy-dp(19))
+            lineTo(cx+dp(14),cy+dp(17))
+            lineTo(cx,cy+dp(9))
+            lineTo(cx-dp(14),cy+dp(17))
             close()
         }
-        paint.style=Paint.Style.STROKE
-        paint.strokeWidth=dp(3).toFloat()
-        paint.strokeJoin=Paint.Join.ROUND
-        paint.color=Color.WHITE
-        canvas.drawPath(arrow,paint)
-        paint.style=Paint.Style.FILL
-        paint.color=Color.WHITE
         canvas.drawPath(arrow,paint)
         return BitmapDescriptorFactory.fromBitmap(bitmap)
     }
@@ -1010,7 +1139,7 @@ class GoogleDrMapActivity:Activity() {
     }
     private fun centerOnCar(){
         followCar=true
-        val fix=latestDisplayed?:State.navFix
+        val fix=latestDisplayed?:State.navFix?:State.approximateFix
         val route=candidates.getOrNull(chosen)
         if(active && fix!=null && route!=null) {
             val progress=route.progress(RoutingEngine.Point(fix.lat,fix.lon))
@@ -1018,13 +1147,20 @@ class GoogleDrMapActivity:Activity() {
             return
         }
         val p=fix?.let{LatLng(it.lat,it.lon)}
-        if(p!=null)map?.animateCamera(CameraUpdateFactory.newLatLngZoom(p,16f))
+        if(p!=null)map?.animateCamera(CameraUpdateFactory.newLatLngZoom(
+            p,if(fix.accuracy>120f)roughZoom(fix.accuracy) else 16f))
         else showError("Координаты пока не получены")
     }
     private val refresh=object:Runnable{
         override fun run(){
             val now=SystemClock.elapsedRealtime()
-            val raw=State.navFix?.takeIf{now-it.elapsedMs in 0L..12000L}
+            val raw=State.navFix?.takeIf{
+                now-it.elapsedMs in 0L..12000L &&
+                    !it.source.contains("Ручн")
+            }
+            val approximate=State.approximateFix?.takeIf{
+                ApproximateFixStore.usable(it,now)
+            }
             val route=candidates.getOrNull(chosen)
             val obd=State.obdSpeedKmh()?.takeIf{
                 State.speedUpdatedElapsedMs>0L &&
@@ -1052,8 +1188,8 @@ class GoogleDrMapActivity:Activity() {
                 dp(if(selectedSpeed.source=="OBD")3 else 1),
                 if(selectedSpeed.source=="OBD")
                     Color.rgb(255,65,67) else Color.argb(65,197,211,230))
-            var visible=raw
-            var estimated=false
+            var visible=if(active)raw else raw?:approximate
+            var estimated=visible?.source?.startsWith("Примерно")==true
             if(active && route!=null){
                 refreshRestoredTurns(raw,now)
                 val projected=tracker.update(now,obd,raw,State.networkFix,
@@ -1084,6 +1220,19 @@ class GoogleDrMapActivity:Activity() {
                 checkOffRoute(route,raw,gnssTrusted,now)
             }
             latestDisplayed=visible
+            updateAccuracyCircle(visible)
+            if(!active && visible!=null && destination==null){
+                if(visible.source.startsWith("Примерно")){
+                    status.text="Приблизительное положение · ±"+
+                        formatDistance(visible.accuracy.toDouble())
+                    direction.text="Круг — погрешность Android; жду более точный GPS"
+                }else{
+                    status.text="Положение найдено · "+
+                        formatDistance(visible.accuracy.toDouble())+" точность"
+                    direction.text=State.sourceDescription
+                }
+                maybeCenterStartupPosition(visible)
+            }
             if(visible!=null){
                 val p=LatLng(visible.lat,visible.lon)
                 val heading=visible.bearing?.takeIf{it.isFinite()}
@@ -1098,14 +1247,20 @@ class GoogleDrMapActivity:Activity() {
                 if(car==null){
                     car=map?.addMarker(MarkerOptions().position(p)
                         .icon(arrowIcon()).anchor(0.5f,0.5f).flat(true)
+                        .alpha(0.88f)
                         .rotation(displayHeading!!.toFloat()).zIndex(12f)
                         .title("Автомобиль"))
                 }else{
                     car?.position=p
                     car?.rotation=displayHeading!!.toFloat()
                 }
-                car?.title=if(estimated)"Расчётная позиция · GPS ненадёжен"
-                    else "Автомобиль · GPS/сеть"
+                car?.title=when {
+                    visible.source.startsWith("Примерно") ->
+                        "Положение приблизительное (±"+
+                            formatDistance(visible.accuracy.toDouble())+")"
+                    estimated->"Расчётная позиция · GPS ненадёжен"
+                    else->"Автомобиль · GPS/сеть"
+                }
             }
             handler.postDelayed(this,1000L)
         }
@@ -1115,12 +1270,15 @@ class GoogleDrMapActivity:Activity() {
         if(::mapView.isInitialized){
             mapView.onResume()
             handler.removeCallbacks(refresh);handler.post(refresh)
-            if(checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)==
-                PackageManager.PERMISSION_GRANTED)startMonitoring()
+            if(hasLocationPermission()){
+                startupProbe.start()
+                startMonitoring()
+            }
         }
     }
     override fun onPause(){
         handler.removeCallbacks(refresh)
+        startupProbe.stop()
         saveRouteSession()
         if(::mapView.isInitialized)mapView.onPause()
         super.onPause()
