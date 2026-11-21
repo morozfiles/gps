@@ -3,7 +3,6 @@
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="true" />
     <uses-permission android:name="android.permission.INTERNET"/>
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
-    <uses-permission android:name="android.permission.ACCESS_MOCK_LOCATION"/>
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/>
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/>
     <uses-permission android:name="android.permission.BLUETOOTH_SCAN"/>
@@ -15,53 +14,18 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
     <application android:theme="@android:style/Theme.Material.NoActionBar"
         android:label="${appDisplayName}" android:allowBackup="false">
-        <activity android:name=".MainActivity" android:exported="true">
-          <intent-filter>
-            <action android:name="android.intent.action.MAIN"/>
-            <category android:name="android.intent.category.LAUNCHER"/>
-          </intent-filter>
-        </activity>
-        <activity android:name=".InertialMapActivity" android:exported="false"/>
-        <!-- URLs are unverified Google-owned domains: on Android 12+ a
-             user may need to approve supported links manually. ACTION_SEND
-             remains a reliable option from Google Maps > Share. -->
-        <activity android:name=".NavigatorActivity" android:exported="true"
-            android:launchMode="singleTop">
-          <intent-filter>
-            <action android:name="android.intent.action.SEND"/>
-            <category android:name="android.intent.category.DEFAULT"/>
-            <data android:mimeType="text/plain"/>
-          </intent-filter>
-          <intent-filter>
-            <action android:name="android.intent.action.VIEW"/>
-            <category android:name="android.intent.category.DEFAULT"/>
-            <category android:name="android.intent.category.BROWSABLE"/>
-            <data android:scheme="https" android:host="www.google.com"
-                android:pathPrefix="/maps"/>
-            <data android:scheme="https" android:host="google.com"
-                android:pathPrefix="/maps"/>
-            <data android:scheme="https" android:host="maps.google.com"/>
-            <data android:scheme="https" android:host="www.google.com.ua"
-                android:pathPrefix="/maps"/>
-            <data android:scheme="https" android:host="google.com.ua"
-                android:pathPrefix="/maps"/>
-          </intent-filter>
-          <intent-filter>
-            <action android:name="android.intent.action.VIEW"/>
-            <category android:name="android.intent.category.DEFAULT"/>
-            <category android:name="android.intent.category.BROWSABLE"/>
-            <data android:scheme="https" android:host="maps.app.goo.gl"/>
-            <data android:scheme="https" android:host="goo.gl"
-                android:pathPrefix="/maps/"/>
-          </intent-filter>
-        </activity>
-        <activity android:name=".OfflineMapsActivity" android:exported="false"/>
-        <activity android:name=".OfflineVectorNavigatorActivity" android:exported="false"/>
+        <activity android:name=".MainActivity" android:exported="false"/>
         <service android:name=".OfflineCountryDownloadService"
             android:exported="false" android:foregroundServiceType="dataSync"/>
         <service android:name=".NavService" android:exported="false"
             android:foregroundServiceType="location|connectedDevice"/>
         <meta-data android:name="com.google.android.geo.API_KEY" android:value="${googleMapsApiKey}"/>
-        <activity android:name=".GoogleDrMapActivity" android:exported="false"/>
+        <activity android:name=".GoogleDrMapActivity" android:exported="true"
+            android:screenOrientation="unspecified">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN"/>
+                <category android:name="android.intent.category.LAUNCHER"/>
+            </intent-filter>
+        </activity>
     </application>
 </manifest>
