@@ -4,6 +4,9 @@ import android.Manifest
 import android.app.Activity
 import android.app.AlertDialog
 import android.content.Intent
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.content.pm.PackageManager
 import android.graphics.Color
 import android.graphics.Bitmap
@@ -91,6 +94,8 @@ class GoogleDrMapActivity:Activity() {
     private lateinit var routeButton:Button
     private lateinit var startButton:Button
     private lateinit var stopButton:Button
+    private var oneShotDiagnosticButton:Button?=null
+    private var awaitingDiagnosticReturn=false
     private lateinit var maneuverCard:LinearLayout
     private lateinit var maneuverTitle:TextView
     private lateinit var maneuverDistance:TextView
@@ -165,6 +170,50 @@ class GoogleDrMapActivity:Activity() {
         elevation=dp(6).toFloat()
         setPadding(dp(12),dp(9),dp(12),dp(10))
     }
+    private fun startOneShotFytDiagnostic(){
+        if(!BuildConfig.FYT7870_HEAD_UNIT)return
+        if(!FytCrashDiagnostics.begin(this)){
+            showFytDiagnosticLog()
+            return
+        }
+        awaitingDiagnosticReturn=true
+        oneShotDiagnosticButton?.text="Лог"
+        FytCrashDiagnostics.mark(this,"Google Maps: запускаю экран настроек FYT")
+        try {
+            startActivity(Intent(this,MainActivity::class.java))
+        }catch(error:Exception){
+            awaitingDiagnosticReturn=false
+            FytCrashDiagnostics.recordLaunchFailure(this,error)
+            showFytDiagnosticLog()
+        }
+    }
+
+    private fun showFytDiagnosticLog(){
+        val content=FytCrashDiagnostics.report(this)
+        AlertDialog.Builder(this)
+            .setTitle("FYT 7870 · лог диагностики")
+            .setMessage(content)
+            .setNeutralButton("Копировать"){_,_->
+                val clipboard=getSystemService(Context.CLIPBOARD_SERVICE)
+                    as? ClipboardManager
+                clipboard?.setPrimaryClip(
+                    ClipData.newPlainText("FYT 7870 ошибка",content))
+                Toast.makeText(this,"Лог скопирован. Вставь его в чат.",
+                    Toast.LENGTH_LONG).show()
+            }
+            .setPositiveButton("Поделиться"){_,_->
+                val send=Intent(Intent.ACTION_SEND).apply{
+                    type="text/plain"
+                    putExtra(Intent.EXTRA_SUBJECT,"FYT 7870 · ошибка настроек")
+                    putExtra(Intent.EXTRA_TEXT,content)
+                }
+                runCatching {startActivity(Intent.createChooser(send,"Отправить лог"))}
+                    .onFailure {showError("Не удалось открыть отправку лога")}
+            }
+            .setNegativeButton("Закрыть",null)
+            .show()
+    }
+
     private fun showError(message:String) {
         if(::status.isInitialized)status.text=message
         Toast.makeText(this,message,Toast.LENGTH_LONG).show()
@@ -317,6 +366,25 @@ class GoogleDrMapActivity:Activity() {
         gear.textSize=23f
         val gearParams=LinearLayout.LayoutParams(dp(54),dp(54)).apply{topMargin=dp(10)}
         rightControls.addView(gear,gearParams)
+        if(BuildConfig.FYT7870_HEAD_UNIT){
+            val diagnostic=button(
+                if(FytCrashDiagnostics.hasRun(this))"Лог" else "Диагн.",
+                glassButton,lightText
+            ){
+                if(FytCrashDiagnostics.hasRun(this))showFytDiagnosticLog()
+                else startOneShotFytDiagnostic()
+            }
+            diagnostic.textSize=11f
+            diagnostic.minHeight=dp(32)
+            diagnostic.setPadding(dp(2),0,dp(2),0)
+            diagnostic.contentDescription=
+                "Разовая диагностика падения при открытии второго экрана"
+            rightControls.addView(diagnostic,
+                LinearLayout.LayoutParams(dp(60),dp(34)).apply{
+                    topMargin=dp(6)
+                })
+            oneShotDiagnosticButton=diagnostic
+        }
         soundButton=button("✕",glassButton,lightText) {
             voiceEnabled=!voiceEnabled
             if(!voiceEnabled)speech?.stop()
@@ -1598,6 +1666,14 @@ class GoogleDrMapActivity:Activity() {
     }
     override fun onResume(){
         super.onResume()
+        if(awaitingDiagnosticReturn) {
+            awaitingDiagnosticReturn=false
+            FytCrashDiagnostics.finishOnReturn(this)
+            oneShotDiagnosticButton?.text="Лог"
+            Toast.makeText(this,
+                "Проверка завершена. Нажми «Лог», чтобы отправить результат.",
+                Toast.LENGTH_LONG).show()
+        }
         if(::mapView.isInitialized){
             mapView.onResume()
             handler.removeCallbacks(refresh);handler.post(refresh)
