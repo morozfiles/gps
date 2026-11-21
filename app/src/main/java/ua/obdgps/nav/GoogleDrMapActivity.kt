@@ -160,6 +160,7 @@ class GoogleDrMapActivity:Activity() {
                 val estimate=tracker.update(now,obd,raw,State.networkFix,
                     State.yawDegPerSec)
                 val gpsOk=raw!=null && raw.source=="GPS" &&
+                    !AirAlerts.autoNavigationAlertActive() &&
                     raw.accuracy<=25f && (State.gpsSpeedKmh?:0.0)<=180.0 &&
                     estimate!=null &&
                     RoutingEngine.meters(
