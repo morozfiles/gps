@@ -19,8 +19,11 @@ internal class PhoneRouteSession(context:Context) {
     fun save(route:RoutingEngine.Route,active:Boolean,progressMeters:Double,
              pose:State.NavFix?) {
         if(route.points.size<2 || route.points.size>200_000)return
-        val routeKey=route.points.first().toString()+":"+
-            route.destination.toString()+":"+route.lengthKm+":"+route.points.size
+        val first=route.points.first()
+        fun grid(x:Double)=(x*100000).toInt()
+        val routeKey="${grid(first.lat)}:${grid(first.lon)}:"+
+            "${grid(route.destination.lat)}:${grid(route.destination.lon)}:"+
+            "${(route.lengthKm*100).toInt()}:${route.points.size}"
         val previous=runCatching {
             JSONObject(storage.getString("snapshot","{}")?:"{}")
         }.getOrDefault(JSONObject())
