@@ -6,6 +6,11 @@ import android.app.AlertDialog
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Color
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Paint
+import android.graphics.Path
+import android.speech.tts.TextToSpeech
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.location.Geocoder
@@ -25,6 +30,7 @@ import com.google.android.gms.maps.MapView
 import com.google.android.gms.maps.GoogleMap
 import com.google.android.gms.maps.CameraUpdateFactory
 import com.google.android.gms.maps.model.CameraPosition
+import com.google.android.gms.maps.model.BitmapDescriptorFactory
 import com.google.android.gms.maps.model.LatLng
 import com.google.android.gms.maps.model.LatLngBounds
 import com.google.android.gms.maps.model.Marker
@@ -32,6 +38,8 @@ import com.google.android.gms.maps.model.MarkerOptions
 import com.google.android.gms.maps.model.Polyline
 import com.google.android.gms.maps.model.PolylineOptions
 import java.util.Locale
+import java.util.Date
+import java.text.SimpleDateFormat
 import java.util.concurrent.Executors
 import kotlin.math.*
 
@@ -53,12 +61,31 @@ class GoogleDrMapActivity:Activity() {
     private lateinit var routeButton:Button
     private lateinit var startButton:Button
     private lateinit var stopButton:Button
+    private lateinit var maneuverCard:LinearLayout
+    private lateinit var maneuverTitle:TextView
+    private lateinit var maneuverDistance:TextView
+    private lateinit var maneuverGlyph:TextView
+    private lateinit var etaValue:TextView
+    private lateinit var remainingValue:TextView
+    private lateinit var speedValue:TextView
     private var map:GoogleMap?=null
     private var destination:RoutingEngine.Point?=null
     private var candidates=emptyList<RoutingEngine.Route>()
     private var chosen=0
     private var polylines=ArrayList<Polyline>()
     private var car:Marker?=null
+    private var drivenLine:Polyline?=null
+    private var drivenIndex=-1
+    private var cameraHeading:Double?=null
+    private var cameraZoom:Float?=null
+    private var speech:TextToSpeech?=null
+    private var speechReady=false
+    private var announcedKey=""
+    private var offRouteSinceMs=0L
+    private var lastRerouteAt=0L
+    private var reroutePending=false
+    private var latestDisplayed:State.NavFix?=null
+    private var latestSpeedKmh:Double?=null
     private var goal:Marker?=null
     private var active=false
     private var fetching=false
