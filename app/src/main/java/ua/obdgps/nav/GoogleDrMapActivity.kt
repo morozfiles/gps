@@ -510,7 +510,7 @@ class GoogleDrMapActivity:Activity() {
                 car?.title=if(estimated)"Расчётная позиция · GPS ненадёжен"
                     else "Автомобиль · GPS/сеть"
                 if(active && followCar){
-                    val builder=CameraPosition.builder().target(p)
+                    val builder=CameraPosition.Builder().target(p)
                         .zoom(17f).tilt(40f)
                     visible.bearing?.takeIf{it.isFinite()}?.let{builder.bearing(it.toFloat())}
                     map?.animateCamera(CameraUpdateFactory.newCameraPosition(builder.build()),500,null)
