@@ -42,8 +42,11 @@ class HybridLocator(
     private var active=false
 
     fun start() {
-        if(active || context.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)
-            !=PackageManager.PERMISSION_GRANTED)return
+        val fine=context.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)==
+            PackageManager.PERMISSION_GRANTED
+        val coarse=context.checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION)==
+            PackageManager.PERMISSION_GRANTED
+        if(active || (!fine && !coarse))return
         active=true
         try {
             if(lm.isProviderEnabled(LocationManager.NETWORK_PROVIDER)) {
