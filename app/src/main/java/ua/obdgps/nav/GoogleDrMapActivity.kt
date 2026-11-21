@@ -30,7 +30,7 @@ import kotlin.math.*
  */
 class GoogleDrMapActivity:Activity() {
     private val handler=Handler(Looper.getMainLooper())
-    private val client=GoogleRouteClient()
+    private val client by lazy { GoogleRouteClient(applicationContext) }
     private lateinit var mapView:MapView
     private var map:GoogleMap?=null
     private lateinit var status:TextView
