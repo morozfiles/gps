@@ -7,7 +7,7 @@ The phone branch `main` and legacy FYT branch `fyt7870` are not overwritten.
 
 - Package: `ua.obdgps.nav.fyt7870` (same as legacy FYT).
 - App display name: **FYT 7870 Google Nav**.
-- Version: `0.13.1-fyt-upgrade` (`versionCode=53`).
+- Version: `0.13.2-fyt-gm906bt` (`versionCode=54`).
 - Same-package upgrades retain existing data when APK signatures match. **Signing matters:**
   - The signed FYT upgrade has SHA-256 `0F97878527A8C268705C3BEBBF4570D78034DC26159EDB56D78743CFD202784E`, matching this build.
   - The legacy debug APK from run `44814332960` was signed with a **different** ephemeral key (SHA-1 `2C3089CCE7CF171D0629481E85B62B53AE4D3AE3`). It cannot be updated in place without that original private key.
@@ -104,3 +104,34 @@ Allowlist the FYT package and SHA-1 above alongside the phone application,
 without removing the existing phone entry, or create FYT-specific restricted
 keys for Maps SDK for Android and Routes API. Preserve existing quota and
 billing safeguards. API credentials cannot be edited by the GitHub connector.
+
+## FYT landscape and two GPS sources (v0.13.2)
+
+- Both the Google Maps page and the diagnostics/settings page are **landscape**
+  oriented. Diagnostics has two panes: current GPS/OBD readings at left and
+  touch-friendly controls at right. Settings uses two scrollable columns.
+- On this FYT build, a GPS_PROVIDER fix marked `Location.isMock` is taken as
+  the **external receiver feed** when the user has selected GM906BT's companion
+  app as the Android Mock Location application. Accepted external fixes
+  override internal GNSS for 4.5 seconds. Internal non-mock fixes are tracked
+  and become the active position when the external feed goes stale.
+- Android's mock flag **does not cryptographically identify GM906BT**. Only
+  configure the legitimate GM906BT companion app as the device's mock-location
+  provider. Spoof/teleport/accuracy/OBD consistency checks remain active.
+- Third-party mock injection is **read-only** from this navigator: we never call
+  `setMockLocation`, `setMockMode` or publish coordinates to Android.
+- When the external feed does not include speed, a connected Vgate can provide
+  independent speed for consistency checks and recover GPS-mode navigation.
+  The speed badge continues to show its actual source.
+- Settings includes an optional gyroscope yaw-axis picker for FYT mountings
+  whose Android firmware exposes a gyroscope but not a gravity sensor. A near
+  vertical unit typically has Y+ as the default; change sign only after
+  verifying left/right turn direction while parked/with a controlled test.
+  Recalibrate the gyro after changing the axis. No compass is required.
+- Vgate iCar Pro's **existing Bluetooth SPP/BLE 18F0/2AF0/2AF1** connection
+  and OBD PID `010D` processing are retained.
+- Verify `GM906BT / внешний Mock GPS` appears under FYT GPS-source
+  diagnostics when external data is accepted. `Внутренний GPS FYT` means
+  internal fallback, not an external mock receiver.
+- Both Android apps use the same previously restricted Google Cloud keys
+  only if the original FYT package and its SHA-1 are permitted.

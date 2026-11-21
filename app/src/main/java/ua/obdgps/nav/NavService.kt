@@ -67,6 +67,8 @@ class NavService: Service(), LocationListener {
     private var quarantineCandidate:Location?=null
     private var gps: Location? = null
     private var gpsTime = 0L
+    private var lastExternalAcceptedMs=0L
+    private var acceptedExternalReceiver=false
     private var speedTime = 0L
     private var tickTime = 0L
     private var lastDrStart = 0L
@@ -231,6 +233,9 @@ class NavService: Service(), LocationListener {
         State.manualForced = false
         State.dr = false
         State.gpsText = "Ожидаем GPS"
+        State.fytGpsActiveSource="Ожидаю GM906BT / внутренний GPS"
+        State.fytExternalGpsMs=0L
+        State.fytInternalGpsMs=0L
         reverse = false
         val channel = NotificationChannel("nav","OBD GPS Navigator",NotificationManager.IMPORTANCE_LOW)
         (getSystemService(NOTIFICATION_SERVICE) as NotificationManager).createNotificationChannel(channel)
@@ -1093,7 +1098,9 @@ class NavService: Service(), LocationListener {
             State.navFix=State.NavFix(latitude,longitude,
                 if(currentGps.hasBearing())currentGps.bearing.toDouble() else null,
                 currentGps.accuracy,"GPS",now)
-            State.sourceDescription="GPS"+(if(adjusted)" + Wi-Fi/сеть" else "")+
+            State.sourceDescription=(if(BuildConfig.FYT7870_HEAD_UNIT)
+                State.fytGpsActiveSource else "GPS")+
+                (if(adjusted)" + Wi-Fi/сеть" else "")+
                 " · точность ~${currentGps.accuracy.toInt()} м"
             return
         }
@@ -1136,12 +1143,16 @@ class NavService: Service(), LocationListener {
         val gpsRecent = !gpsQuarantined && gps != null && now-gpsTime < 6000L
         val gpsSpeedRecent = State.gpsSpeedKmh != null &&
             now-State.gpsSpeedUpdatedElapsedMs < 6000L
-        val gpsMoving=gpsRecent && gpsSpeedRecent &&
-            State.gpsSpeedKmh!!>2.5
+        val gpsMoving=gpsRecent &&
+            ((gpsSpeedRecent && State.gpsSpeedKmh!!>2.5) ||
+                (BuildConfig.FYT7870_HEAD_UNIT &&
+                 acceptedExternalReceiver && freshObd && obdKmh>2.5))
         val recentTeleport=lastGpsTeleport>0L &&
             now-lastGpsTeleport<20_000L
-        val gpsSpeedUnavailable=!gpsSpeedRecent ||
-            State.gpsSpeedKmh==null || State.gpsSpeedKmh!!<1.5
+        val gpsSpeedUnavailable=(!gpsSpeedRecent ||
+            State.gpsSpeedKmh==null || State.gpsSpeedKmh!!<1.5) &&
+            !(BuildConfig.FYT7870_HEAD_UNIT && acceptedExternalReceiver &&
+              freshObd && gpsRecent)
 
         // During an active route, missing GNSS + real OBD motion should
         // switch to DR even when NO air alert is active. The previous
@@ -1356,10 +1367,22 @@ class NavService: Service(), LocationListener {
     }
 
     override fun onLocationChanged(location: Location) {
-        if(location.isMock || location.provider != LocationManager.GPS_PROVIDER) return
+        if(location.provider!=LocationManager.GPS_PROVIDER)return
+        // On FYT the GM906BT driver injects external GNSS through a third-
+        // party mock-location provider. Do not inject any location ourselves.
+        val external=BuildConfig.FYT7870_HEAD_UNIT && location.isMock
+        if(location.isMock && !BuildConfig.FYT7870_HEAD_UNIT)return
         val now=SystemClock.elapsedRealtime()
         val ageNanos=SystemClock.elapsedRealtimeNanos()-location.elapsedRealtimeNanos
-        if(ageNanos<0L || ageNanos>8_000_000_000L) return
+        if(ageNanos<0L || ageNanos>8_000_000_000L)return
+        if(BuildConfig.FYT7870_HEAD_UNIT) {
+            if(external)State.fytExternalGpsMs=now
+            else State.fytInternalGpsMs=now
+            // A fresh accepted GM906BT stream wins over the internal GNSS.
+            // The internal receiver remains available after signal timeout.
+            if(!FytGpsPriority.process(external,lastExternalAcceptedMs,now))
+                return
+        }
         if(location.latitude !in -85.0..85.0 ||
             location.longitude !in -180.0..180.0)return
         State.addRawGps(location.latitude,location.longitude,now)
@@ -1435,12 +1458,15 @@ class NavService: Service(), LocationListener {
         // Speed disagreement during OBD-confirmed motion is an important
         // signal of spoofing/jamming (but not proof by itself).
         if(freshObd && obd>=7) {
-            if(kmh==null || kmh<1.5) {
+            // Some external NMEA mock providers omit the Android speed field.
+            // Permit position-only GM906BT fixes if Vgate reports movement.
+            // The OBD speed never masquerades as GPS speed in the HUD.
+            if((kmh==null && !external) || (kmh!=null && kmh<1.5)) {
                 State.gpsText="GPS: скорость 0/неизвестна, OBD движется"
                 if(gpsQuarantined)resetQuarantineEvidence(State.gpsText)
                 return
             }
-            if(abs(kmh-obd)>max(18.0,obd*.50)) {
+            if(kmh!=null && abs(kmh-obd)>max(18.0,obd*.50)) {
                 State.gpsText="GPS: скорость расходится с OBD"
                 if(gpsQuarantined)resetQuarantineEvidence(State.gpsText)
                 return
@@ -1477,14 +1503,28 @@ class NavService: Service(), LocationListener {
         }
         // Valid-looking fixes alone never release quarantine. First compare
         // multiple samples against the independent network/DR anchor.
-        if(gpsQuarantined && !allowGpsRecovery(location,kmh,now)){
+        if(gpsQuarantined && !allowGpsRecovery(
+                location,kmh?:if(external && freshObd)obd else null,now)){
             State.gpsText=State.gpsSpoofStatus
             return
         }
         // The GNSS position is derived only from retained validated
         // samples. A robust motion-compensated rolling estimate removes
         // remaining isolated outliers without trusting a single GPS fix.
+        if(BuildConfig.FYT7870_HEAD_UNIT &&
+            gps!=null && acceptedExternalReceiver!=external) {
+            // Don't mix physical-FYT and external GM906BT samples in
+            // one averaging window when selecting a different receiver.
+            gpsConsensus.clear()
+        }
         val acceptedPosition=gpsConsensus.add(location,now)
+        if(BuildConfig.FYT7870_HEAD_UNIT){
+            acceptedExternalReceiver=external
+            if(external)lastExternalAcceptedMs=now
+            State.fytGpsActiveSource=if(external)
+                "GM906BT / внешний Mock GPS"
+                else "Внутренний GPS FYT"
+        }
         gps=Location(acceptedPosition)
         gpsTime=now
         State.recentTrustedGps=State.NavFix(acceptedPosition.latitude,
@@ -1503,7 +1543,9 @@ class NavService: Service(), LocationListener {
             State.learnedDrStatus=learnedDr.status()
             State.learnedDrDetail=learnedDr.detail()
         }
-        State.gpsText="GPS: принятые координаты, усреднение "+
+        State.gpsText=(if(BuildConfig.FYT7870_HEAD_UNIT)
+            State.fytGpsActiveSource+": " else "GPS: ")+
+            "принятые координаты, усреднение "+
             "${gpsConsensus.sampleCount} точек; ~"+
             location.accuracy.toInt()+" м"
         if(!gpsQuarantined)
@@ -1546,8 +1588,11 @@ class NavService: Service(), LocationListener {
             // Stationary GNSS is valid when OBD also reports stationary.
             // Rejected zero-speed GPS during genuine OBD motion never
             // reaches this accepted-GNSS branch.
-            val motionConsistent=kmh!=null && kmh in 0.0..180.0 &&
-                (!freshObd || obd<2.5 || kmh>=2.5)
+            val motionConsistent=(
+                (kmh!=null && kmh in 0.0..180.0 &&
+                    (!freshObd || obd<2.5 || kmh>=2.5)) ||
+                (external && freshObd && obd in 0.0..180.0)
+            )
             if(motionConsistent &&
                 (gpsRecoveryLast==0L || now-gpsRecoveryLast>=750L)){
                 if(gpsRecoveryCount==0)gpsRecoverySince=now
@@ -1591,6 +1636,7 @@ class NavService: Service(), LocationListener {
         State.navFix=null
         State.networkFix=null
         State.recentTrustedGps=null
+        State.fytGpsActiveSource="Мониторинг остановлен"
         super.onDestroy()
     }
 }

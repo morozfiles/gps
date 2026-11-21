@@ -1166,8 +1166,11 @@ class GoogleDrMapActivity:Activity() {
         etaValue.text=SimpleDateFormat("HH:mm",Locale.getDefault())
             .format(Date(System.currentTimeMillis()+progress.secondsRemaining.toLong()*1000L))
         speedValue.text=speedKmh?.roundToInt()?.toString()?:"—"
-        status.text=(if(gpsTrusted)"GPS" else "Расчётная позиция OBD/DR")+
-            " · "+minutes+" мин до прибытия"
+        val receiver=if(gpsTrusted && BuildConfig.FYT7870_HEAD_UNIT)
+            (if(State.fytGpsActiveSource.contains("GM906BT"))"GM906BT"
+                else "Внутренний GPS")
+            else if(gpsTrusted)"GPS" else "Расчётная позиция OBD/DR"
+        status.text=receiver+" · "+minutes+" мин до прибытия"
         val next=progress.nextTurn
         maneuverCard.visibility=View.VISIBLE
         if(progress.arrived){
