@@ -237,12 +237,17 @@ class NavService: Service(), LocationListener {
         val n = Notification.Builder(this,"nav").setContentTitle("OBD GPS Navigator").setContentText("GPS/OBD monitoring")
             .setSmallIcon(android.R.drawable.ic_menu_mylocation).setContentIntent(intent).build()
         startForeground(1,n,android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION or android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
-        if(checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)==PackageManager.PERMISSION_GRANTED) {
+        val fine=checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)==
+            PackageManager.PERMISSION_GRANTED
+        val coarse=checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION)==
+            PackageManager.PERMISSION_GRANTED
+        if(fine) {
             try {
                 lm.requestLocationUpdates(LocationManager.GPS_PROVIDER,1000,0f,this,Looper.getMainLooper())
-            } catch (_:Exception) {}
-            hybridLocator.start()
+            }catch(_:Exception){}
         }
+        // Approximate-only permission still gives Wi-Fi/cellular location.
+        if(fine || coarse)hybridLocator.start()
         tickTime=SystemClock.elapsedRealtime()
         handler.post(loop)
     }
@@ -917,6 +922,9 @@ class NavService: Service(), LocationListener {
     }
 
     private fun acceptNetworkLocation(location:Location,provider:String) {
+        // Preserve even kilometre-accuracy network fixes for the startup
+        // accuracy circle. This never bypasses DR/spoof safety gates below.
+        ApproximateFixStore.offer(location,provider)
         // Android Location.isMock prevents feeding our injected position
         // back into the filter as an apparently independent measurement.
         if(location.isMock || !location.hasAccuracy())return
