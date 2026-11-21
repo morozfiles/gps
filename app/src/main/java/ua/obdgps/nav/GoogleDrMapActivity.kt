@@ -1062,6 +1062,7 @@ class GoogleDrMapActivity:Activity() {
                     !State.dr && !AirAlerts.autoNavigationAlertActive() &&
                     raw.accuracy in 0f..50f &&
                     (gpsSpeed?:0.0)<=180.0
+                if(gnssTrusted && raw!=null)tracker.alignWithValidatedGps(raw)
                 // NavService has already validated accepted GNSS samples.
                 // Do not block real navigation when OBD is disconnected:
                 // the inertial cursor cannot advance without live OBD.
@@ -1174,6 +1175,18 @@ internal class RouteOdometer {
             ?:0.0).coerceIn(0.0,lengths.last())
         lastTime=SystemClock.elapsedRealtime()
     }
+    /** Keep the inertial cursor synchronized to accepted, fresh GPS while
+     * satellite navigation is working. Otherwise an OBD-less journey would
+     * leave the DR fallback cursor far behind the actual car position.
+     */
+    fun alignWithValidatedGps(fix:State.NavFix) {
+        if(fix.source!="GPS" || fix.accuracy !in 0f..50f)return
+        val match=project(fix.lat,fix.lon,true)?:return
+        if(match.second>max(40.0,fix.accuracy*1.6))return
+        distance=match.first.coerceIn(0.0,lengths.lastOrNull()?:0.0)
+        lastFixTime=max(lastFixTime,fix.elapsedMs)
+    }
+
     fun update(now:Long,obd:Double?,fix:State.NavFix?,
                network:State.NavFix?,yawDegreesPerSecond:Double):State.NavFix? {
         val r=route?:return null
