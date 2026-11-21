@@ -180,6 +180,8 @@ object State {
     )
     var navFix:NavFix?=null
     var networkFix:NavFix?=null
+    /** Rough startup position; never a trusted GPS fix or a DR sensor anchor. */
+    @Volatile var approximateFix:NavFix?=null
     /** Last independently validated GNSS sample, kept even while the active view uses DR. */
     @Volatile var recentTrustedGps:NavFix?=null
     var sourceDescription="Нет координат"
