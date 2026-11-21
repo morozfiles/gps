@@ -126,6 +126,10 @@ class GoogleDrMapActivity:Activity() {
     private var speechReady=false
     private var voiceEnabled=false
     private lateinit var soundButton:Button
+    private lateinit var buildings3dButton:Button
+    // The Google Maps buildings layer is normally enabled already.
+    // This optional inspection view changes only the camera perspective.
+    private var inspectingBuildings3d=false
     private var announcedKey=""
     private var offRouteSinceMs=0L
     private var lastRerouteAt=0L
@@ -326,6 +330,14 @@ class GoogleDrMapActivity:Activity() {
         gear.textSize=23f
         val gearParams=LinearLayout.LayoutParams(dp(54),dp(54)).apply{topMargin=dp(10)}
         rightControls.addView(gear,gearParams)
+        buildings3dButton=button("3D",glassButton,lightText) {
+            toggleBuildings3dPreview()
+        }.apply {
+            contentDescription="3D обзор зданий: приблизить карту и наклонить"
+            textSize=16f
+        }
+        rightControls.addView(buildings3dButton,
+            LinearLayout.LayoutParams(dp(54),dp(54)).apply{topMargin=dp(10)})
         soundButton=button("✕",glassButton,lightText) {
             voiceEnabled=!voiceEnabled
             if(!voiceEnabled)speech?.stop()
@@ -538,6 +550,10 @@ class GoogleDrMapActivity:Activity() {
         mapView.getMapAsync { google ->
             map=google
             google.mapType=GoogleMap.MAP_TYPE_NORMAL
+            // Explicitly enable the built-in 3D buildings layer.
+            // Google displays it where data is available (generally zoom >= 17).
+            google.isBuildingsEnabled=true
+            google.uiSettings.isTiltGesturesEnabled=true
             // Local JSON style, so dark map works without a cloud Map ID.
             val styled=runCatching {
                 google.setMapStyle(MapStyleOptions.loadRawResourceStyle(
@@ -1170,6 +1186,11 @@ class GoogleDrMapActivity:Activity() {
 
     private fun fitRoute(route:RoutingEngine.Route){
         val google=map?:return
+        // Route selection must still show the WHOLE route, not a close-up.
+        if(inspectingBuildings3d) {
+            inspectingBuildings3d=false
+            updateBuildings3dButton()
+        }
         if(route.points.size<2)return
         val builder=LatLngBounds.Builder()
         for(p in route.points)builder.include(LatLng(p.lat,p.lon))
@@ -1187,6 +1208,58 @@ class GoogleDrMapActivity:Activity() {
             // Map padding already reserves space for the route/HUD panels.
             google.animateCamera(CameraUpdateFactory.newLatLngBounds(
                 bounds,width,height,dp(48)),750,null)
+        }
+    }
+
+    private fun updateBuildings3dButton() {
+        if(!::buildings3dButton.isInitialized)return
+        buildings3dButton.text=if(inspectingBuildings3d)"3D ✓" else "3D"
+        buildings3dButton.background=rounded(
+            if(inspectingBuildings3d)blue else glassButton,22)
+        buildings3dButton.contentDescription=
+            if(inspectingBuildings3d)"Закрыть 3D-обзор зданий"
+            else "Включить 3D-обзор зданий"
+    }
+
+    private fun navigationTilt(speedKmh:Double?):Float =
+        if(inspectingBuildings3d)
+            max(NavigationCameraMath.tilt(speedKmh),50f)
+        else NavigationCameraMath.tilt(speedKmh)
+
+    /** Explicit 3D camera inspection, without paid map styles or route changes. */
+    private fun toggleBuildings3dPreview(){
+        val google=map?:run{showError("Карта ещё загружается");return}
+        inspectingBuildings3d=!inspectingBuildings3d
+        updateBuildings3dButton()
+        if(inspectingBuildings3d){
+            google.isBuildingsEnabled=true
+            val current=google.cameraPosition
+            // Buildings appear in Google vector data from about zoom level 17.
+            // Preserve the current center and bearing, simply zoom and tilt.
+            val camera=CameraPosition.Builder(current)
+                .zoom(max(current.zoom,17.8f))
+                .tilt(50f).build()
+            google.animateCamera(CameraUpdateFactory.newCameraPosition(camera),
+                800,null)
+            Toast.makeText(this,
+                "3D-обзор: если Google имеет 3D-здания в этом районе, они будут объёмными",
+                Toast.LENGTH_LONG).show()
+        }else if(active){
+            // Resume ordinary guidance pitch, without resetting navigation.
+            followCar=true
+            val camera=CameraPosition.Builder(google.cameraPosition)
+                .tilt(navigationTilt(latestSpeedKmh)).build()
+            google.animateCamera(CameraUpdateFactory.newCameraPosition(camera),
+                700,null)
+        }else{
+            val route=candidates.getOrNull(chosen)
+            if(route!=null)fitRoute(route)
+            else{
+                val camera=CameraPosition.Builder(google.cameraPosition)
+                    .tilt(0f).build()
+                google.animateCamera(CameraUpdateFactory.newCameraPosition(camera),
+                    700,null)
+            }
         }
     }
 
@@ -1213,7 +1286,7 @@ class GoogleDrMapActivity:Activity() {
             anchor,NavigationCameraMath.lookAheadMeters(latestSpeedKmh))
         val camera=CameraPosition.Builder().target(LatLng(ahead.lat,ahead.lon))
             .bearing(heading.toFloat()).zoom(cameraZoom!!)
-            .tilt(NavigationCameraMath.tilt(latestSpeedKmh)).build()
+            .tilt(navigationTilt(latestSpeedKmh)).build()
         google.animateCamera(CameraUpdateFactory.newCameraPosition(camera),750,null)
     }
     private fun updateFytNotices() {
@@ -1493,7 +1566,7 @@ class GoogleDrMapActivity:Activity() {
             NavigationCameraMath.lookAheadMeters(speedKmh))
         val camera=CameraPosition.Builder().target(LatLng(center.lat,center.lon))
             .bearing(cameraHeading!!.toFloat()).zoom(cameraZoom!!)
-            .tilt(NavigationCameraMath.tilt(speedKmh)).build()
+            .tilt(navigationTilt(speedKmh)).build()
         m.animateCamera(CameraUpdateFactory.newCameraPosition(camera),850,null)
     }
 
