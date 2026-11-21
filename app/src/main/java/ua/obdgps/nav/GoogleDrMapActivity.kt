@@ -30,6 +30,8 @@ import com.google.android.gms.maps.MapView
 import com.google.android.gms.maps.GoogleMap
 import com.google.android.gms.maps.CameraUpdateFactory
 import com.google.android.gms.maps.model.CameraPosition
+import com.google.android.gms.maps.model.Circle
+import com.google.android.gms.maps.model.CircleOptions
 import com.google.android.gms.maps.model.BitmapDescriptorFactory
 import com.google.android.gms.maps.model.LatLng
 import com.google.android.gms.maps.model.LatLngBounds
@@ -53,6 +55,7 @@ class GoogleDrMapActivity:Activity() {
     private val handler=Handler(Looper.getMainLooper())
     private val client by lazy { GoogleRouteClient(applicationContext) }
     private val session by lazy { PhoneRouteSession(applicationContext) }
+    private val startupProbe by lazy { StartupPositionProbe(this) { onApproximateStartupFix(it) } }
     private var restoredSnapshot:PhoneRouteSession.Snapshot?=null
     private var savedRouteRefreshAttempted=false
     private val geocodeWorker=Executors.newSingleThreadExecutor()
@@ -84,6 +87,9 @@ class GoogleDrMapActivity:Activity() {
     private var chosen=0
     private var polylines=ArrayList<Polyline>()
     private var car:Marker?=null
+    private var accuracyCircle:Circle?=null
+    private var initialPositionCentered=false
+    private var initialPositionAccuracy=Float.POSITIVE_INFINITY
     private var drivenLine:Polyline?=null
     private var drivenIndex=-1
     private var cameraHeading:Double?=null
