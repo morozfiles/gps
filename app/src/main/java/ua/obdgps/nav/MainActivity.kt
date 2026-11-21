@@ -741,6 +741,25 @@ class MainActivity : Activity() {
                 LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,dip(1)))
         }
 
+        section("МАГНИТОЛА FYT 7870")
+        item("Проверить оборудование магнитолы") {
+            val h=FytHeadUnitProfile.read(this)
+            val text="Google Play Services: "+(if(h.googleServices)"доступны" else "не обнаружены")+"\n"+
+                "Android GPS: "+(if(h.gps)"доступен" else "недоступен")+"\n"+
+                "Wi-Fi/сотовый провайдер: "+(if(h.network)"доступен" else "недоступен")+"\n"+
+                "Гироскоп: "+(if(h.gyro)"есть" else "нет")+"\n"+
+                "Акселерометр: "+(if(h.accelerometer)"есть" else "нет")+"\n"+
+                "Магнитометр: "+(if(h.compass)"есть" else "нет")+"\n"+
+                "Bluetooth Android: "+(if(h.systemBluetooth)"доступен" else "нет")+
+                "\n\n"+h.inertialExplanation+
+                "\nЕсли FYT использует фирменный Bluetooth MCU, приложение "+
+                "не может управлять им напрямую без интерфейса производителя."
+            AlertDialog.Builder(this)
+                .setTitle("FYT 7870 · аппаратная диагностика")
+                .setMessage(text)
+                .setPositiveButton("Понятно",null).show()
+        }
+
         section("BLUETOOTH И OBD")
         item("Проверить Bluetooth и GPS") { checkBluetoothGps() }
         item("Выбрать ELM327") { chooseBluetooth() }
@@ -750,24 +769,10 @@ class MainActivity : Activity() {
         }
 
         section("ДАТЧИКИ")
-        item("Калибровка гироскопа и акселерометра (5 с)") {
-            send(NavService.CALIBRATE)
-            Toast.makeText(this,"Останови автомобиль, не двигай телефон 5 секунд",
-                Toast.LENGTH_LONG).show()
-        }
-        item("Проверить магнитный компас (восьмёрка, 15 с)") {
-            showCompassCheck()
-        }
-        item("Привязать курс компаса к автомобилю") {
-            send(NavService.ALIGN_COMPASS)
-            AlertDialog.Builder(this).setTitle("Привязка компаса")
-                .setMessage("Привязка включена. Закрепи телефон в штатном положении. " +
-                    "Когда будет хороший GPS, приложение автоматически согласует " +
-                    "курс телефона с направлением автомобиля после нескольких " +
-                    "измерений при прямолинейном движении от 15 км/ч. " +
-                    "Ничего нажимать во время движения не нужно.")
-                .setPositiveButton("Понятно",null).show()
-        }
+        // FYT is mounted in the dashboard: the phone-style 8-shaped
+        // magnetometer calibration cannot be done and would mislead users.
+        // If an external gyroscope appears later, capabilities are detected
+        // automatically and the route follower will use its yaw samples.
         item("Состояние датчиков") {
             AlertDialog.Builder(this).setTitle("Датчики")
                 .setMessage(State.sensorAvailability+"\n"+State.motionText+"\n"+
