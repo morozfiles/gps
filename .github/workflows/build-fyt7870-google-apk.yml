@@ -82,7 +82,7 @@ jobs:
       - name: Verify FYT package ID
         shell: bash
         run: |
-          "$ANDROID_HOME/build-tools/36.0.0/aapt" dump badging app/build/outputs/apk/debug/app-debug.apk | grep -F "package: name='ua.obdgps.nav.fyt7870.google'"
+          "$ANDROID_HOME/build-tools/36.0.0/aapt" dump badging app/build/outputs/apk/debug/app-debug.apk | grep -F "package: name='ua.obdgps.nav.fyt7870'"
 
       - name: Verify APK signature
         shell: bash
