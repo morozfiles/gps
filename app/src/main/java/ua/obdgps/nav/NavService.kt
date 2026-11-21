@@ -75,10 +75,11 @@ class NavService: Service(), LocationListener {
     private var gpsRecoverySince = 0L
     // GPS may briefly look valid during spoofing. Correct DR after 3
     // independently corroborated fixes; auto-return only after a 30 s
-    // continuous stable window with >=18 measurements.
+    // Five verified seconds to recover from normal signal loss. Suspected
+    // spoofing still requires independent multi-sample quarantine release.
     private val gpsCorrectionFixes=3
-    private val gpsReturnFixes=18
-    private val gpsReturnStableMs=30_000L
+    private val gpsReturnFixes=5
+    private val gpsReturnStableMs=5_000L
     private val gpsRecoveryMaxGapMs=5_000L
     private var lastRejectedGps = 0L
     private var lastGpsTeleport = 0L
@@ -188,8 +189,9 @@ class NavService: Service(), LocationListener {
         State.learnedDrDetail=learnedDr.detail()
         AirAlerts.initialize(this)
         State.obdFactor = settings.obdFactor
-        autoEnabled = settings.autoEnabled
-        State.autoEnabled = autoEnabled
+        autoEnabled = true
+        settings.autoEnabled = true
+        State.autoEnabled = true
         protocolMode=settings.protocolMode
         mutMode=protocolMode=="MUT"
         protocols=candidates(protocolMode)
@@ -288,16 +290,15 @@ class NavService: Service(), LocationListener {
                 learnedDr.save()
             }
             STOP_DR -> {
-                autoEnabled=false
-                State.autoEnabled=false
-                settings.autoEnabled=false
                 stopDr()
-                State.message="GPS выбран вручную; автоведение отключено в настройках"
+                State.message="GPS выбран; автоматическое переключение включено"
             }
-            AUTO_ON -> { autoEnabled=true; State.autoEnabled=true; settings.autoEnabled=true
-                State.message="Автоведение включено" }
-            AUTO_OFF -> { autoEnabled=false; State.autoEnabled=false; settings.autoEnabled=false
-                State.message="Автоведение отключено" }
+            AUTO_ON, AUTO_OFF -> {
+                autoEnabled=true
+                State.autoEnabled=true
+                settings.autoEnabled=true
+                State.message="Автопереключение всегда включено"
+            }
             CALIBRATE -> {
                 val text=motion.calibrate(State.speed,SystemClock.elapsedRealtime()-speedTime<3000)
                 State.message=text
@@ -758,6 +759,7 @@ class NavService: Service(), LocationListener {
         // Break supervised pairs whenever a GPS sample is quarantined:
         // learning must never bridge across a spoofing episode.
         learnedDr.resetSegment()
+        State.recentTrustedGps=null
         gpsQuarantined=true
         gpsConsensus.clear()
         quarantineRecoveryCount=0
@@ -934,7 +936,7 @@ class NavService: Service(), LocationListener {
             State.diagnosticNetworkStatus=comparisonDr.lastNetworkStatus
         }
         if(gpsQuarantined && provider!="Wi-Fi/сеть")return
-        val maxAccuracy=if(State.dr)70f else 220f
+        val maxAccuracy=if(State.dr)180f else 220f
         if(location.accuracy<=0f || location.accuracy>maxAccuracy)return
         val candidate=State.NavFix(location.latitude,location.longitude,
             if(location.hasBearing())location.bearing.toDouble() else null,
@@ -974,7 +976,8 @@ class NavService: Service(), LocationListener {
             State.networkFix=candidate
             if(networkCorrectionSamples>=2 &&
                 now-lastNetworkCorrectionMs>=5000L) {
-                dr.correctPosition(location.latitude,location.longitude,0.07)
+                dr.correctPosition(location.latitude,location.longitude,
+                    if(location.accuracy<=70f)0.07 else 0.02)
                 State.driftMeters=(State.driftMeters*.94).coerceAtLeast(0.0)
                 lastNetworkCorrectionMs=now
                 lastCorrectionSource=provider
@@ -985,7 +988,19 @@ class NavService: Service(), LocationListener {
         }
 
         val gpsRecent=!gpsQuarantined && gps!=null && now-gpsTime<8000L
-        if(gpsRecent)return
+        if(gpsRecent){
+            // Only the direct Android NETWORK_PROVIDER is independent of
+            // GNSS. Retain plausible Wi-Fi/cellular fixes as a weak
+            // correction, without mutating the validated GPS anchor.
+            if(provider=="Wi-Fi/сеть" && location.accuracy in 1f..120f){
+                val gap=gps!!.distanceTo(location).toDouble()
+                if(gap<=max(65.0,location.accuracy*1.8)){
+                    State.networkFix=candidate
+                    previousNetworkFix=candidate
+                }
+            }
+            return
+        }
         val anchor=gps
         if(anchor!=null) {
             val dt=(now-gpsTime).coerceAtLeast(0L)/1000.0
@@ -1025,10 +1040,33 @@ class NavService: Service(), LocationListener {
         }
         val currentGps=if(gpsQuarantined)null else gps
         if(currentGps!=null && now-gpsTime<7500L) {
-            State.navFix=State.NavFix(currentGps.latitude,currentGps.longitude,
+            var latitude=currentGps.latitude
+            var longitude=currentGps.longitude
+            var adjusted=false
+            val network=State.networkFix?.takeIf {
+                it.source=="Wi-Fi/сеть" && it.accuracy in 1f..120f &&
+                    now-it.elapsedMs in 0L..10_000L
+            }
+            if(network!=null) {
+                val sample=Location(LocationManager.NETWORK_PROVIDER).apply{
+                    this.latitude=network.lat
+                    this.longitude=network.lon
+                }
+                val gap=currentGps.distanceTo(sample).toDouble()
+                if(gap in 0.5..max(65.0,network.accuracy*1.8)) {
+                    // Cap the correction to 4 metres from the independently
+                    // accepted GPS location. No system location injection.
+                    val alpha=min(0.05,4.0/gap)
+                    latitude+=(network.lat-latitude)*alpha
+                    longitude+=(network.lon-longitude)*alpha
+                    adjusted=true
+                }
+            }
+            State.navFix=State.NavFix(latitude,longitude,
                 if(currentGps.hasBearing())currentGps.bearing.toDouble() else null,
                 currentGps.accuracy,"GPS",now)
-            State.sourceDescription="GPS · точность ~${currentGps.accuracy.toInt()} м"
+            State.sourceDescription="GPS"+(if(adjusted)" + Wi-Fi/сеть" else "")+
+                " · точность ~${currentGps.accuracy.toInt()} м"
             return
         }
         val net=State.networkFix?.takeIf{
@@ -1334,7 +1372,7 @@ class NavService: Service(), LocationListener {
                     " · скорость >180 км/ч" else ""))
             return
         }
-        if(!location.hasAccuracy() || location.accuracy>45f) {
+        if(!location.hasAccuracy() || location.accuracy>50f) {
             State.gpsText="GPS: низкая точность"
             if(gpsQuarantined)resetQuarantineEvidence(
                 "GPS в карантине · недостаточная точность")
@@ -1401,7 +1439,8 @@ class NavService: Service(), LocationListener {
                 latitude=pose.lat
                 longitude=pose.lon
             }
-            val acceptable=max(65.0,50.0+State.driftMeters*1.5)
+            val acceptable=max(65.0,
+                location.accuracy*1.8+State.driftMeters*1.5).coerceAtMost(220.0)
             if(predicted.distanceTo(location)>acceptable) {
                 State.gpsText="GPS: слишком далеко от инерциального пути"
                 if(gpsQuarantined)resetQuarantineEvidence(State.gpsText)
@@ -1420,6 +1459,10 @@ class NavService: Service(), LocationListener {
         val acceptedPosition=gpsConsensus.add(location,now)
         gps=Location(acceptedPosition)
         gpsTime=now
+        State.recentTrustedGps=State.NavFix(acceptedPosition.latitude,
+            acceptedPosition.longitude,
+            if(acceptedPosition.hasBearing())acceptedPosition.bearing.toDouble() else null,
+            acceptedPosition.accuracy,"GPS",now)
         lastAcceptedGps=now
         State.markRawGpsApproved(now)
         // Learn ONLY from trusted GPS fixes in the explicit two-track
@@ -1472,12 +1515,17 @@ class NavService: Service(), LocationListener {
                 gpsRecoveryCount=0
                 gpsRecoverySince=0L
             }
-            if(kmh!=null && kmh in 2.5..180.0 &&
+            // Stationary GNSS is valid when OBD also reports stationary.
+            // Rejected zero-speed GPS during genuine OBD motion never
+            // reaches this accepted-GNSS branch.
+            val motionConsistent=kmh!=null && kmh in 0.0..180.0 &&
+                (!freshObd || obd<2.5 || kmh>=2.5)
+            if(motionConsistent &&
                 (gpsRecoveryLast==0L || now-gpsRecoveryLast>=750L)){
                 if(gpsRecoveryCount==0)gpsRecoverySince=now
                 gpsRecoveryCount++
                 gpsRecoveryLast=now
-            }else if(kmh==null || kmh<1.5 || kmh>180.0){
+            }else if(!motionConsistent){
                 gpsRecoveryCount=0
                 gpsRecoverySince=0L
             }
@@ -1490,10 +1538,9 @@ class NavService: Service(), LocationListener {
             if(!manualMode && gpsRecoveryCount>=gpsReturnFixes &&
                 gpsRecoverySince>0L &&
                 now-gpsRecoverySince>=gpsReturnStableMs &&
-                now-lastDrStart>=gpsReturnStableMs &&
                 !gpsQuarantined){
                 stopDr()
-                State.message="GPS стабилен 30+ с: возврат к спутниковой навигации"
+                State.message="GPS стабилен 5+ с: возврат к спутниковой навигации"
             }
         }
     }
@@ -1507,6 +1554,15 @@ class NavService: Service(), LocationListener {
         State.stopDiagnostic()
         hybridLocator.stop()
         try {lm.removeUpdates(this)} catch(_:Exception){}
+        // Active sensor readings must expire immediately when the app is
+        // backgrounded. Retained Google route lives in PhoneRouteSession.
+        State.speed=null
+        State.speedUpdatedElapsedMs=0L
+        State.gpsSpeedKmh=null
+        State.gpsSpeedUpdatedElapsedMs=0L
+        State.navFix=null
+        State.networkFix=null
+        State.recentTrustedGps=null
         super.onDestroy()
     }
 }

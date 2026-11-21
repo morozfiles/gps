@@ -34,8 +34,8 @@ class MobileDrAutoStartTest {
             true,false,false,false,true,28.0,true))
     }
     @Test fun gpsLossDebounceAndTeleportRecoveryAreDeterministic(){
-        assertEquals(5000L,MobileDrAutoStart.debounceMs(false))
-        assertEquals(1500L,MobileDrAutoStart.debounceMs(true))
+        assertEquals(2500L,MobileDrAutoStart.debounceMs(false))
+        assertEquals(1200L,MobileDrAutoStart.debounceMs(true))
     }
     @Test fun seededDrMovesUsingObdOnlyWithNoGpsProvider(){
         val dr=DeadReckoner()

@@ -180,11 +180,15 @@ object State {
     )
     var navFix:NavFix?=null
     var networkFix:NavFix?=null
+    /** Last independently validated GNSS sample, kept even while the active view uses DR. */
+    @Volatile var recentTrustedGps:NavFix?=null
     var sourceDescription="Нет координат"
     var offlineUkraineStatus="Карта Украины / адреса: проверка файлов"
     var manualStart:NavigatorPrefs.ManualStart?=null
     var navigationDestination:Pair<Double,Double>?=null
     var activeRouting=false
+    /** In-process route keeps turn instructions without persisting Google content. */
+    var currentGoogleRoute:RoutingEngine.Route?=null
     /**
      * An explicit route-origin and ahead direction selected by the driver.
      * Used ONLY as a last-resort DR seed if accepted GPS/network/manual

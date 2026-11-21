@@ -781,10 +781,6 @@ class MainActivity : Activity() {
             showAlertCityPicker()
         }
 
-        section("НАВИГАЦИЯ")
-        item("Автопереключение · ${if(State.autoEnabled)"включено" else "выключено"}") {
-            send(if(State.autoEnabled)NavService.AUTO_OFF else NavService.AUTO_ON)
-        }
         dialog.show()
     }
 
@@ -825,8 +821,6 @@ class MainActivity : Activity() {
         addSensorCards()
         addButton(root,"Вернуться к Google Maps") { finish() }
         addButton(root,"Настройки") { showSettingsMenu() }
-        addButton(root,"Принудительно: вести по датчикам") { send(NavService.START_DR) }
-        addButton(root,"Вернуться к GPS") { send(NavService.STOP_DR) }
         addButton(root,"Остановить мониторинг") { send(NavService.EXIT) }
         handler.post {showStartupPermissionsIfMissing()}
         // Offline maps are checked on the offline screen, and are never
