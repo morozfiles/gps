@@ -772,10 +772,25 @@ class MainActivity : Activity() {
         }
 
         section("ДАТЧИКИ")
-        // FYT is mounted in the dashboard: the phone-style 8-shaped
-        // magnetometer calibration cannot be done and would mislead users.
-        // If an external gyroscope appears later, capabilities are detected
-        // automatically and the route follower will use its yaw samples.
+        item("Калибровка гироскопа FYT · 5 секунд") {
+            val available=FytHeadUnitProfile.read(this).gyro
+            if(!available){
+                AlertDialog.Builder(this).setTitle("Гироскоп FYT")
+                    .setMessage("Android пока не видит гироскоп через SensorManager. "+
+                        "Он может быть подключён к MCU магнитолы, а не напрямую к Android. "+
+                        "Для использования нужны показания, доступные приложению.")
+                    .setPositiveButton("Понятно",null).show()
+            }else AlertDialog.Builder(this).setTitle("Калибровка гироскопа FYT")
+                .setMessage("Останови автомобиль. В течение 5 секунд магнитола "+
+                    "должна быть неподвижна. Вычислим нулевое смещение гироскопа "+
+                    "без требования акселерометра. Не калибруй во время движения.")
+                .setPositiveButton("Начать"){_,_->
+                    send(NavService.CALIBRATE_FYT_GYRO)
+                    Toast.makeText(this,"Калибровка гироскопа запущена",
+                        Toast.LENGTH_SHORT).show()
+                }
+                .setNegativeButton("Отмена",null).show()
+        }
         item("Состояние датчиков") {
             AlertDialog.Builder(this).setTitle("Датчики")
                 .setMessage(State.sensorAvailability+"\n"+State.motionText+"\n"+
