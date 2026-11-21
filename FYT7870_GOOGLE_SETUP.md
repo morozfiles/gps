@@ -19,9 +19,9 @@ The phone branch `main` and legacy FYT branch `fyt7870` are not overwritten.
 
 Maps SDK for Android **must** permit:
 - package `ua.obdgps.nav.fyt7870.google`
-- the **SHA-1** of the actual CI certificate. Find the certificate SHA-1 in
-  **Build FYT7870 Google APK → Verify APK signature** step, which prints
-  `Signer #1 certificate SHA-1 digest`. Do not use the SHA-256 in its place.
+- signing certificate **SHA-1**: `A7:26:85:42:23:72:15:BC:AC:74:11:03:86:06:0B:37:49:ED:27:2A`
+  (verified in GitHub Actions **Verify APK signature** step).
+  Do not enter the SHA-256 in its place.
 
 Prefer two separate GitHub Actions secrets:
 - `GOOGLE_MAPS_FYT7870_KEY`: Android application restricted to this FYT
@@ -29,6 +29,11 @@ Prefer two separate GitHub Actions secrets:
 - `GOOGLE_ROUTES_FYT7870_KEY`: API restriction **Routes API**, with
   appropriate application restrictions and budget/quotas. The app sends
   `X-Android-Package` and `X-Android-Cert` headers.
+
+CI currently warns that the FYT-specific keys are **not present**, so the
+new APK uses phone credentials. A Google Cloud project admin must add the
+package/signing identity above to permitted Android applications on those
+credentials, or create the dedicated FYT keys.
 
 Until those two FYT secrets are provided, CI falls back to the existing phone
 `GOOGLE_MAPS_ANDROID_KEY` and `GOOGLE_ROUTES_API_KEY`. **A successful APK
