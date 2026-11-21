@@ -782,8 +782,8 @@ class MainActivity : Activity() {
         }
 
         section("НАВИГАЦИЯ")
-        item("Автопереключение · ${if(State.autoEnabled)"включено" else "выключено"}") {
-            send(if(State.autoEnabled)NavService.AUTO_OFF else NavService.AUTO_ON)
+        item("GPS ↔ OBD и датчики · всегда автоматически") {
+            Toast.makeText(this,"Переключение всегда включено",Toast.LENGTH_SHORT).show()
         }
         dialog.show()
     }
