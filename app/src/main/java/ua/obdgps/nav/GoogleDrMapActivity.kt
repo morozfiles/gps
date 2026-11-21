@@ -769,32 +769,24 @@ class GoogleDrMapActivity:Activity() {
         if(meters>=1000.0)String.format(Locale.getDefault(),"%.1f км",meters/1000.0)
         else meters.roundToInt().coerceAtLeast(0).toString()+" м"
 
-    private fun arrowIcon() : com.google.android.gms.maps.model.BitmapDescriptor {
-        val size=dp(65)
+    /** Just a translucent direction arrow: no circular badge or halo. */
+    private fun arrowIcon():com.google.android.gms.maps.model.BitmapDescriptor {
+        val size=dp(48)
         val bitmap=Bitmap.createBitmap(size,size,Bitmap.Config.ARGB_8888)
         val canvas=Canvas(bitmap)
-        val paint=Paint(Paint.ANTI_ALIAS_FLAG)
-        val cx=size/2f;val cy=size/2f
-        paint.color=Color.argb(76,0,0,0)
-        canvas.drawCircle(cx,cy+dp(2),dp(23).toFloat(),paint)
-        paint.color=Color.WHITE
-        canvas.drawCircle(cx,cy,dp(22).toFloat(),paint)
-        paint.color=blue
-        canvas.drawCircle(cx,cy,dp(19).toFloat(),paint)
-        val arrow=Path().apply{
-            moveTo(cx,cy-dp(16))
-            lineTo(cx+dp(12),cy+dp(13))
-            lineTo(cx,cy+dp(7))
-            lineTo(cx-dp(12),cy+dp(13))
+        val paint=Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color=Color.argb(205,97,183,251)
+            style=Paint.Style.FILL
+        }
+        val cx=size/2f
+        val cy=size/2f
+        val arrow=Path().apply {
+            moveTo(cx,cy-dp(19))
+            lineTo(cx+dp(14),cy+dp(17))
+            lineTo(cx,cy+dp(9))
+            lineTo(cx-dp(14),cy+dp(17))
             close()
         }
-        paint.style=Paint.Style.STROKE
-        paint.strokeWidth=dp(3).toFloat()
-        paint.strokeJoin=Paint.Join.ROUND
-        paint.color=Color.WHITE
-        canvas.drawPath(arrow,paint)
-        paint.style=Paint.Style.FILL
-        paint.color=Color.WHITE
         canvas.drawPath(arrow,paint)
         return BitmapDescriptorFactory.fromBitmap(bitmap)
     }
