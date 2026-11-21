@@ -11,6 +11,7 @@ import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.Path
 import android.speech.tts.TextToSpeech
+import android.speech.RecognizerIntent
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.location.Geocoder
@@ -55,6 +56,7 @@ class GoogleDrMapActivity:Activity() {
     private val handler=Handler(Looper.getMainLooper())
     private val client by lazy { GoogleRouteClient(applicationContext) }
     private val session by lazy { PhoneRouteSession(applicationContext) }
+    private val searchPrefs by lazy { SearchPlacesPrefs(applicationContext) }
     private val startupProbe by lazy { StartupPositionProbe(this) { onApproximateStartupFix(it) } }
     private var restoredSnapshot:PhoneRouteSession.Snapshot?=null
     private var savedRouteRefreshAttempted=false
@@ -62,6 +64,8 @@ class GoogleDrMapActivity:Activity() {
     private lateinit var mapView:MapView
     private lateinit var searchField:EditText
     private lateinit var searchBar:LinearLayout
+    private var searchPopup:PopupWindow?=null
+    private val voiceSearchRequestCode=8106
     private lateinit var tripRow:LinearLayout
     private lateinit var status:TextView
     private lateinit var direction:TextView
@@ -199,14 +203,24 @@ class GoogleDrMapActivity:Activity() {
             background=null
             imeOptions=EditorInfo.IME_ACTION_SEARCH
             setPadding(dp(8),0,dp(8),0)
+            setOnClickListener { showSearchDropdown() }
             setOnEditorActionListener { _,id,_ ->
                 if(id==EditorInfo.IME_ACTION_SEARCH){search();true}else false
             }
         }
         searchBar.addView(searchField,LinearLayout.LayoutParams(0,dp(54),1f))
+        val savedPlacesIcon=button("⌄",glassButton,lightText){showSearchDropdown()}
+        savedPlacesIcon.textSize=22f
+        savedPlacesIcon.contentDescription="Дом и последние поиски"
+        searchBar.addView(savedPlacesIcon,LinearLayout.LayoutParams(dp(39),dp(46)))
+        val microphone=button("🎙",glassButton,lightText){startVoiceSearch()}
+        microphone.textSize=22f
+        microphone.contentDescription="Голосовой поиск адреса"
+        searchBar.addView(microphone,LinearLayout.LayoutParams(dp(42),dp(46)))
         val searchIcon=button("⌕",glassButton,lightText){search()}
         searchIcon.textSize=25f
-        searchBar.addView(searchIcon,LinearLayout.LayoutParams(dp(49),dp(49)))
+        searchIcon.contentDescription="Найти адрес"
+        searchBar.addView(searchIcon,LinearLayout.LayoutParams(dp(42),dp(46)))
         maneuverGlyph=TextView(this).apply {
             text="↑";textSize=36f;setTextColor(Color.WHITE)
             gravity=Gravity.CENTER
@@ -596,6 +610,7 @@ class GoogleDrMapActivity:Activity() {
 
     @Suppress("DEPRECATION")
     private fun search() {
+        searchPopup?.dismiss()
         val term=searchField.text.toString().trim()
         if(term.length<3){showError("Введи название или адрес");return}
         val request=++searchRequest
@@ -612,6 +627,7 @@ class GoogleDrMapActivity:Activity() {
             val lon=coordinate.groupValues[2].toDoubleOrNull()
             if(lat!=null && lon!=null && lat in -85.0..85.0 && lon in -180.0..180.0){
                 selectDestination(lat,lon,term)
+                searchPrefs.remember(term)
                 return
             }
         }
@@ -634,6 +650,7 @@ class GoogleDrMapActivity:Activity() {
                         .setItems(labels){_,n->
                             selectDestination(addresses[n].latitude,
                                 addresses[n].longitude,labels[n])
+                            searchPrefs.remember(term)
                         }.setNegativeButton("Отмена",null).show()
                     status.text="Выбери подходящий адрес"
                 },onFailure={e->showError("Поиск адреса: "+(e.localizedMessage?:"ошибка"))})
@@ -1292,6 +1309,8 @@ class GoogleDrMapActivity:Activity() {
     }
     override fun onDestroy(){
         handler.removeCallbacks(refresh)
+        searchPopup?.dismiss()
+        searchPopup=null
         searchRequest++
         geocodeWorker.shutdownNow()
         saveRouteSession()
