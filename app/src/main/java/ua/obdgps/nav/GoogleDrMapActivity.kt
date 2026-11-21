@@ -551,11 +551,21 @@ class GoogleDrMapActivity:Activity() {
     private fun ensurePermissionsAndMonitoring() {
         // Request BOTH permissions: Android 12+ may grant approximate
         // location even when precise access is declined.
-        val required=arrayListOf(Manifest.permission.ACCESS_FINE_LOCATION,
-            Manifest.permission.ACCESS_COARSE_LOCATION,
-            Manifest.permission.BLUETOOTH_CONNECT,Manifest.permission.BLUETOOTH_SCAN)
-        if(Build.VERSION.SDK_INT>=33)required.add(Manifest.permission.POST_NOTIFICATIONS)
-        val missing=required.filter{checkSelfPermission(it)!=PackageManager.PERMISSION_GRANTED}
+        val required=arrayListOf<String>()
+        if(!hasLocationPermission()){
+            required.add(Manifest.permission.ACCESS_FINE_LOCATION)
+            required.add(Manifest.permission.ACCESS_COARSE_LOCATION)
+        }
+        for(permission in arrayOf(Manifest.permission.BLUETOOTH_CONNECT,
+            Manifest.permission.BLUETOOTH_SCAN)) {
+            if(checkSelfPermission(permission)!=PackageManager.PERMISSION_GRANTED)
+                required.add(permission)
+        }
+        if(Build.VERSION.SDK_INT>=33 &&
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)!=
+                PackageManager.PERMISSION_GRANTED)
+            required.add(Manifest.permission.POST_NOTIFICATIONS)
+        val missing=required
         if(missing.isNotEmpty())requestPermissions(missing.toTypedArray(),492)
         else {
             startupProbe.start()
