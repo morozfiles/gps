@@ -22,7 +22,8 @@
     <application android:name=".NavigationApplication"
         android:theme="@android:style/Theme.Material.NoActionBar"
         android:label="${appDisplayName}" android:allowBackup="false">
-        <activity android:name=".MainActivity" android:exported="false"/>
+        <activity android:name=".MainActivity" android:exported="false"
+            android:screenOrientation="landscape"/>
         <service android:name=".OfflineCountryDownloadService"
             android:exported="false" android:foregroundServiceType="dataSync"/>
         <service android:name=".NavService" android:exported="false"
