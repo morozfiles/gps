@@ -21,9 +21,10 @@ internal class PhoneRouteSession(context:Context) {
         if(route.points.size<2 || route.points.size>200_000)return
         val first=route.points.first()
         fun grid(x:Double)=(x*100000).toInt()
+        val middle=route.points[route.points.size/2]
         val routeKey="${grid(first.lat)}:${grid(first.lon)}:"+
             "${grid(route.destination.lat)}:${grid(route.destination.lon)}:"+
-            "${(route.lengthKm*100).toInt()}:${route.points.size}"
+            "${grid(middle.lat)}:${grid(middle.lon)}:${route.points.size}"
         val previous=runCatching {
             JSONObject(storage.getString("snapshot","{}")?:"{}")
         }.getOrDefault(JSONObject())
@@ -41,8 +42,6 @@ internal class PhoneRouteSession(context:Context) {
             .put("version",1)
             .put("active",active)
             .put("distance",progressMeters.coerceAtLeast(0.0))
-            .put("lengthKm",route.lengthKm)
-            .put("seconds",route.seconds)
             .put("destination",JSONArray().put(route.destination.lat).put(route.destination.lon))
             .put("updatedAt",System.currentTimeMillis())
         // Signed integer pairs; uses 1e-5 degree precision. Very small
@@ -54,12 +53,6 @@ internal class PhoneRouteSession(context:Context) {
             points.put((p.lon*100000).toInt())
         }
         doc.put("p",points)
-        val turns=JSONArray()
-        for(t in route.maneuvers) {
-            turns.put(JSONArray().put(t.shapeIndex).put(t.instruction)
-                .put(t.voice).put(t.type))
-        }
-        doc.put("turns",turns)
         if(pose!=null && pose.lat.isFinite() && pose.lon.isFinite())
             doc.put("last",JSONArray().put(pose.lat).put(pose.lon)
                 .put(pose.bearing?:JSONObject.NULL))
@@ -91,17 +84,14 @@ internal class PhoneRouteSession(context:Context) {
             RoutingEngine.Point(it.getDouble(0),it.getDouble(1))
         }
         if(!RoutingEngine.valid(destination))return@runCatching null
-        val turns=ArrayList<RoutingEngine.Turn>()
-        val array=obj.optJSONArray("turns")?:JSONArray()
-        for(n in 0 until array.length()) {
-            val a=array.getJSONArray(n)
-            val index=a.getInt(0)
-            if(index !in points.indices)continue
-            turns.add(RoutingEngine.Turn(index,
-                a.getString(1),a.getString(2),a.getInt(3)))
-        }
-        val route=RoutingEngine.Route(points,turns,
-            obj.getDouble("lengthKm"),obj.getInt("seconds"),destination)
+        // Per Google Routes API caching terms only the coordinate
+        // geometry is persisted. Turn text and duration remain memory-only;
+        // on process restart online routing can repopulate them.
+        var lengthMeters=0.0
+        for(j in 1 until points.size)
+            lengthMeters+=RoutingEngine.meters(points[j-1],points[j])
+        val route=RoutingEngine.Route(points,emptyList(),
+            lengthMeters/1000.0,(lengthMeters/13.9).toInt(),destination)
         val last=obj.optJSONArray("last")
         val pose=last?.let {
             RoutingEngine.Point(it.getDouble(0),it.getDouble(1))
