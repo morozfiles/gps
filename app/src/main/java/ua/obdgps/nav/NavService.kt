@@ -936,7 +936,7 @@ class NavService: Service(), LocationListener {
             State.diagnosticNetworkStatus=comparisonDr.lastNetworkStatus
         }
         if(gpsQuarantined && provider!="Wi-Fi/сеть")return
-        val maxAccuracy=if(State.dr)70f else 220f
+        val maxAccuracy=if(State.dr)180f else 220f
         if(location.accuracy<=0f || location.accuracy>maxAccuracy)return
         val candidate=State.NavFix(location.latitude,location.longitude,
             if(location.hasBearing())location.bearing.toDouble() else null,
@@ -976,7 +976,8 @@ class NavService: Service(), LocationListener {
             State.networkFix=candidate
             if(networkCorrectionSamples>=2 &&
                 now-lastNetworkCorrectionMs>=5000L) {
-                dr.correctPosition(location.latitude,location.longitude,0.07)
+                dr.correctPosition(location.latitude,location.longitude,
+                    if(location.accuracy<=70f)0.07 else 0.02)
                 State.driftMeters=(State.driftMeters*.94).coerceAtLeast(0.0)
                 lastNetworkCorrectionMs=now
                 lastCorrectionSource=provider
@@ -1438,7 +1439,8 @@ class NavService: Service(), LocationListener {
                 latitude=pose.lat
                 longitude=pose.lon
             }
-            val acceptable=max(65.0,50.0+State.driftMeters*1.5)
+            val acceptable=max(65.0,
+                location.accuracy*1.8+State.driftMeters*1.5).coerceAtMost(220.0)
             if(predicted.distanceTo(location)>acceptable) {
                 State.gpsText="GPS: слишком далеко от инерциального пути"
                 if(gpsQuarantined)resetQuarantineEvidence(State.gpsText)
