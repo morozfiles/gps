@@ -82,6 +82,8 @@ class GoogleDrMapActivity:Activity() {
     private var cameraZoom:Float?=null
     private var speech:TextToSpeech?=null
     private var speechReady=false
+    private var voiceEnabled=true
+    private lateinit var soundButton:Button
     private var announcedKey=""
     private var offRouteSinceMs=0L
     private var lastRerouteAt=0L
@@ -230,6 +232,17 @@ class GoogleDrMapActivity:Activity() {
         gear.textSize=23f
         val gearParams=LinearLayout.LayoutParams(dp(54),dp(54)).apply{topMargin=dp(10)}
         rightControls.addView(gear,gearParams)
+        soundButton=button("♫",Color.WHITE,dark) {
+            voiceEnabled=!voiceEnabled
+            if(!voiceEnabled)speech?.stop()
+            soundButton.text=if(voiceEnabled)"♫" else "✕"
+            Toast.makeText(this,if(voiceEnabled)"Голос включён"
+                else "Голос выключен",Toast.LENGTH_SHORT).show()
+        }
+        val soundParams=LinearLayout.LayoutParams(dp(54),dp(54)).apply {
+            topMargin=dp(10)
+        }
+        rightControls.addView(soundButton,soundParams)
         val rightParams=FrameLayout.LayoutParams(-2,-2,Gravity.RIGHT or Gravity.TOP).apply {
             setMargins(0,dp(79),dp(12),0)
         }
@@ -601,7 +614,7 @@ class GoogleDrMapActivity:Activity() {
     }
 
     private fun speak(text:String){
-        if(speechReady && text.isNotBlank())
+        if(voiceEnabled && speechReady && text.isNotBlank())
             speech?.speak(text,TextToSpeech.QUEUE_FLUSH,null,"google-route-voice")
     }
 
