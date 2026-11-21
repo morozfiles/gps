@@ -835,6 +835,9 @@ class MainActivity : Activity() {
         addButton(root,"Настройки") { showSettingsMenu() }
         addButton(root,"Принудительно: вести по датчикам") { send(NavService.START_DR) }
         addButton(root,"Вернуться к GPS") { send(NavService.STOP_DR) }
+        addButton(root,"Google Maps · маршрут + OBD/DR") {
+            startActivity(Intent(this,GoogleDrMapActivity::class.java))
+        }
         addButton(root,"Навигатор · маршрут и голосовые повороты") {
             startActivity(Intent(this,NavigatorActivity::class.java))
         }
