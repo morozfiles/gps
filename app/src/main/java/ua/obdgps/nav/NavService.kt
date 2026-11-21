@@ -231,7 +231,7 @@ class NavService: Service(), LocationListener {
         reverse = false
         val channel = NotificationChannel("nav","OBD GPS Navigator",NotificationManager.IMPORTANCE_LOW)
         (getSystemService(NOTIFICATION_SERVICE) as NotificationManager).createNotificationChannel(channel)
-        val intent = PendingIntent.getActivity(this,0,Intent(this,MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
+        val intent = PendingIntent.getActivity(this,0,Intent(this,GoogleDrMapActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
         val n = Notification.Builder(this,"nav").setContentTitle("OBD GPS Navigator").setContentText("GPS/OBD monitoring")
             .setSmallIcon(android.R.drawable.ic_menu_mylocation).setContentIntent(intent).build()
         startForeground(1,n,android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION or android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
