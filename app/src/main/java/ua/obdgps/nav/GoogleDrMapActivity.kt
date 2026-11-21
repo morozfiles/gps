@@ -180,9 +180,37 @@ class GoogleDrMapActivity:Activity() {
         val searchIcon=button("⌕",Color.WHITE,blue){search()}
         searchIcon.textSize=25f
         searchBar.addView(searchIcon,LinearLayout.LayoutParams(dp(49),dp(49)))
+        maneuverGlyph=TextView(this).apply {
+            text="↑";textSize=36f;setTextColor(Color.WHITE)
+            gravity=Gravity.CENTER
+        }
+        maneuverTitle=TextView(this).apply {
+            text="Продолжай движение";textSize=17f;setTextColor(Color.WHITE)
+            setTypeface(null,Typeface.BOLD);maxLines=2
+        }
+        maneuverDistance=TextView(this).apply {
+            text="";textSize=14f;setTextColor(Color.WHITE)
+        }
+        maneuverCard=LinearLayout(this).apply {
+            orientation=LinearLayout.HORIZONTAL
+            gravity=Gravity.CENTER_VERTICAL
+            background=rounded(Color.rgb(24,113,220),16)
+            elevation=dp(5).toFloat()
+            setPadding(dp(10),dp(6),dp(12),dp(6))
+            visibility=View.GONE
+            addView(maneuverGlyph,LinearLayout.LayoutParams(dp(56),dp(61)))
+            addView(LinearLayout(this@GoogleDrMapActivity).apply {
+                orientation=LinearLayout.VERTICAL
+                addView(maneuverTitle)
+                addView(maneuverDistance)
+            },LinearLayout.LayoutParams(0,-2,1f))
+        }
         val top=LinearLayout(this).apply {
             orientation=LinearLayout.VERTICAL
             addView(searchBar,LinearLayout.LayoutParams(-1,dp(58)))
+            addView(maneuverCard,LinearLayout.LayoutParams(-1,-2).apply {
+                topMargin=dp(10)
+            })
         }
         val topParams=FrameLayout.LayoutParams(-1,-2,Gravity.TOP).apply {
             setMargins(dp(12),dp(9),dp(12),0)
@@ -220,6 +248,35 @@ class GoogleDrMapActivity:Activity() {
         }
         bottom.addView(status)
         bottom.addView(direction)
+        val tripRow=LinearLayout(this).apply {
+            orientation=LinearLayout.HORIZONTAL
+            gravity=Gravity.CENTER_VERTICAL
+            visibility=View.GONE
+            tag="tripRow"
+            setPadding(0,dp(3),0,dp(8))
+        }
+        fun tripCell(caption:String):TextView {
+            val column=LinearLayout(this).apply {
+                orientation=LinearLayout.VERTICAL
+                gravity=Gravity.CENTER
+            }
+            val label=TextView(this).apply {
+                text=caption;textSize=12f;setTextColor(Color.GRAY)
+                gravity=Gravity.CENTER
+            }
+            val value=TextView(this).apply {
+                text="—";textSize=20f;setTextColor(dark)
+                setTypeface(null,Typeface.BOLD);gravity=Gravity.CENTER
+            }
+            column.addView(value)
+            column.addView(label)
+            tripRow.addView(column,LinearLayout.LayoutParams(0,-2,1f))
+            return value
+        }
+        etaValue=tripCell("Прибытие")
+        remainingValue=tripCell("Осталось")
+        speedValue=tripCell("км/ч")
+        bottom.addView(tripRow)
         routeOptions=LinearLayout(this).apply{orientation=LinearLayout.HORIZONTAL}
         routesRow=HorizontalScrollView(this).apply {
             isHorizontalScrollBarEnabled=false
@@ -251,7 +308,7 @@ class GoogleDrMapActivity:Activity() {
             google.uiSettings.isCompassEnabled=true
             google.uiSettings.isZoomControlsEnabled=false
             // Keep Google logo/attributions visible ABOVE the route panel.
-            google.setPadding(0,dp(72),0,dp(214))
+            google.setPadding(0,dp(155),0,dp(229))
             google.setOnMapClickListener { selectDestination(it.latitude,it.longitude,"Точка на карте") }
             google.setOnPoiClickListener { poi ->
                 selectDestination(poi.latLng.latitude,poi.latLng.longitude,poi.name)
@@ -267,6 +324,10 @@ class GoogleDrMapActivity:Activity() {
             val f=State.navFix
             google.moveCamera(CameraUpdateFactory.newLatLngZoom(
                 LatLng(f?.lat?:50.4501,f?.lon?:30.5234),15f))
+        }
+        speech=TextToSpeech(this) { code ->
+            speechReady=code==TextToSpeech.SUCCESS
+            if(speechReady)speech?.language=Locale("ru","RU")
         }
         ensurePermissionsAndMonitoring()
     }
