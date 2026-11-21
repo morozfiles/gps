@@ -30,6 +30,7 @@ class MotionSensors(
     private var calibrationStart=0L
     private var gyroSamples=0
     private var gyroSum=0.0
+    private var gyroOnlyCalibration=false
     private var accelSamples=0
     private var accelSum=0.0
     private var gpsReverseCandidate: Boolean? = null
@@ -133,7 +134,9 @@ class MotionSensors(
 
     fun start() {
         magnetometerPresent=sm.getDefaultSensor(Sensor.TYPE_MAGNETIC_FIELD)!=null
-        State.sensorGyroAvailable=sm.getDefaultSensor(Sensor.TYPE_GYROSCOPE)!=null
+        State.sensorGyroAvailable=
+            sm.getDefaultSensor(Sensor.TYPE_GYROSCOPE)!=null ||
+            sm.getDefaultSensor(Sensor.TYPE_GYROSCOPE_UNCALIBRATED)!=null
         State.sensorAccelAvailable=sm.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)!=null
         State.sensorLinearAccelAvailable=
             sm.getDefaultSensor(Sensor.TYPE_LINEAR_ACCELERATION)!=null
@@ -170,7 +173,10 @@ class MotionSensors(
         State.sensorAvailability=sensorNames.joinToString(" · ") { p ->
             p.first + ": " + if(sm.getDefaultSensor(p.second)!=null) "✓" else "нет"
         }
-        for(t in listOf(Sensor.TYPE_GYROSCOPE,Sensor.TYPE_GRAVITY,
+        for(t in listOf(
+            if(sm.getDefaultSensor(Sensor.TYPE_GYROSCOPE)!=null)
+                Sensor.TYPE_GYROSCOPE else Sensor.TYPE_GYROSCOPE_UNCALIBRATED,
+            Sensor.TYPE_GRAVITY,
             Sensor.TYPE_ACCELEROMETER,Sensor.TYPE_LINEAR_ACCELERATION,
             Sensor.TYPE_ROTATION_VECTOR,Sensor.TYPE_MAGNETIC_FIELD)) {
             sm.getDefaultSensor(t)?.let { sm.registerListener(this,it,SensorManager.SENSOR_DELAY_GAME) }
@@ -202,8 +208,53 @@ class MotionSensors(
         return State.calibrationText
     }
 
+    /** FYT installation does not need a linear accelerometer just to
+     * measure the gyroscope's stationary yaw bias. Start only while parked. */
+    fun calibrateGyroOnly(speed:Int?,fresh:Boolean):String {
+        if(calibrationStart!=0L)return State.calibrationText
+        if(!State.sensorGyroAvailable){
+            State.calibrationText="FYT: гироскоп недоступен через Android SensorManager"
+            return State.calibrationText
+        }
+        if(fresh && speed!=0){
+            State.calibrationText="Для калибровки гироскопа FYT останови автомобиль"
+            return State.calibrationText
+        }
+        val gpsFresh=State.gpsSpeedKmh!=null &&
+            SystemClock.elapsedRealtime()-State.gpsSpeedUpdatedElapsedMs<4500L
+        if(gpsFresh && (State.gpsSpeedKmh?:0.0)>2.5) {
+            State.calibrationText="GPS показывает движение; калибровка невозможна"
+            return State.calibrationText
+        }
+        calibrationStart=SystemClock.elapsedRealtime()
+        gyroOnlyCalibration=true
+        State.stationaryCalibrationRunning=true
+        gyroSamples=0;gyroSum=0.0
+        State.calibrationText="Калибровка: FYT должна стоять неподвижно 5 секунд"
+        return State.calibrationText
+    }
+
     fun finishCalibration(): String {
         if(calibrationStart==0L) return State.calibrationText
+        if(gyroOnlyCalibration){
+            gyroOnlyCalibration=false
+            calibrationStart=0L
+            State.stationaryCalibrationRunning=false
+            if(gyroSamples<40){
+                State.calibrationText="Гироскоп: недостаточно измерений, проверь доступ Android к датчику"
+                return State.calibrationText
+            }
+            val average=gyroSum/gyroSamples
+            if(!average.isFinite() || abs(average)>0.14) {
+                State.calibrationText="Гироскоп: обнаружено движение или шум, повтори на стоянке"
+                return State.calibrationText
+            }
+            yawBias=average
+            prefs.edit().putFloat("yawBias",yawBias.toFloat()).apply()
+            State.gyroCalibrated=true
+            State.calibrationText="FYT: гироскоп откалиброван, поправка вращения сохранена"
+            return State.calibrationText
+        }
         calibrationStart=0L
         State.stationaryCalibrationRunning=false
         if(gyroSamples<40 || accelSamples<20) {
@@ -408,7 +459,7 @@ class MotionSensors(
                     else -> "Курс телефона: ${trueNorth.toInt()}°. Ожидается привязка к авто"
                 }
             }
-            Sensor.TYPE_GYROSCOPE -> {
+            Sensor.TYPE_GYROSCOPE,Sensor.TYPE_GYROSCOPE_UNCALIBRATED -> {
                 val norm=sqrt(gravity.sumOf{it.toDouble()*it})
                 if(norm < 7.0) return
                 val raw=(0..2).sumOf{i->event.values[i].toDouble()*gravity[i]}/norm
