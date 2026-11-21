@@ -759,6 +759,7 @@ class NavService: Service(), LocationListener {
         // Break supervised pairs whenever a GPS sample is quarantined:
         // learning must never bridge across a spoofing episode.
         learnedDr.resetSegment()
+        State.recentTrustedGps=null
         gpsQuarantined=true
         gpsConsensus.clear()
         quarantineRecoveryCount=0
@@ -1546,6 +1547,15 @@ class NavService: Service(), LocationListener {
         State.stopDiagnostic()
         hybridLocator.stop()
         try {lm.removeUpdates(this)} catch(_:Exception){}
+        // Active sensor readings must expire immediately when the app is
+        // backgrounded. Retained Google route lives in PhoneRouteSession.
+        State.speed=null
+        State.speedUpdatedElapsedMs=0L
+        State.gpsSpeedKmh=null
+        State.gpsSpeedUpdatedElapsedMs=0L
+        State.navFix=null
+        State.networkFix=null
+        State.recentTrustedGps=null
         super.onDestroy()
     }
 }
