@@ -44,7 +44,8 @@ internal object FytHeadUnitProfile {
             googleServices=gms,
             gps=LocationManager.GPS_PROVIDER in providers,
             network=LocationManager.NETWORK_PROVIDER in providers,
-            gyro=sensors?.getDefaultSensor(Sensor.TYPE_GYROSCOPE)!=null,
+            gyro=sensors?.getDefaultSensor(Sensor.TYPE_GYROSCOPE)!=null ||
+                sensors?.getDefaultSensor(Sensor.TYPE_GYROSCOPE_UNCALIBRATED)!=null,
             accelerometer=sensors?.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)!=null,
             compass=sensors?.getDefaultSensor(Sensor.TYPE_MAGNETIC_FIELD)!=null,
             systemBluetooth=bt
