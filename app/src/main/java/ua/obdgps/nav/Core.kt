@@ -179,6 +179,11 @@ object State {
         val accuracy:Float,val source:String,val elapsedMs:Long
     )
     var navFix:NavFix?=null
+    /** The unit's external GM906BT is relayed as Android mock GPS by a
+     * third-party app; this app never publishes mock coordinates itself. */
+    @Volatile var fytGpsActiveSource="Ожидаю GPS"
+    @Volatile var fytExternalGpsMs=0L
+    @Volatile var fytInternalGpsMs=0L
     var networkFix:NavFix?=null
     /** Rough startup position; never a trusted GPS fix or a DR sensor anchor. */
     @Volatile var approximateFix:NavFix?=null
