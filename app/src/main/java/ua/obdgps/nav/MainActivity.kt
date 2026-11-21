@@ -814,51 +814,99 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val scroll = ScrollView(this).apply {
+        // Landscape dashboard: independent scrolling status on the left and
+        // large touch controls on the right, suitable for 1024x600 FYT units.
+        val frame=LinearLayout(this).apply {
+            orientation=LinearLayout.HORIZONTAL
             setBackgroundColor(bgColor)
-            clipToPadding = false
-            // Android 15/16 enforces edge-to-edge drawing: reserve the
-            // status bar, display cutout and gesture navigation space.
-            setOnApplyWindowInsetsListener { view, windowInsets ->
-                val bars = windowInsets.getInsets(
-                    WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout()
-                )
-                view.setPadding(bars.left, bars.top, bars.right, bars.bottom)
-                windowInsets
+            setPadding(dip(10),dip(5),dip(10),dip(7))
+            setOnApplyWindowInsetsListener { view,insets ->
+                val bars=insets.getInsets(
+                    WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout())
+                view.setPadding(
+                    bars.left+dip(10),bars.top+dip(5),
+                    bars.right+dip(10),bars.bottom+dip(7))
+                insets
             }
         }
         window.statusBarColor=bgColor
         window.navigationBarColor=bgColor
         window.decorView.systemUiVisibility=0
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        root = LinearLayout(this).apply {
+        root=LinearLayout(this).apply {
             orientation=LinearLayout.VERTICAL
-            setPadding(dip(16),dip(14),dip(16),dip(24))
-            setBackgroundColor(bgColor)
+            setPadding(dip(6),dip(8),dip(10),dip(14))
         }
+        val leftScroll=ScrollView(this).apply {
+            isFillViewport=false
+            addView(root)
+        }
+        frame.addView(leftScroll,LinearLayout.LayoutParams(
+            0,LinearLayout.LayoutParams.MATCH_PARENT,1.28f))
+        val controls=LinearLayout(this).apply {
+            orientation=LinearLayout.VERTICAL
+            setPadding(dip(8),dip(7),dip(4),dip(10))
+        }
+        val controlsScroll=ScrollView(this).apply{
+            isFillViewport=true
+            addView(controls)
+        }
+        frame.addView(controlsScroll,LinearLayout.LayoutParams(
+            0,LinearLayout.LayoutParams.MATCH_PARENT,0.92f))
+        setContentView(frame)
+
         State.obdFactor=NavigatorPrefs(this).obdFactor
-        scroll.addView(root); setContentView(scroll)
         addAlertHeader()
         addSpeedPanels()
-        status = TextView(this).apply {
-            textSize = 15f
+        status=TextView(this).apply {
+            textSize=13f
             setTextColor(secondaryText)
-            setPadding(dip(4), dip(8), dip(4), dip(15))
+            setPadding(dip(5),dip(8),dip(5),dip(10))
         }
         root.addView(status)
-        val fyt=FytHeadUnitProfile.read(this)
-        if(fyt.gyro || fyt.accelerometer || fyt.compass) addSensorCards()
-        else root.addView(TextView(this).apply {
-            text="FYT 7870: встроенные гироскоп, акселерометр и компас не обнаружены. "+
-                "Ведение по маршруту возможно с GPS и скоростью OBD, "+
-                "но подтверждать повороты датчиком нечем."
-            textSize=14f
-            setTextColor(secondaryText)
-            setPadding(dip(10),dip(14),dip(10),dip(10))
-        })
-        addButton(root,"Вернуться к Google Maps") { finish() }
-        addButton(root,"Настройки") { showSettingsMenu() }
-        addButton(root,"Остановить мониторинг") { send(NavService.EXIT) }
+        fun control(title:String,description:String,onClick:()->Unit) {
+            val card=LinearLayout(this).apply {
+                orientation=LinearLayout.VERTICAL
+                background=GradientDrawable().apply {
+                    setColor(panelColor)
+                    cornerRadius=dip(14).toFloat()
+                    setStroke(dip(1),Color.rgb(76,96,116))
+                }
+                setPadding(dip(16),dip(12),dip(12),dip(12))
+                minimumHeight=dip(68)
+                setOnClickListener{onClick()}
+                isClickable=true
+                isFocusable=true
+            }
+            card.addView(TextView(this).apply{
+                text=title
+                textSize=18f
+                setTextColor(primaryText)
+                typeface=android.graphics.Typeface.DEFAULT_BOLD
+            })
+            card.addView(TextView(this).apply {
+                text=description
+                textSize=12f
+                setTextColor(secondaryText)
+                setPadding(0,dip(3),0,0)
+            })
+            controls.addView(card,LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,-2).apply {
+                    bottomMargin=dip(9)
+                })
+        }
+        control("←  Вернуться к карте","Google Maps · маршрут и навигация"){finish()}
+        control("⚙  Все настройки","GPS, Vgate, гироскоп, воздушные тревоги"){showSettingsMenu()}
+        control("ᛒ  Подключить Vgate","Выбор уже сопряжённого OBD-адаптера"){chooseBluetooth()}
+        control("◉  GPS-приёмники","GM906BT через Mock Location + внутренний GPS"){
+            showGpsSourceStatus()
+        }
+        control("↻  Калибровать гироскоп","5 секунд на неподвижном автомобиле"){
+            showFytGyroCalibration()
+        }
+        control("■  Остановить мониторинг","Маршрут останется сохранённым"){
+            send(NavService.EXIT)
+        }
         handler.post {showStartupPermissionsIfMissing()}
         // Offline maps are checked on the offline screen, and are never
         // downloaded from a user-configured oblast HTTPS server at startup.
