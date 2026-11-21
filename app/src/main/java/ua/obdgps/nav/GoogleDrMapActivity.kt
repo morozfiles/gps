@@ -35,6 +35,7 @@ import com.google.android.gms.maps.model.LatLng
 import com.google.android.gms.maps.model.LatLngBounds
 import com.google.android.gms.maps.model.Marker
 import com.google.android.gms.maps.model.MarkerOptions
+import com.google.android.gms.maps.model.MapStyleOptions
 import com.google.android.gms.maps.model.Polyline
 import com.google.android.gms.maps.model.PolylineOptions
 import java.util.Locale
@@ -70,6 +71,9 @@ class GoogleDrMapActivity:Activity() {
     private lateinit var etaValue:TextView
     private lateinit var remainingValue:TextView
     private lateinit var speedValue:TextView
+    private lateinit var speedNumber:TextView
+    private lateinit var speedSourceLabel:TextView
+    private var displayedSpeedSource="НЕТ ДАННЫХ"
     private var map:GoogleMap?=null
     private var destination:RoutingEngine.Point?=null
     private var candidates=emptyList<RoutingEngine.Route>()
@@ -99,19 +103,26 @@ class GoogleDrMapActivity:Activity() {
     private val tracker=RouteOdometer()
     private val blue=Color.rgb(26,115,232)
     private val dark=Color.rgb(32,33,36)
-    private val tint=Color.rgb(247,249,252)
+    private val tint=Color.rgb(18,23,32)
+    private val glass=Color.argb(211,23,30,42)
+    private val glassButton=Color.argb(189,37,47,65)
+    private val lightText=Color.rgb(239,244,252)
+    private val mutedText=Color.rgb(167,182,202)
 
     private fun dp(n:Int)=(resources.displayMetrics.density*n+0.5f).toInt()
     private fun rounded(color:Int,radius:Int=22)=GradientDrawable().apply {
-        setColor(color);cornerRadius=dp(radius).toFloat()
+        setColor(color)
+        cornerRadius=dp(radius).toFloat()
+        setStroke(dp(1),Color.argb(65,197,211,230))
     }
-    private fun button(text:String,background:Int,foreground:Int=Color.WHITE,
+    private fun button(text:String,background:Int,foreground:Int=lightText,
                        action:()->Unit)=Button(this).apply {
         this.text=text
         isAllCaps=false
         textSize=15f
         setTextColor(foreground)
-        this.background=rounded(background,22)
+        this.background=rounded(Color.argb(if(background==blue)215 else 198,
+            Color.red(background),Color.green(background),Color.blue(background)),22)
         minHeight=dp(47)
         setPadding(dp(12),0,dp(12),0)
         elevation=dp(2).toFloat()
@@ -119,7 +130,7 @@ class GoogleDrMapActivity:Activity() {
     }
     private fun surface()=LinearLayout(this).apply {
         orientation=LinearLayout.VERTICAL
-        background=rounded(Color.WHITE,24)
+        background=rounded(glass,24)
         elevation=dp(6).toFloat()
         setPadding(dp(12),dp(9),dp(12),dp(10))
     }
@@ -135,7 +146,8 @@ class GoogleDrMapActivity:Activity() {
             WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN)
         window.statusBarColor=tint
         window.navigationBarColor=Color.BLACK
-        window.decorView.systemUiVisibility=View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR
+        // White battery, clock and notification icons over dark status bar.
+        window.decorView.systemUiVisibility=0
         if(!BuildConfig.GOOGLE_MAPS_CONFIGURED || BuildConfig.GOOGLE_ROUTES_KEY.isBlank()) {
             val message=TextView(this).apply {
                 text="Для Google Maps нужны действующие ключи Maps SDK for Android и Routes API."
@@ -164,7 +176,7 @@ class GoogleDrMapActivity:Activity() {
         searchBar=LinearLayout(this).apply {
             orientation=LinearLayout.HORIZONTAL
             gravity=Gravity.CENTER_VERTICAL
-            background=rounded(Color.WHITE,28)
+            background=rounded(glass,28)
             elevation=dp(7).toFloat()
             setPadding(dp(9),dp(2),dp(8),dp(2))
         }
@@ -172,8 +184,8 @@ class GoogleDrMapActivity:Activity() {
             hint="Поиск адреса или места"
             setSingleLine(true)
             textSize=16f
-            setTextColor(dark)
-            setHintTextColor(Color.GRAY)
+            setTextColor(lightText)
+            setHintTextColor(mutedText)
             background=null
             imeOptions=EditorInfo.IME_ACTION_SEARCH
             setPadding(dp(8),0,dp(8),0)
@@ -182,7 +194,7 @@ class GoogleDrMapActivity:Activity() {
             }
         }
         searchBar.addView(searchField,LinearLayout.LayoutParams(0,dp(54),1f))
-        val searchIcon=button("⌕",Color.WHITE,blue){search()}
+        val searchIcon=button("⌕",glassButton,lightText){search()}
         searchIcon.textSize=25f
         searchBar.addView(searchIcon,LinearLayout.LayoutParams(dp(49),dp(49)))
         maneuverGlyph=TextView(this).apply {
@@ -199,7 +211,7 @@ class GoogleDrMapActivity:Activity() {
         maneuverCard=LinearLayout(this).apply {
             orientation=LinearLayout.HORIZONTAL
             gravity=Gravity.CENTER_VERTICAL
-            background=rounded(Color.rgb(24,113,220),16)
+            background=rounded(Color.argb(224,25,94,179),16)
             elevation=dp(5).toFloat()
             setPadding(dp(10),dp(6),dp(12),dp(6))
             visibility=View.GONE
@@ -222,17 +234,20 @@ class GoogleDrMapActivity:Activity() {
         }
         root.addView(top,topParams)
 
-        val rightControls=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL}
-        val locate=button("◎",Color.WHITE,dark){centerOnCar()}
+        val rightControls=LinearLayout(this).apply{
+            orientation=LinearLayout.VERTICAL
+            gravity=Gravity.RIGHT
+        }
+        val locate=button("◎",glassButton,lightText){centerOnCar()}
         locate.textSize=27f
         rightControls.addView(locate,LinearLayout.LayoutParams(dp(54),dp(54)))
-        val gear=button("⚙",Color.WHITE,dark) {
+        val gear=button("⚙",glassButton,lightText) {
             startActivity(Intent(this,MainActivity::class.java))
         }
         gear.textSize=23f
         val gearParams=LinearLayout.LayoutParams(dp(54),dp(54)).apply{topMargin=dp(10)}
         rightControls.addView(gear,gearParams)
-        soundButton=button("♫",Color.WHITE,dark) {
+        soundButton=button("♫",glassButton,lightText) {
             voiceEnabled=!voiceEnabled
             if(!voiceEnabled)speech?.stop()
             soundButton.text=if(voiceEnabled)"♫" else "✕"
@@ -244,21 +259,21 @@ class GoogleDrMapActivity:Activity() {
         }
         rightControls.addView(soundButton,soundParams)
         val rightParams=FrameLayout.LayoutParams(-2,-2,Gravity.RIGHT or Gravity.TOP).apply {
-            setMargins(0,dp(79),dp(12),0)
+            setMargins(0,dp(145),dp(12),0)
         }
         root.addView(rightControls,rightParams)
 
         val bottom=surface()
         status=TextView(this).apply {
             text="Найди место или коснись точки на карте"
-            setTextColor(dark)
+            setTextColor(lightText)
             textSize=16f
             setTypeface(null,Typeface.BOLD)
             setPadding(dp(5),dp(3),dp(5),dp(4))
         }
         direction=TextView(this).apply {
             text="Google Maps · GPS + OBD + гироскоп + сеть"
-            setTextColor(Color.DKGRAY)
+            setTextColor(mutedText)
             textSize=13f
             setPadding(dp(5),0,dp(5),dp(9))
         }
@@ -277,11 +292,11 @@ class GoogleDrMapActivity:Activity() {
                 gravity=Gravity.CENTER
             }
             val label=TextView(this).apply {
-                text=caption;textSize=12f;setTextColor(Color.GRAY)
+                text=caption;textSize=12f;setTextColor(mutedText)
                 gravity=Gravity.CENTER
             }
             val value=TextView(this).apply {
-                text="—";textSize=20f;setTextColor(dark)
+                text="—";textSize=20f;setTextColor(lightText)
                 setTypeface(null,Typeface.BOLD);gravity=Gravity.CENTER
             }
             column.addView(value)
@@ -303,7 +318,7 @@ class GoogleDrMapActivity:Activity() {
         val actions=LinearLayout(this).apply{orientation=LinearLayout.HORIZONTAL}
         routeButton=button("Маршрут",blue){plan()}
         startButton=button("Поехали",blue){startGuidance()}
-        stopButton=button("Завершить",Color.rgb(232,234,237),dark){stopGuidance()}
+        stopButton=button("Завершить",glassButton,lightText){stopGuidance()}
         actions.addView(routeButton,LinearLayout.LayoutParams(0,dp(49),1f))
         val action2=LinearLayout.LayoutParams(0,dp(49),1f).apply{leftMargin=dp(8)}
         actions.addView(startButton,action2)
@@ -319,6 +334,12 @@ class GoogleDrMapActivity:Activity() {
         mapView.getMapAsync { google ->
             map=google
             google.mapType=GoogleMap.MAP_TYPE_NORMAL
+            // Local JSON style, so dark map works without a cloud Map ID.
+            val styled=runCatching {
+                google.setMapStyle(MapStyleOptions.loadRawResourceStyle(
+                    this,R.raw.google_night_map))
+            }.getOrDefault(false)
+            if(!styled)State.message="Тёмная карта: не удалось применить стиль"
             google.uiSettings.isMyLocationButtonEnabled=false
             google.uiSettings.isMapToolbarEnabled=false
             google.uiSettings.isCompassEnabled=true
