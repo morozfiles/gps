@@ -97,7 +97,15 @@ internal class GoogleRouteClient(private val context: Context) {
                     }
                     val instruction=nav.optString("instructions","Манёвр")
                         .replace(Regex("<[^>]*>")," ")
-                    turns.add(RoutingEngine.Turn(minIndex,instruction,instruction,0))
+                    val type=when {
+                        kind.contains("UTURN")->4
+                        kind.contains("ROUNDABOUT")->5
+                        kind.contains("LEFT")->1
+                        kind.contains("RIGHT")->2
+                        kind.contains("STRAIGHT")->3
+                        else->0
+                    }
+                    turns.add(RoutingEngine.Turn(minIndex,instruction,instruction,type))
                 }
             }
             val seconds=r.optString("duration","0s").removeSuffix("s")
