@@ -446,9 +446,20 @@ class GoogleDrMapActivity:Activity() {
                     moveGuidanceCamera(fix,snapshot.route,prog,null)
                 }else orientRoutePreview(snapshot.route)
             }else {
-                val f=State.navFix
-                google.moveCamera(CameraUpdateFactory.newLatLngZoom(
-                    LatLng(f?.lat?:50.4501,f?.lon?:30.5234),15f))
+                val f=bestPositionForMap(SystemClock.elapsedRealtime())
+                if(f!=null){
+                    initialPositionCentered=true
+                    initialPositionAccuracy=f.accuracy
+                    google.moveCamera(CameraUpdateFactory.newLatLngZoom(
+                        LatLng(f.lat,f.lon),roughZoom(f.accuracy)))
+                    updateAccuracyCircle(f)
+                }else{
+                    // A neutral country-level view, not a fabricated fix
+                    // at the center of Kyiv.
+                    google.moveCamera(CameraUpdateFactory.newLatLngZoom(
+                        LatLng(49.0,31.5),6f))
+                    status.text="Определяю положение: GPS, Wi-Fi, сотовая сеть..."
+                }
             }
         }
         speech=TextToSpeech(this) { code ->
@@ -537,12 +548,18 @@ class GoogleDrMapActivity:Activity() {
     }
 
     private fun ensurePermissionsAndMonitoring() {
+        // Request BOTH permissions: Android 12+ may grant approximate
+        // location even when precise access is declined.
         val required=arrayListOf(Manifest.permission.ACCESS_FINE_LOCATION,
+            Manifest.permission.ACCESS_COARSE_LOCATION,
             Manifest.permission.BLUETOOTH_CONNECT,Manifest.permission.BLUETOOTH_SCAN)
         if(Build.VERSION.SDK_INT>=33)required.add(Manifest.permission.POST_NOTIFICATIONS)
         val missing=required.filter{checkSelfPermission(it)!=PackageManager.PERMISSION_GRANTED}
         if(missing.isNotEmpty())requestPermissions(missing.toTypedArray(),492)
-        else startMonitoring()
+        else {
+            startupProbe.start()
+            startMonitoring()
+        }
     }
     private fun startMonitoring(){
         try {
@@ -554,9 +571,10 @@ class GoogleDrMapActivity:Activity() {
                 permissions:Array<out String>,grantResults:IntArray){
         super.onRequestPermissionsResult(requestCode,permissions,grantResults)
         if(requestCode==492){
-            if(checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)==
-                PackageManager.PERMISSION_GRANTED)startMonitoring()
-            else showError("Для навигации нужно разрешение на местоположение")
+            if(hasLocationPermission()){
+                startupProbe.start()
+                startMonitoring()
+            }else showError("Разреши хотя бы приблизительную геолокацию для поиска положения")
         }
     }
 
@@ -1191,12 +1209,15 @@ class GoogleDrMapActivity:Activity() {
         if(::mapView.isInitialized){
             mapView.onResume()
             handler.removeCallbacks(refresh);handler.post(refresh)
-            if(checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)==
-                PackageManager.PERMISSION_GRANTED)startMonitoring()
+            if(hasLocationPermission()){
+                startupProbe.start()
+                startMonitoring()
+            }
         }
     }
     override fun onPause(){
         handler.removeCallbacks(refresh)
+        startupProbe.stop()
         saveRouteSession()
         if(::mapView.isInitialized)mapView.onPause()
         super.onPause()
