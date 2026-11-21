@@ -51,6 +51,8 @@ android {
         versionName = "0.12.2-google-test"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         manifestPlaceholders["googleMapsApiKey"] = System.getenv("GOOGLE_MAPS_ANDROID_KEY") ?: ""
+        buildConfigField("boolean", "GOOGLE_MAPS_CONFIGURED",
+            (!System.getenv("GOOGLE_MAPS_ANDROID_KEY").isNullOrBlank()).toString())
         buildConfigField("String", "GOOGLE_ROUTES_KEY", "\""+(System.getenv("GOOGLE_ROUTES_API_KEY") ?: "")+"\"")
     }
     compileOptions {
