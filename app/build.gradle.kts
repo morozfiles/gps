@@ -61,6 +61,9 @@ android {
             mapsKey.isNotBlank().toString())
         buildConfigField("String", "GOOGLE_ROUTES_KEY", "\""+routesKey+"\"")
         buildConfigField("boolean", "FYT7870_HEAD_UNIT", "true")
+        buildConfigField("boolean", "FYT_GOOGLE_KEY_FALLBACK",
+            (System.getenv("GOOGLE_MAPS_FYT7870_KEY").isNullOrBlank() ||
+                System.getenv("GOOGLE_ROUTES_FYT7870_KEY").isNullOrBlank()).toString())
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
