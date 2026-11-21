@@ -165,7 +165,12 @@ class MotionSensors(
         State.compassAlignmentText=if(carOffset==null)
             "Курс автомобиля ещё не привязан. Доступна автопривязка по GPS"
             else "Привязка к автомобилю сохранена"
-        val sensorNames = listOf(
+        val sensorNames=if(BuildConfig.FYT7870_HEAD_UNIT)listOf(
+            "Гироскоп" to
+                (if(sm.getDefaultSensor(Sensor.TYPE_GYROSCOPE)!=null)
+                    Sensor.TYPE_GYROSCOPE else Sensor.TYPE_GYROSCOPE_UNCALIBRATED),
+            "Акселерометр" to Sensor.TYPE_ACCELEROMETER
+        )else listOf(
             "Гироскоп" to Sensor.TYPE_GYROSCOPE,
             "Акселерометр" to Sensor.TYPE_ACCELEROMETER,
             "Компас" to Sensor.TYPE_ROTATION_VECTOR
@@ -461,8 +466,16 @@ class MotionSensors(
             }
             Sensor.TYPE_GYROSCOPE,Sensor.TYPE_GYROSCOPE_UNCALIBRATED -> {
                 val norm=sqrt(gravity.sumOf{it.toDouble()*it})
-                if(norm < 7.0) return
-                val raw=(0..2).sumOf{i->event.values[i].toDouble()*gravity[i]}/norm
+                val raw=if(gravityReady && norm>=7.0) {
+                    // Android gravity/accelerometer gives physical yaw axis.
+                    (0..2).sumOf{i->event.values[i].toDouble()*gravity[i]}/norm
+                }else if(BuildConfig.FYT7870_HEAD_UNIT) {
+                    // Mounted FYT hardware may expose only a gyroscope.
+                    // In that case use a user-selectable yaw axis; Y+ is
+                    // the default for an upright landscape display.
+                    FytGyroAxis.project(event.values,
+                        prefs.getString("fytGyroAxis","Y+")?:"Y+")
+                }else return
                 if(calibrationStart!=0L) {gyroSum+=raw;gyroSamples++}
                 val dt=if(lastGyroNs>0L)(event.timestamp-lastGyroNs)*1e-9 else 0.0
                 lastGyroNs=event.timestamp
