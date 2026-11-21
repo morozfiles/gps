@@ -64,7 +64,16 @@
     "elementType": "geometry",
     "stylers": [
       {
-        "color": "#222832"
+        "color": "#455367"
+      }
+    ]
+  },
+  {
+    "featureType": "landscape.man_made",
+    "elementType": "geometry.stroke",
+    "stylers": [
+      {
+        "color": "#66768a"
       }
     ]
   },
@@ -73,7 +82,7 @@
     "elementType": "geometry",
     "stylers": [
       {
-        "color": "#29313a"
+        "color": "#354254"
       }
     ]
   },
