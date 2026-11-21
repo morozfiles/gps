@@ -37,11 +37,11 @@ internal object FytCrashDiagnostics {
         runCatching {
             reportFile(context).writeText(
                 "FYT 7870 · разовая диагностика открытия настроек\n"+
-                "Время (UTC): \${Instant.now()}\n"+
-                "Версия: \${BuildConfig.VERSION_NAME} (\${BuildConfig.VERSION_CODE})\n"+
-                "Пакет: \${context.packageName}\n"+
+                "Время (UTC): ${Instant.now()}\n"+
+                "Версия: ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})\n"+
+                "Пакет: ${context.packageName}\n"+
                 "Logcat не требуется; при падении Java записывается stack trace.\n\n"+
-                "[\${Instant.now()}] Нажата кнопка диагностики\n")
+                "[${Instant.now()}] Нажата кнопка диагностики\n")
         }
         return true
     }
@@ -53,7 +53,7 @@ internal object FytCrashDiagnostics {
         state.edit().putString("phase",phase.take(180)).commit()
         runCatching {
             if(reportFile(context).length()<MAX_TEXT)
-                reportFile(context).appendText("[\${Instant.now()}] \${phase.take(180)}\n")
+                reportFile(context).appendText("[${Instant.now()}] ${phase.take(180)}\n")
         }
     }
 
@@ -64,9 +64,9 @@ internal object FytCrashDiagnostics {
             val last=prefs(context).getString("phase","Неизвестный этап")
             val trace=Log.getStackTraceString(error).take(MAX_TEXT)
             reportFile(context).appendText(
-                "\n[\${Instant.now()}] СБОЙ В ПРИЛОЖЕНИИ\n"+
+                "\n[${Instant.now()}] СБОЙ В ПРИЛОЖЕНИИ\n"+
                 "Последний этап: $last\n"+
-                "Поток: \${thread.name.take(80)}\n"+
+                "Поток: ${thread.name.take(80)}\n"+
                 "Ошибка:\n$trace\n")
             prefs(context).edit()
                 .putString("result","crashed")
@@ -81,7 +81,7 @@ internal object FytCrashDiagnostics {
         if(!isArmed(context))return
         runCatching {
             reportFile(context).appendText(
-                "\n[\${Instant.now()}] Не удалось открыть экран:\n"+
+                "\n[${Instant.now()}] Не удалось открыть экран:\n"+
                 Log.getStackTraceString(error).take(MAX_TEXT)+"\n")
         }
         prefs(context).edit()
@@ -97,7 +97,7 @@ internal object FytCrashDiagnostics {
             .putBoolean("armed",false).commit()
         runCatching {
             reportFile(context).appendText(
-                "[\${Instant.now()}] Экран вернулся без Java-исключения.\n")
+                "[${Instant.now()}] Экран вернулся без Java-исключения.\n")
         }
     }
 
@@ -108,13 +108,13 @@ internal object FytCrashDiagnostics {
             result=="crashed" -> "Обнаружено падение Java/Kotlin.\n\n"
             result=="launch_failed" -> "Ошибка запуска экрана.\n\n"
             isArmed(context) -> "Проверка не завершилась; возможно, процесс был остановлен.\n"+
-                "Последний этап: \${prefs(context).getString("phase","неизвестен")}\n\n"
+                "Последний этап: ${prefs(context).getString("phase","неизвестен")}\n\n"
             result=="returned" -> "После открытия настроек выполнен возврат на карту.\n"+
                 "Если ошибка повторилась, потребуется журнал Android logcat.\n\n"
             else -> "Диагностика ещё не запускалась.\n\n"
         }
         val body=runCatching{reportFile(context).readText()}.getOrElse{
-            "Не удалось прочитать локальный файл диагностики: \${it.javaClass.simpleName}"
+            "Не удалось прочитать локальный файл диагностики: ${it.javaClass.simpleName}"
         }
         return (header+body).take(MAX_TEXT)
     }
