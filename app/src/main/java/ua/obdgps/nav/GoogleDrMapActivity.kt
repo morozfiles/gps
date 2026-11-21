@@ -258,6 +258,59 @@ class GoogleDrMapActivity:Activity() {
             topMargin=dp(10)
         }
         rightControls.addView(soundButton,soundParams)
+        // This chip remains visible before and during guidance. It shows
+        // actual GPS speed only when GNSS is accepted; otherwise fresh OBD.
+        speedNumber=TextView(this).apply {
+            text="—";textSize=31f
+            setTypeface(null,Typeface.BOLD)
+            setTextColor(lightText)
+            gravity=Gravity.CENTER
+            includeFontPadding=false
+        }
+        speedSourceLabel=TextView(this).apply {
+            text="НЕТ ДАННЫХ";textSize=10f
+            setTypeface(null,Typeface.BOLD)
+            setTextColor(mutedText)
+            gravity=Gravity.CENTER
+            includeFontPadding=false
+        }
+        val speedUnit=TextView(this).apply {
+            text="км/ч";textSize=11f;setTextColor(mutedText)
+            gravity=Gravity.CENTER
+            includeFontPadding=false
+        }
+        val speedBadge=LinearLayout(this).apply {
+            orientation=LinearLayout.VERTICAL
+            gravity=Gravity.CENTER
+            background=rounded(glass,20)
+            elevation=dp(4).toFloat()
+            setPadding(dp(6),dp(8),dp(6),dp(8))
+            isClickable=true
+            isFocusable=true
+            contentDescription="Скорость движения и источник данных"
+            setOnClickListener {
+                val gps=State.gpsSpeedKmh
+                val obd=State.obdSpeedKmh()
+                val description="Сейчас: "+displayedSpeedSource+
+                    "\nGPS: "+(gps?.let { String.format(Locale.getDefault(),"%.0f км/ч",it) }
+                        ?:"нет данных")+
+                    "\nOBD: "+(obd?.let { String.format(Locale.getDefault(),"%.0f км/ч",it) }
+                        ?:"нет данных")+
+                    "\nДля выбора используются только свежие данные. " +
+                    "При потере или недостоверности GPS приоритет у OBD."
+                AlertDialog.Builder(this@GoogleDrMapActivity)
+                    .setTitle("Источник скорости")
+                    .setMessage(description)
+                    .setPositiveButton("Понятно",null).show()
+            }
+            addView(speedNumber)
+            addView(speedUnit)
+            addView(speedSourceLabel)
+        }
+        val speedParams=LinearLayout.LayoutParams(dp(93),dp(92)).apply {
+            topMargin=dp(11)
+        }
+        rightControls.addView(speedBadge,speedParams)
         val rightParams=FrameLayout.LayoutParams(-2,-2,Gravity.RIGHT or Gravity.TOP).apply {
             setMargins(0,dp(145),dp(12),0)
         }
@@ -810,7 +863,18 @@ class GoogleDrMapActivity:Activity() {
                 now-State.gpsSpeedUpdatedElapsedMs in 0L..6000L &&
                 it.isFinite() && it in 0.0..180.0
             }
-            latestSpeedKmh=obd?:gpsSpeed
+            val gpsTrustedForSpeed=raw!=null && raw.source=="GPS" &&
+                !State.dr && !AirAlerts.autoNavigationAlertActive() &&
+                raw.accuracy in 0f..30f &&
+                now-raw.elapsedMs in 0L..5000L && gpsSpeed!=null
+            val selectedSpeed=NavigationSpeedSelector.choose(
+                State.dr,gpsTrustedForSpeed,gpsSpeed,obd)
+            latestSpeedKmh=selectedSpeed.kmh
+            displayedSpeedSource=selectedSpeed.source
+            speedNumber.text=selectedSpeed.kmh?.roundToInt()?.toString()?:"—"
+            speedSourceLabel.text=selectedSpeed.source
+            speedSourceLabel.setTextColor(if(selectedSpeed.available)
+                Color.rgb(140,204,255) else mutedText)
             var visible=raw
             var estimated=false
             if(active && route!=null){
