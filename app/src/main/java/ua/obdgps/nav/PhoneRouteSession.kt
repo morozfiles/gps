@@ -19,7 +19,22 @@ internal class PhoneRouteSession(context:Context) {
     fun save(route:RoutingEngine.Route,active:Boolean,progressMeters:Double,
              pose:State.NavFix?) {
         if(route.points.size<2 || route.points.size>200_000)return
-        val doc=JSONObject()
+        val routeKey=route.points.first().toString()+":"+
+            route.destination.toString()+":"+route.lengthKm+":"+route.points.size
+        val previous=runCatching {
+            JSONObject(storage.getString("snapshot","{}")?:"{}")
+        }.getOrDefault(JSONObject())
+        val sameRoute=previous.optString("key")==routeKey
+        val created=if(sameRoute)previous.optLong("createdAt",0L) else 0L
+        // Google Routes geometry may only be cached temporarily. Never
+        // retain/re-cache the same route beyond the maximum permitted age.
+        if(sameRoute && created>0L &&
+            System.currentTimeMillis()-created>=29L*24*60*60*1000) {
+            clear()
+            return
+        }
+        val doc=JSONObject().put("key",routeKey)
+            .put("createdAt",if(created>0L)created else System.currentTimeMillis())
             .put("version",1)
             .put("active",active)
             .put("distance",progressMeters.coerceAtLeast(0.0))
@@ -51,6 +66,11 @@ internal class PhoneRouteSession(context:Context) {
     fun load():Snapshot? = runCatching {
         val raw=storage.getString("snapshot",null)?:return@runCatching null
         val obj=JSONObject(raw)
+        val created=obj.optLong("createdAt",0L)
+        if(created<=0L || System.currentTimeMillis()-created>=29L*24*60*60*1000){
+            clear()
+            return@runCatching null
+        }
         if(obj.optInt("version")!=1)return@runCatching null
         val encoded=obj.getJSONArray("p")
         if(encoded.length()<4 || encoded.length()>400_000 || encoded.length()%2!=0)
