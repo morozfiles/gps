@@ -32,6 +32,7 @@ class NavService: Service(), LocationListener {
         const val AUTO_ON="AUTO_ON"
         const val AUTO_OFF="AUTO_OFF"
         const val CALIBRATE="CALIBRATE"
+        const val CALIBRATE_FYT_GYRO="CALIBRATE_FYT_GYRO"
         const val ALIGN_COMPASS="ALIGN_COMPASS"
         const val CHECK_COMPASS="CHECK_COMPASS"
         const val REVERSE="REVERSE"
@@ -308,6 +309,15 @@ class NavService: Service(), LocationListener {
                 val text=motion.calibrate(State.speed,SystemClock.elapsedRealtime()-speedTime<3000)
                 State.message=text
                 if(text.startsWith("Калибровка:")) handler.postDelayed({
+                    State.message=motion.finishCalibration()
+                },5000)
+            }
+            CALIBRATE_FYT_GYRO -> {
+                val fresh=State.speed!=null &&
+                    SystemClock.elapsedRealtime()-speedTime<3500L
+                val text=motion.calibrateGyroOnly(State.speed,fresh)
+                State.message=text
+                if(text.startsWith("Калибровка:"))handler.postDelayed({
                     State.message=motion.finishCalibration()
                 },5000)
             }
