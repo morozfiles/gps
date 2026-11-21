@@ -781,10 +781,6 @@ class MainActivity : Activity() {
             showAlertCityPicker()
         }
 
-        section("НАВИГАЦИЯ")
-        item("GPS ↔ OBD и датчики · всегда автоматически") {
-            Toast.makeText(this,"Переключение всегда включено",Toast.LENGTH_SHORT).show()
-        }
         dialog.show()
     }
 
