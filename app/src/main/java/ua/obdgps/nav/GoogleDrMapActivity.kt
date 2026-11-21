@@ -54,6 +54,8 @@ class GoogleDrMapActivity:Activity() {
     private val geocodeWorker=Executors.newSingleThreadExecutor()
     private lateinit var mapView:MapView
     private lateinit var searchField:EditText
+    private lateinit var searchBar:LinearLayout
+    private lateinit var tripRow:LinearLayout
     private lateinit var status:TextView
     private lateinit var direction:TextView
     private lateinit var routeOptions:LinearLayout
@@ -86,6 +88,7 @@ class GoogleDrMapActivity:Activity() {
     private var reroutePending=false
     private var latestDisplayed:State.NavFix?=null
     private var latestSpeedKmh:Double?=null
+    private var displayHeading:Double?=null
     private var goal:Marker?=null
     private var active=false
     private var fetching=false
@@ -156,7 +159,7 @@ class GoogleDrMapActivity:Activity() {
         root.addView(mapView,FrameLayout.LayoutParams(-1,-1))
 
         // Search sits directly on Google map, styled as a floating Google-like pill.
-        val searchBar=LinearLayout(this).apply {
+        searchBar=LinearLayout(this).apply {
             orientation=LinearLayout.HORIZONTAL
             gravity=Gravity.CENTER_VERTICAL
             background=rounded(Color.WHITE,28)
@@ -248,7 +251,7 @@ class GoogleDrMapActivity:Activity() {
         }
         bottom.addView(status)
         bottom.addView(direction)
-        val tripRow=LinearLayout(this).apply {
+        tripRow=LinearLayout(this).apply {
             orientation=LinearLayout.HORIZONTAL
             gravity=Gravity.CENTER_VERTICAL
             visibility=View.GONE
