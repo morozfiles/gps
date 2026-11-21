@@ -52,6 +52,8 @@ jobs:
       - name: Build debug APK
         env:
           OBDGPS_SIGNING_PASSWORD: ${{ secrets.OBDGPS_SIGNING_PASSWORD }}
+          GOOGLE_MAPS_ANDROID_KEY: ${{ secrets.GOOGLE_MAPS_ANDROID_KEY }}
+          GOOGLE_ROUTES_API_KEY: ${{ secrets.GOOGLE_ROUTES_API_KEY }}
         run: gradle --no-daemon :app:assembleDebug
       - name: Verify APK signature
         shell: bash
