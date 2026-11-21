@@ -16,5 +16,5 @@ internal object MobileDrAutoStart {
             else alertActive && obdKmh>=7.0
     }
     fun debounceMs(recentTeleport:Boolean):Long=
-        if(recentTeleport)1500L else 5000L
+        if(recentTeleport)1200L else 2500L
 }
