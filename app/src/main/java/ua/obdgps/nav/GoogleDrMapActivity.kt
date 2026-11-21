@@ -56,6 +56,8 @@ class GoogleDrMapActivity:Activity() {
     private val handler=Handler(Looper.getMainLooper())
     private val client by lazy { GoogleRouteClient(applicationContext) }
     private val session by lazy { PhoneRouteSession(applicationContext) }
+    // Only a routing origin: never overrides the actual GPS or vehicle position.
+    private val originPrefs by lazy {getSharedPreferences("fyt_route_origin",MODE_PRIVATE)}
     private val fytCapabilities by lazy { FytHeadUnitProfile.read(this) }
     private val widescreen:Boolean get() =
         BuildConfig.FYT7870_HEAD_UNIT &&
@@ -88,6 +90,7 @@ class GoogleDrMapActivity:Activity() {
     private lateinit var hardwareStatus:TextView
     private lateinit var routeOptions:LinearLayout
     private lateinit var routesRow:HorizontalScrollView
+    private lateinit var originButton:Button
     private lateinit var routeButton:Button
     private lateinit var startButton:Button
     private lateinit var stopButton:Button
@@ -104,6 +107,10 @@ class GoogleDrMapActivity:Activity() {
     private var displayedSpeedSource="НЕТ ДАННЫХ"
     private var map:GoogleMap?=null
     private var destination:RoutingEngine.Point?=null
+    private var manualOrigin:RoutingEngine.Point?=null
+    private var pickingOrigin=false
+    private var originMarker:Marker?=null
+    private var routeRequestId=0
     private var candidates=emptyList<RoutingEngine.Route>()
     private var chosen=0
     private var polylines=ArrayList<Polyline>()
@@ -455,9 +462,14 @@ class GoogleDrMapActivity:Activity() {
         bottom.addView(routesRow,LinearLayout.LayoutParams(-1,dp(57)))
         val actions=LinearLayout(this).apply{orientation=LinearLayout.HORIZONTAL}
         regularActions=actions
+        originButton=button("Точка старта",glassButton){onOriginButton()}
         routeButton=button("Маршрут",blue){plan()}
         startButton=button("Поехали",blue){startGuidance()}
         stopButton=button("Завершить",glassButton,lightText){stopGuidance()}
+        if(widescreen)actions.addView(originButton,
+            LinearLayout.LayoutParams(0,dp(49),1f).apply{rightMargin=dp(7)})
+        else bottom.addView(originButton,LinearLayout.LayoutParams(-1,dp(49))
+            .apply{bottomMargin=dp(7)})
         actions.addView(routeButton,LinearLayout.LayoutParams(0,dp(49),1f))
         val action2=LinearLayout.LayoutParams(0,dp(49),1f).apply{leftMargin=dp(8)}
         actions.addView(startButton,action2)
@@ -519,6 +531,7 @@ class GoogleDrMapActivity:Activity() {
             fytNoticeBanner=notice
         }
         setContentView(root)
+        manualOrigin=loadManualOrigin()
         restoreRouteSession()
         updateButtons()
 
@@ -537,9 +550,11 @@ class GoogleDrMapActivity:Activity() {
             google.uiSettings.isZoomControlsEnabled=false
             // Keep Google logo/attributions visible ABOVE the route panel.
             google.setPadding(0,dp(if(widescreen)86 else 155),0,dp(if(widescreen)176 else 229))
-            google.setOnMapClickListener { selectDestination(it.latitude,it.longitude,"Точка на карте") }
+            google.setOnMapClickListener {
+                selectMapPoint(it.latitude,it.longitude,"Точка на карте")
+            }
             google.setOnPoiClickListener { poi ->
-                selectDestination(poi.latLng.latitude,poi.latLng.longitude,poi.name)
+                selectMapPoint(poi.latLng.latitude,poi.latLng.longitude,poi.name)
             }
             google.setOnPolylineClickListener { poly ->
                 val index=polylines.indexOf(poly)
@@ -549,6 +564,7 @@ class GoogleDrMapActivity:Activity() {
                 if(reason==GoogleMap.OnCameraMoveStartedListener.REASON_GESTURE)
                     followCar=false
             }
+            updateOriginMarker()
             val snapshot=restoredSnapshot
             if(snapshot!=null){
                 val d=snapshot.route.destination
@@ -901,7 +917,7 @@ class GoogleDrMapActivity:Activity() {
             val lat=coordinate.groupValues[1].toDoubleOrNull()
             val lon=coordinate.groupValues[2].toDoubleOrNull()
             if(lat!=null && lon!=null && lat in -85.0..85.0 && lon in -180.0..180.0){
-                selectDestination(lat,lon,term)
+                selectMapPoint(lat,lon,term)
                 searchPrefs.remember(term)
                 return
             }
@@ -923,7 +939,7 @@ class GoogleDrMapActivity:Activity() {
                     }.toTypedArray()
                     AlertDialog.Builder(this).setTitle("Выбери место")
                         .setItems(labels){_,n->
-                            selectDestination(addresses[n].latitude,
+                            selectMapPoint(addresses[n].latitude,
                                 addresses[n].longitude,labels[n])
                             searchPrefs.remember(term)
                         }.setNegativeButton("Отмена",null).show()
@@ -932,23 +948,110 @@ class GoogleDrMapActivity:Activity() {
             }
         }
     }
+    private fun loadManualOrigin():RoutingEngine.Point? {
+        if(!originPrefs.contains("lat") || !originPrefs.contains("lon"))return null
+        val point=RoutingEngine.Point(
+            Double.fromBits(originPrefs.getLong("lat",0)),
+            Double.fromBits(originPrefs.getLong("lon",0)))
+        return point.takeIf{RoutingEngine.valid(it)}
+    }
+    private fun saveManualOrigin(point:RoutingEngine.Point?){
+        val edit=originPrefs.edit()
+        if(point==null)edit.remove("lat").remove("lon")
+        else edit.putLong("lat",point.lat.toBits()).putLong("lon",point.lon.toBits())
+        edit.apply()
+    }
+    private fun updateOriginMarker(){
+        originMarker?.remove()
+        originMarker=null
+        if(active)return
+        val p=manualOrigin?:return
+        originMarker=map?.addMarker(MarkerOptions()
+            .position(LatLng(p.lat,p.lon))
+            .icon(BitmapDescriptorFactory.defaultMarker(BitmapDescriptorFactory.HUE_AZURE))
+            .title("Ручная точка старта").zIndex(15f))
+    }
+    private fun invalidateRoutes(){
+        ++routeRequestId
+        ++routePreviewRequest
+        fetching=false
+        if(::routeButton.isInitialized)routeButton.isEnabled=true
+        candidates=emptyList()
+        chosen=0
+        session.clear()
+        restoredSnapshot=null
+        State.currentGoogleRoute=null
+        State.gpsFilterRoutePoints=emptyList()
+        clearRoutes()
+    }
+    private fun enterOriginMode(){
+        if(active)return
+        pickingOrigin=true
+        status.text="Укажи точку старта на карте"
+        direction.text="Нажми на карте нужное место или найди адрес в строке поиска."
+        updateButtons()
+    }
+    private fun onOriginButton(){
+        if(active)return
+        if(pickingOrigin){
+            pickingOrigin=false
+            status.text="Выбор точки старта отменён"
+            direction.text=if(manualOrigin!=null)
+                "Ручная точка сохранена · можно строить маршрут"
+                else "Старт определяется по GPS и сети"
+            updateButtons()
+        }else if(manualOrigin==null)enterOriginMode()
+        else AlertDialog.Builder(this).setTitle("Точка старта")
+            .setItems(arrayOf("Выбрать другую точку на карте",
+                "Вернуться к GPS / Wi-Fi / сети")){_,choice->
+                if(choice==0)enterOriginMode()
+                else{
+                    manualOrigin=null
+                    saveManualOrigin(null)
+                    updateOriginMarker()
+                    invalidateRoutes()
+                    status.text="Автоматическое определение старта"
+                    direction.text="Выбери «Маршрут», чтобы рассчитать путь от GPS/сети."
+                    updateButtons()
+                }
+            }.setNegativeButton("Отмена",null).show()
+    }
+    private fun selectMapPoint(lat:Double,lon:Double,label:String){
+        if(pickingOrigin)selectOrigin(lat,lon)
+        else selectDestination(lat,lon,label)
+    }
+    private fun selectOrigin(lat:Double,lon:Double){
+        if(active)return
+        val point=RoutingEngine.Point(lat,lon)
+        if(!RoutingEngine.valid(point)){showError("Некорректная точка старта");return}
+        ++searchRequest
+        manualOrigin=point
+        pickingOrigin=false
+        saveManualOrigin(point)
+        updateOriginMarker()
+        invalidateRoutes()
+        status.text="Ручная точка старта установлена"
+        direction.text="Голубой маркер — старт. Выбери цель и нажми «Маршрут»."
+        updateButtons()
+    }
+
     private fun selectDestination(lat:Double,lon:Double,label:String) {
         if(active)stopGuidance()
         destination=RoutingEngine.Point(lat,lon)
         goal?.remove()
         goal=map?.addMarker(MarkerOptions().position(LatLng(lat,lon)).title(label))
         map?.animateCamera(CameraUpdateFactory.newLatLngZoom(LatLng(lat,lon),15f))
-        candidates=emptyList()
-        session.clear()
-        State.currentGoogleRoute=null
-        restoredSnapshot=null
-        clearRoutes()
+        invalidateRoutes()
         status.text=label.take(90)
         direction.text="Нажми «Маршрут», чтобы увидеть варианты Google"
         updateButtons()
     }
     private fun plan(){
         val to=destination?:run{showError("Сначала найди адрес или выбери точку");return}
+        manualOrigin?.let{
+            requestRouteFrom(it,to)
+            return
+        }
         val now=SystemClock.elapsedRealtime()
         val start=listOfNotNull(State.navFix,State.networkFix).firstOrNull{
             now-it.elapsedMs in 0L..15000L &&
@@ -968,21 +1071,29 @@ class GoogleDrMapActivity:Activity() {
                     ". Начальная дорога может быть неверной. "+
                     "Построить маршрут от приблизительного центра?")
                 .setNegativeButton("Подождать GPS",null)
-                .setPositiveButton("Построить"){_,_->requestRouteFrom(start,to)}
+                .setPositiveButton("Построить"){_,_->
+                    requestRouteFrom(RoutingEngine.Point(start.lat,start.lon),to)
+                }
                 .show()
             return
         }
-        requestRouteFrom(start,to)
+        requestRouteFrom(RoutingEngine.Point(start.lat,start.lon),to)
     }
 
-    private fun requestRouteFrom(start:State.NavFix,to:RoutingEngine.Point){
+    private fun requestRouteFrom(start:RoutingEngine.Point,to:RoutingEngine.Point){
         if(fetching)return
+        if(RoutingEngine.meters(start,to)<35.0){
+            showError("Точка старта слишком близка к цели")
+            return
+        }
+        val request=++routeRequestId
         fetching=true
         routeButton.isEnabled=false
         status.text="Google рассчитывает варианты маршрута..."
-        client.requestAlternatives(RoutingEngine.Point(start.lat,start.lon),to){result->
+        client.requestAlternatives(start,to){result->
+            if(isFinishing || isDestroyed || request!=routeRequestId)
+                return@requestAlternatives
             fetching=false
-            if(isFinishing || isDestroyed)return@requestAlternatives
             routeButton.isEnabled=true
             result.fold(onSuccess={routes->
                 if(routes.isEmpty()){showError("Google не вернул маршрутов");return@fold}
@@ -1084,12 +1195,13 @@ class GoogleDrMapActivity:Activity() {
         val google=map?:return
         if(route.points.size<2)return
         val now=SystemClock.elapsedRealtime()
-        val current=listOfNotNull(latestDisplayed,State.navFix,State.networkFix)
-            .firstOrNull {
-                now-it.elapsedMs in 0L..15000L &&
-                    it.lat.isFinite() && it.lon.isFinite() &&
-                    route.progress(RoutingEngine.Point(it.lat,it.lon)).lateralMeters<3000.0
-            }
+        val current=if(manualOrigin!=null)null else
+            listOfNotNull(latestDisplayed,State.navFix,State.networkFix)
+                .firstOrNull {
+                    now-it.elapsedMs in 0L..15000L &&
+                        it.lat.isFinite() && it.lon.isFinite() &&
+                        route.progress(RoutingEngine.Point(it.lat,it.lon)).lateralMeters<3000.0
+                }
         val anchor=current?.let{RoutingEngine.Point(it.lat,it.lon)}
             ?:route.points.first()
         val progress=route.progress(anchor)
@@ -1113,6 +1225,13 @@ class GoogleDrMapActivity:Activity() {
 
     private fun updateButtons(){
         if(!::routeButton.isInitialized)return
+        originButton.visibility=if(active)View.GONE else View.VISIBLE
+        originButton.text=when{
+            pickingOrigin -> "Отмена выбора"
+            manualOrigin!=null -> "Старт: вручную"
+            else -> "Точка старта"
+        }
+        originButton.background=rounded(if(pickingOrigin)blue else glassButton,22)
         routeButton.visibility=if(active || destination==null)View.GONE else View.VISIBLE
         startButton.visibility=if(!active && candidates.isNotEmpty())View.VISIBLE else View.GONE
         stopButton.visibility=if(active)View.VISIBLE else View.GONE
@@ -1196,7 +1315,9 @@ class GoogleDrMapActivity:Activity() {
         val route=candidates.getOrNull(chosen)?:run{showError("Сначала выбери маршрут");return}
         active=true
         ++routePreviewRequest
-        tracker.bind(route,State.navFix)
+        // Manual routing should not initialize OBD progress from a spoofed fix.
+        tracker.bind(route,if(manualOrigin!=null)null else State.navFix)
+        updateOriginMarker()
         followCar=true
         cameraHeading=null
         cameraZoom=null
@@ -1241,6 +1362,7 @@ class GoogleDrMapActivity:Activity() {
         drivenIndex=-1
         status.text="Навигация завершена"
         direction.text="Можно выбрать другой маршрут или новую цель"
+        updateOriginMarker()
         updateButtons()
         map?.let{candidates.getOrNull(chosen)?.let{r->fitRoute(r)}}
     }
