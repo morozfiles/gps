@@ -47,6 +47,17 @@ class GoogleDrMapActivity:Activity() {
 
     override fun onCreate(savedInstanceState:Bundle?) {
         super.onCreate(savedInstanceState)
+        if(!BuildConfig.GOOGLE_MAPS_CONFIGURED ||
+            BuildConfig.GOOGLE_ROUTES_KEY.isBlank()) {
+            setContentView(TextView(this).apply {
+                text="Google Maps ещё не настроен. Нужны ключи Google Cloud: " +
+                    "GOOGLE_MAPS_ANDROID_KEY и GOOGLE_ROUTES_API_KEY. " +
+                    "Весь прежний навигатор и офлайн-карты доступны как раньше."
+                textSize=18f
+                setPadding(30,40,30,20)
+            })
+            return
+        }
         val root=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL}
         status=TextView(this).apply{
             text="Google Maps · выбери цель нажатием на карту"
@@ -190,18 +201,18 @@ class GoogleDrMapActivity:Activity() {
             handler.postDelayed(this,1000L)
         }
     }
-    override fun onResume(){super.onResume();mapView.onResume();handler.post(refresh)}
-    override fun onPause(){handler.removeCallbacks(refresh);mapView.onPause();super.onPause()}
-    override fun onStart(){super.onStart();mapView.onStart()}
-    override fun onStop(){mapView.onStop();super.onStop()}
-    override fun onLowMemory(){super.onLowMemory();mapView.onLowMemory()}
+    override fun onResume(){super.onResume();if(::mapView.isInitialized){mapView.onResume();handler.post(refresh)}}
+    override fun onPause(){handler.removeCallbacks(refresh);if(::mapView.isInitialized)mapView.onPause();super.onPause()}
+    override fun onStart(){super.onStart();if(::mapView.isInitialized)mapView.onStart()}
+    override fun onStop(){if(::mapView.isInitialized)mapView.onStop();super.onStop()}
+    override fun onLowMemory(){super.onLowMemory();if(::mapView.isInitialized)mapView.onLowMemory()}
     override fun onSaveInstanceState(outState:Bundle){
-        super.onSaveInstanceState(outState);mapView.onSaveInstanceState(outState)
+        super.onSaveInstanceState(outState);if(::mapView.isInitialized)mapView.onSaveInstanceState(outState)
     }
     override fun onDestroy(){
         handler.removeCallbacks(refresh)
         if(active)stopGuidance()
-        mapView.onDestroy()
+        if(::mapView.isInitialized)mapView.onDestroy()
         super.onDestroy()
     }
     private fun routeBearing(a:RoutingEngine.Point,b:RoutingEngine.Point):Double {
