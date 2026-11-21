@@ -1,5 +1,8 @@
 package ua.obdgps.nav
 
+import android.content.Context
+import android.content.pm.PackageManager
+import java.security.MessageDigest
 import android.os.Handler
 import android.os.Looper
 import org.json.JSONObject
@@ -9,7 +12,17 @@ import java.util.concurrent.Executors
 import kotlin.math.*
 
 /** Official Google Routes API client. */
-internal class GoogleRouteClient {
+internal class GoogleRouteClient(private val context: Context) {
+    private val signingFingerprint by lazy {
+        val info = context.packageManager.getPackageInfo(
+            context.packageName, PackageManager.GET_SIGNING_CERTIFICATES
+        )
+        val signer = requireNotNull(info.signingInfo?.apkContentsSigners?.singleOrNull()) {
+            "Не удалось определить сертификат подписи APK"
+        }
+        MessageDigest.getInstance("SHA-1").digest(signer.toByteArray())
+            .joinToString("") { "%02X".format(it) }
+    }
     private val background=Executors.newSingleThreadExecutor()
     private val main=Handler(Looper.getMainLooper())
     fun request(from:RoutingEngine.Point,to:RoutingEngine.Point,
@@ -32,6 +45,9 @@ internal class GoogleRouteClient {
             .openConnection() as HttpURLConnection
         c.requestMethod="POST";c.connectTimeout=10000;c.readTimeout=20000;c.doOutput=true
         c.setRequestProperty("Content-Type","application/json")
+        c.instanceFollowRedirects = false
+        c.setRequestProperty("X-Android-Package", context.packageName)
+        c.setRequestProperty("X-Android-Cert", signingFingerprint)
         c.setRequestProperty("X-Goog-Api-Key",key)
         c.setRequestProperty("X-Goog-FieldMask","routes.distanceMeters,routes.duration,"+
             "routes.polyline.encodedPolyline,routes.legs.steps.navigationInstruction,"+
