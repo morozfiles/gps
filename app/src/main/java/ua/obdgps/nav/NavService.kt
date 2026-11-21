@@ -1466,7 +1466,7 @@ class NavService: Service(), LocationListener {
                 if(gpsQuarantined)resetQuarantineEvidence(State.gpsText)
                 return
             }
-            if(abs(kmh-obd)>max(18.0,obd*.50)) {
+            if(kmh!=null && abs(kmh-obd)>max(18.0,obd*.50)) {
                 State.gpsText="GPS: скорость расходится с OBD"
                 if(gpsQuarantined)resetQuarantineEvidence(State.gpsText)
                 return
