@@ -49,6 +49,17 @@ jobs:
         env:
           OBDGPS_SIGNING_PASSWORD: ${{ secrets.OBDGPS_SIGNING_PASSWORD }}
         run: gradle --no-daemon :app:testDebugUnitTest
+      - name: Check Google Maps credentials configured
+        shell: bash
+        env:
+          GOOGLE_MAPS_ANDROID_KEY: ${{ secrets.GOOGLE_MAPS_ANDROID_KEY }}
+          GOOGLE_ROUTES_API_KEY: ${{ secrets.GOOGLE_ROUTES_API_KEY }}
+        run: |
+          if [ -z "$GOOGLE_MAPS_ANDROID_KEY" ] || [ -z "$GOOGLE_ROUTES_API_KEY" ]; then
+            echo "::error title=Google credentials missing::Add GOOGLE_MAPS_ANDROID_KEY and GOOGLE_ROUTES_API_KEY to repository Actions Secrets."
+            exit 1
+          fi
+          echo "Both Google API credentials are configured (values hidden)."
       - name: Build debug APK
         env:
           OBDGPS_SIGNING_PASSWORD: ${{ secrets.OBDGPS_SIGNING_PASSWORD }}
