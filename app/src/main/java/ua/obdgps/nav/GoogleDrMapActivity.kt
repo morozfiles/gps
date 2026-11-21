@@ -725,6 +725,8 @@ class GoogleDrMapActivity:Activity() {
         val lateral=route.progress(RoutingEngine.Point(raw.lat,raw.lon)).lateralMeters
         if(lateral<125.0){offRouteSinceMs=0L;return}
         if(offRouteSinceMs==0L)offRouteSinceMs=now
+        if(!reroutePending)
+            direction.text="Возможный съезд с маршрута — проверяю GPS"
         if(now-offRouteSinceMs<15_000L || now-lastRerouteAt<120_000L ||
             reroutePending)return
         val to=destination?:return
