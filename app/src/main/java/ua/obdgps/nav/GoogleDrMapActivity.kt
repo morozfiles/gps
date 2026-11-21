@@ -76,6 +76,9 @@ class GoogleDrMapActivity:Activity() {
     private var searchPopup:PopupWindow?=null
     private val voiceSearchRequestCode=8106
     private lateinit var tripRow:LinearLayout
+    private lateinit var bottomPanel:LinearLayout
+    private lateinit var regularActions:LinearLayout
+    private var fytGuidanceRow:LinearLayout?=null
     private lateinit var status:TextView
     private lateinit var direction:TextView
     private lateinit var hardwareStatus:TextView
@@ -381,6 +384,7 @@ class GoogleDrMapActivity:Activity() {
         root.addView(rightControls,rightParams)
 
         val bottom=surface()
+        bottomPanel=bottom
         status=TextView(this).apply {
             text="Найди место или коснись точки на карте"
             setTextColor(lightText)
@@ -411,7 +415,8 @@ class GoogleDrMapActivity:Activity() {
             gravity=Gravity.CENTER_VERTICAL
             visibility=View.GONE
             tag="tripRow"
-            setPadding(0,dp(3),0,dp(8))
+            setPadding(0,if(widescreen)0 else dp(3),
+                0,if(widescreen)0 else dp(8))
         }
         fun tripCell(caption:String):TextView {
             val column=LinearLayout(this).apply {
@@ -434,7 +439,7 @@ class GoogleDrMapActivity:Activity() {
         etaValue=tripCell("Прибытие")
         remainingValue=tripCell("Осталось")
         speedValue=tripCell("км/ч")
-        bottom.addView(tripRow)
+        if(!widescreen)bottom.addView(tripRow)
         routeOptions=LinearLayout(this).apply{orientation=LinearLayout.HORIZONTAL}
         routesRow=HorizontalScrollView(this).apply {
             isHorizontalScrollBarEnabled=false
@@ -443,13 +448,30 @@ class GoogleDrMapActivity:Activity() {
         }
         bottom.addView(routesRow,LinearLayout.LayoutParams(-1,dp(57)))
         val actions=LinearLayout(this).apply{orientation=LinearLayout.HORIZONTAL}
+        regularActions=actions
         routeButton=button("Маршрут",blue){plan()}
         startButton=button("Поехали",blue){startGuidance()}
         stopButton=button("Завершить",glassButton,lightText){stopGuidance()}
         actions.addView(routeButton,LinearLayout.LayoutParams(0,dp(49),1f))
         val action2=LinearLayout.LayoutParams(0,dp(49),1f).apply{leftMargin=dp(8)}
         actions.addView(startButton,action2)
-        actions.addView(stopButton,LinearLayout.LayoutParams(0,dp(49),1f))
+        if(widescreen){
+            // One compact bottom HUD: [Finish] [ETA] [Remaining] [Speed].
+            // The turn instructions remain in the floating top card.
+            fytGuidanceRow=LinearLayout(this).apply {
+                orientation=LinearLayout.HORIZONTAL
+                gravity=Gravity.CENTER_VERTICAL
+                visibility=View.GONE
+                tag="fytGuidanceRow"
+                addView(stopButton,LinearLayout.LayoutParams(dp(142),dp(50)).apply{
+                    rightMargin=dp(14)
+                })
+                addView(tripRow,LinearLayout.LayoutParams(0,dp(53),1f))
+            }
+            bottom.addView(fytGuidanceRow,LinearLayout.LayoutParams(-1,dp(53)))
+        }else {
+            actions.addView(stopButton,LinearLayout.LayoutParams(0,dp(49),1f))
+        }
         bottom.addView(actions)
         val bottomParams=FrameLayout.LayoutParams(
             if(widescreen)fytPanelWidth() else -1,-2,Gravity.BOTTOM or Gravity.LEFT).apply {
@@ -1024,6 +1046,25 @@ class GoogleDrMapActivity:Activity() {
         searchBar.visibility=if(active)View.GONE else View.VISIBLE
         maneuverCard.visibility=if(active)View.VISIBLE else View.GONE
         tripRow.visibility=if(active)View.VISIBLE else View.GONE
+        if(widescreen){
+            // Widen only the live-guidance HUD. Route preview stays narrow,
+            // leaving the map and destination selection unobstructed.
+            status.visibility=if(active)View.GONE else View.VISIBLE
+            direction.visibility=if(active)View.GONE else View.VISIBLE
+            hardwareStatus.visibility=if(active)View.GONE else View.VISIBLE
+            fytGuidanceRow?.visibility=if(active)View.VISIBLE else View.GONE
+            regularActions.visibility=if(active)View.GONE else View.VISIBLE
+            bottomPanel.setPadding(dp(14),dp(if(active)6 else 9),
+                dp(14),dp(if(active)6 else 10))
+            val params=bottomPanel.layoutParams as? FrameLayout.LayoutParams
+            if(params!=null){
+                params.width=if(active)FrameLayout.LayoutParams.MATCH_PARENT
+                    else fytPanelWidth()
+                params.setMargins(dp(if(active)12 else 18),0,
+                    dp(if(active)12 else 12),dp(if(active)7 else 12))
+                bottomPanel.layoutParams=params
+            }
+        }
     }
 
     private fun saveRouteSession(inProgress:Boolean=active) {
