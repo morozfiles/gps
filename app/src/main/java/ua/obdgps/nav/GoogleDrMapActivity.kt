@@ -79,6 +79,10 @@ class GoogleDrMapActivity:Activity() {
     private lateinit var bottomPanel:LinearLayout
     private lateinit var regularActions:LinearLayout
     private var fytGuidanceRow:LinearLayout?=null
+    private var fytNoticeBanner:LinearLayout?=null
+    private var fytNoticeStatus:TextView?=null
+    private var fytNoticeDirection:TextView?=null
+    private var fytNoticeHardware:TextView?=null
     private lateinit var status:TextView
     private lateinit var direction:TextView
     private lateinit var hardwareStatus:TextView
@@ -478,6 +482,40 @@ class GoogleDrMapActivity:Activity() {
             setMargins(dp(if(widescreen)18 else 12),0,dp(12),dp(12))
         }
         root.addView(bottom,bottomParams)
+        if(widescreen) {
+            // Restore the three useful route/status notices ABOVE the compact
+            // one-row Finish / ETA / Remaining / Speed bar.
+            val notice=surface().apply {
+                setPadding(dp(14),dp(7),dp(14),dp(7))
+                visibility=View.GONE
+            }
+            fytNoticeStatus=TextView(this).apply {
+                textSize=15f
+                setTypeface(null,Typeface.BOLD)
+                setTextColor(lightText)
+                maxLines=2
+            }
+            fytNoticeDirection=TextView(this).apply {
+                textSize=13f
+                setTextColor(mutedText)
+                maxLines=2
+            }
+            fytNoticeHardware=TextView(this).apply {
+                textSize=11f
+                setTextColor(mutedText)
+                maxLines=2
+            }
+            notice.addView(fytNoticeStatus)
+            notice.addView(fytNoticeDirection)
+            notice.addView(fytNoticeHardware)
+            // The bottom navigation bar is 53dp + margins. A separate
+            // translucent banner sits directly above without making it tall.
+            root.addView(notice,FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,-2,Gravity.BOTTOM).apply {
+                setMargins(dp(12),0,dp(12),dp(79))
+            })
+            fytNoticeBanner=notice
+        }
         setContentView(root)
         restoreRouteSession()
         updateButtons()
@@ -1037,6 +1075,13 @@ class GoogleDrMapActivity:Activity() {
         for(p in route.points)builder.include(LatLng(p.lat,p.lon))
         runCatching{map?.animateCamera(CameraUpdateFactory.newLatLngBounds(builder.build(),dp(65)))}
     }
+    private fun updateFytNotices() {
+        if(!widescreen || !active)return
+        fytNoticeStatus?.text=status.text
+        fytNoticeDirection?.text=direction.text
+        fytNoticeHardware?.text=hardwareStatus.text
+    }
+
     private fun updateButtons(){
         if(!::routeButton.isInitialized)return
         routeButton.visibility=if(active || destination==null)View.GONE else View.VISIBLE
@@ -1052,7 +1097,9 @@ class GoogleDrMapActivity:Activity() {
             status.visibility=if(active)View.GONE else View.VISIBLE
             direction.visibility=if(active)View.GONE else View.VISIBLE
             hardwareStatus.visibility=if(active)View.GONE else View.VISIBLE
+            fytNoticeBanner?.visibility=if(active)View.VISIBLE else View.GONE
             fytGuidanceRow?.visibility=if(active)View.VISIBLE else View.GONE
+            updateFytNotices()
             regularActions.visibility=if(active)View.GONE else View.VISIBLE
             bottomPanel.setPadding(dp(14),dp(if(active)6 else 9),
                 dp(14),dp(if(active)6 else 10))
@@ -1545,6 +1592,7 @@ class GoogleDrMapActivity:Activity() {
                     else->"Автомобиль · GPS/сеть"
                 }
             }
+            updateFytNotices()
             handler.postDelayed(this,1000L)
         }
     }

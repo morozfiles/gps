@@ -16,6 +16,7 @@ import android.content.Intent
 import android.net.Uri
 import android.content.pm.PackageManager
 import android.os.Bundle
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
@@ -490,17 +491,21 @@ class MainActivity : Activity() {
             missing.add(Manifest.permission.ACCESS_FINE_LOCATION)
             missing.add(Manifest.permission.ACCESS_COARSE_LOCATION)
         }
-        for(permission in arrayOf(Manifest.permission.BLUETOOTH_SCAN,
-            Manifest.permission.BLUETOOTH_CONNECT)) {
-            if(checkSelfPermission(permission)!=PackageManager.PERMISSION_GRANTED)
-                missing.add(permission)
+        if(Build.VERSION.SDK_INT>=Build.VERSION_CODES.S) {
+            for(permission in arrayOf(Manifest.permission.BLUETOOTH_SCAN,
+                Manifest.permission.BLUETOOTH_CONNECT)) {
+                if(checkSelfPermission(permission)!=PackageManager.PERMISSION_GRANTED)
+                    missing.add(permission)
+            }
         }
-        // Notifications are optional and never block navigation. Ask once.
-        val prefs=getPreferences(MODE_PRIVATE)
-        if(!prefs.getBoolean("askedNotification",false) &&
-            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)!=
-                PackageManager.PERMISSION_GRANTED)
-            missing.add(Manifest.permission.POST_NOTIFICATIONS)
+        // Android 12/12L does not have POST_NOTIFICATIONS runtime permission.
+        if(Build.VERSION.SDK_INT>=Build.VERSION_CODES.TIRAMISU) {
+            val prefs=getPreferences(MODE_PRIVATE)
+            if(!prefs.getBoolean("askedNotification",false) &&
+                checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)!=
+                    PackageManager.PERMISSION_GRANTED)
+                missing.add(Manifest.permission.POST_NOTIFICATIONS)
+        }
         return missing.toTypedArray()
     }
 
@@ -989,6 +994,12 @@ class MainActivity : Activity() {
         control("←  Вернуться к карте","Google Maps · маршрут и навигация"){finish()}
         control("⚙  Все настройки","GPS, Vgate, гироскоп, воздушные тревоги"){showSettingsMenu()}
         control("ᛒ  Подключить Vgate","Выбор уже сопряжённого OBD-адаптера"){chooseBluetooth()}
+        control("▣  Разрешения","Геолокация, Bluetooth и уведомления"){
+            if(missingRuntimePermissions().isEmpty()) {
+                Toast.makeText(this,"Все необходимые разрешения выданы",
+                    Toast.LENGTH_SHORT).show()
+            } else askPermissions()
+        }
         control("◉  GPS-приёмники","GM906BT через Mock Location + внутренний GPS"){
             showGpsSourceStatus()
         }
@@ -998,15 +1009,18 @@ class MainActivity : Activity() {
         control("■  Остановить мониторинг","Маршрут останется сохранённым"){
             send(NavService.EXIT)
         }
-        handler.post {showStartupPermissionsIfMissing()}
+        // No automatic permission dialog or duplicate startForegroundService
+        // on entering settings: the Google map screen already owns monitoring.
+        // Users may request missing permissions through the explicit button.
         // Offline maps are checked on the offline screen, and are never
         // downloaded from a user-configured oblast HTTPS server at startup.
         // Existing Ukraine map/address files survive APK updates.
     }
     override fun onResume() {
         super.onResume()
-        monitorGpsSpeed()
-        if(hasPermissions()) send(NavService.MONITOR)
+        // Opening this diagnostics screen must not request permissions,
+        // register a second GPS listener or launch a new foreground service.
+        // Existing NavService readings remain available via State.
         handler.removeCallbacks(refresh)
         handler.post(refresh)
     }
@@ -1023,21 +1037,12 @@ class MainActivity : Activity() {
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if(requestCode==12) {
-            monitorGpsSpeed()
-            if(hasPermissions()) {
-                send(NavService.MONITOR)
-            } else {
-                AlertDialog.Builder(this)
-                    .setTitle("Не все разрешения выданы")
-                    .setMessage("Для точного GPS нужна точная геолокация, но "+
-                        "приблизительная подходит для поиска через сеть. "+
-                        "Bluetooth разрешения необходимы только для ELM327, "+
-                        "когда FYT предоставляет стандартный Bluetooth Android.")
-                    .setPositiveButton("Открыть настройки"){_,_->
-                        openApplicationPermissions()
-                    }
-                    .setNegativeButton("Позже",null).show()
-            }
+            // Do not restart services from a permissions callback; the map
+            // screen will reconnect navigation when it becomes visible.
+            val message=if(hasPermissions())
+                "Разрешение геолокации получено"
+                else "Геолокация недоступна; можно разрешить её позже"
+            Toast.makeText(this,message,Toast.LENGTH_SHORT).show()
         }
     }
 }
