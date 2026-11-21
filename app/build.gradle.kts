@@ -41,14 +41,14 @@ android {
     buildFeatures { buildConfig = true }
     compileSdk = 36
     defaultConfig {
-        applicationId = if (parallelInstall) "ua.obdgps.nav.fyt7870.google.parallel"
-            else "ua.obdgps.nav.fyt7870.google"
+        applicationId = if (parallelInstall) "ua.obdgps.nav.fyt7870.parallel"
+            else "ua.obdgps.nav.fyt7870"
         manifestPlaceholders["appDisplayName"] = if (parallelInstall)
             "FYT 7870 Google Nav 2" else "FYT 7870 Google Nav"
         minSdk = 31
         targetSdk = 35
-        versionCode = 52
-        versionName = "0.13.0-fyt-google"
+        versionCode = 53
+        versionName = "0.13.1-fyt-upgrade"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         // Dedicated FYT keys take precedence. Phone keys serve only as a build
         // fallback and MUST be separately allowlisted for this package/signature.
