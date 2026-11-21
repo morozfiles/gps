@@ -56,6 +56,9 @@ class GoogleDrMapActivity:Activity() {
     private val handler=Handler(Looper.getMainLooper())
     private val client by lazy { GoogleRouteClient(applicationContext) }
     private val session by lazy { PhoneRouteSession(applicationContext) }
+    private val fytCapabilities by lazy { FytHeadUnitProfile.read(this) }
+    private val widescreen:Boolean get() =
+        BuildConfig.FYT7870_HEAD_UNIT && resources.configuration.screenWidthDp>=690
     private val searchPrefs by lazy { SearchPlacesPrefs(applicationContext) }
     private val startupProbe by lazy { StartupPositionProbe(this) { onApproximateStartupFix(it) } }
     private var restoredSnapshot:PhoneRouteSession.Snapshot?=null
@@ -69,6 +72,7 @@ class GoogleDrMapActivity:Activity() {
     private lateinit var tripRow:LinearLayout
     private lateinit var status:TextView
     private lateinit var direction:TextView
+    private lateinit var hardwareStatus:TextView
     private lateinit var routeOptions:LinearLayout
     private lateinit var routesRow:HorizontalScrollView
     private lateinit var routeButton:Button
@@ -253,8 +257,9 @@ class GoogleDrMapActivity:Activity() {
                 topMargin=dp(10)
             })
         }
-        val topParams=FrameLayout.LayoutParams(-1,-2,Gravity.TOP).apply {
-            setMargins(dp(12),dp(9),dp(12),0)
+        val topParams=FrameLayout.LayoutParams(
+            if(widescreen)dp(530) else -1,-2,Gravity.TOP).apply {
+            setMargins(dp(if(widescreen)18 else 12),dp(9),dp(12),0)
         }
         root.addView(top,topParams)
 
@@ -337,7 +342,7 @@ class GoogleDrMapActivity:Activity() {
         }
         rightControls.addView(speedBadge,speedParams)
         val rightParams=FrameLayout.LayoutParams(-2,-2,Gravity.RIGHT or Gravity.TOP).apply {
-            setMargins(0,dp(145),dp(12),0)
+            setMargins(0,dp(if(widescreen)93 else 145),dp(14),0)
         }
         root.addView(rightControls,rightParams)
 
@@ -357,6 +362,16 @@ class GoogleDrMapActivity:Activity() {
         }
         bottom.addView(status)
         bottom.addView(direction)
+        hardwareStatus=TextView(this).apply{
+            text=if(BuildConfig.FYT7870_HEAD_UNIT)
+                fytCapabilities.summary else ""
+            textSize=11f
+            setTextColor(mutedText)
+            setPadding(dp(5),0,dp(5),dp(5))
+            visibility=if(BuildConfig.FYT7870_HEAD_UNIT)View.VISIBLE else View.GONE
+            maxLines=2
+        }
+        bottom.addView(hardwareStatus)
         tripRow=LinearLayout(this).apply {
             orientation=LinearLayout.HORIZONTAL
             gravity=Gravity.CENTER_VERTICAL
@@ -402,8 +417,9 @@ class GoogleDrMapActivity:Activity() {
         actions.addView(startButton,action2)
         actions.addView(stopButton,LinearLayout.LayoutParams(0,dp(49),1f))
         bottom.addView(actions)
-        val bottomParams=FrameLayout.LayoutParams(-1,-2,Gravity.BOTTOM).apply {
-            setMargins(dp(12),0,dp(12),dp(12))
+        val bottomParams=FrameLayout.LayoutParams(
+            if(widescreen)dp(530) else -1,-2,Gravity.BOTTOM or Gravity.LEFT).apply {
+            setMargins(dp(if(widescreen)18 else 12),0,dp(12),dp(12))
         }
         root.addView(bottom,bottomParams)
         setContentView(root)
@@ -424,7 +440,7 @@ class GoogleDrMapActivity:Activity() {
             google.uiSettings.isCompassEnabled=true
             google.uiSettings.isZoomControlsEnabled=false
             // Keep Google logo/attributions visible ABOVE the route panel.
-            google.setPadding(0,dp(155),0,dp(229))
+            google.setPadding(0,dp(if(widescreen)86 else 155),0,dp(if(widescreen)176 else 229))
             google.setOnMapClickListener { selectDestination(it.latitude,it.longitude,"Точка на карте") }
             google.setOnPoiClickListener { poi ->
                 selectDestination(poi.latLng.latitude,poi.latLng.longitude,poi.name)
