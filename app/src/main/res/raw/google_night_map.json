@@ -64,7 +64,7 @@
     "elementType": "geometry",
     "stylers": [
       {
-        "color": "#455367"
+        "color": "#222832"
       }
     ]
   },
@@ -73,7 +73,7 @@
     "elementType": "geometry.stroke",
     "stylers": [
       {
-        "color": "#66768a"
+        "color": "#405064"
       }
     ]
   },
@@ -82,7 +82,7 @@
     "elementType": "geometry",
     "stylers": [
       {
-        "color": "#354254"
+        "color": "#29313a"
       }
     ]
   },
