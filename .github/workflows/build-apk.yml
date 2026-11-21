@@ -1,7 +1,7 @@
 name: Build PHONE APK
 on:
   push:
-    branches: [main, 'feature/mobile-google-maps-dr']
+    branches: [main, 'feature/mobile-google-only-ui']
   pull_request:
   workflow_dispatch:
 jobs:

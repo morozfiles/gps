@@ -32,7 +32,17 @@ internal class GoogleRouteClient(private val context: Context) {
             main.post { done(result) }
         }
     }
-    private fun fetch(a:RoutingEngine.Point,b:RoutingEngine.Point):RoutingEngine.Route {
+    fun requestAlternatives(from:RoutingEngine.Point,to:RoutingEngine.Point,
+                done:(Result<List<RoutingEngine.Route>>)->Unit) {
+        background.execute {
+            val result=runCatching { fetchAll(from,to) }
+            main.post { done(result) }
+        }
+    }
+    private fun fetch(a:RoutingEngine.Point,b:RoutingEngine.Point):RoutingEngine.Route =
+        fetchAll(a,b).first()
+
+    private fun fetchAll(a:RoutingEngine.Point,b:RoutingEngine.Point):List<RoutingEngine.Route> {
         val key=BuildConfig.GOOGLE_ROUTES_KEY
         require(key.isNotBlank()){"Не задан GOOGLE_ROUTES_API_KEY"}
         fun location(p:RoutingEngine.Point)=JSONObject().put("location",
@@ -40,6 +50,7 @@ internal class GoogleRouteClient(private val context: Context) {
                 .put("latitude",p.lat).put("longitude",p.lon)))
         val body=JSONObject().put("origin",location(a)).put("destination",location(b))
             .put("travelMode","DRIVE").put("routingPreference","TRAFFIC_UNAWARE")
+            .put("computeAlternativeRoutes",true)
             .put("languageCode","ru-RU")
         val c=URL("https://routes.googleapis.com/directions/v2:computeRoutes")
             .openConnection() as HttpURLConnection
@@ -58,7 +69,10 @@ internal class GoogleRouteClient(private val context: Context) {
                 ?.bufferedReader()?.use{it.readText().take(2000000)}?:""
             if(c.responseCode !in 200..299)
                 error("Google Routes HTTP "+c.responseCode+": "+response.take(150))
-            val r=JSONObject(response).getJSONArray("routes").getJSONObject(0)
+            val all=JSONObject(response).getJSONArray("routes")
+            require(all.length()>0){"Google не вернул маршрутов"}
+            (0 until all.length()).map { ri ->
+            val r=all.getJSONObject(ri)
             val points=decode(r.getJSONObject("polyline").getString("encodedPolyline"))
             require(points.size>=2){"Маршрут Google пуст"}
             val turns=ArrayList<RoutingEngine.Turn>()
@@ -90,6 +104,7 @@ internal class GoogleRouteClient(private val context: Context) {
                 .toDoubleOrNull()?.roundToInt()?:0
             RoutingEngine.Route(points,turns,
                 r.getDouble("distanceMeters")/1000.0,seconds,b)
+            }
         } finally {c.disconnect()}
     }
     private fun decode(encoded:String):List<RoutingEngine.Point>{

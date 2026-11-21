@@ -781,18 +781,9 @@ class MainActivity : Activity() {
             showAlertCityPicker()
         }
 
-        section("КАРТЫ ОФЛАЙН")
-        item("Офлайн-карты: растровые MBTiles / векторные .map / адреса .poi") {
-            startActivity(Intent(this,OfflineMapsActivity::class.java))
-        }
-
         section("НАВИГАЦИЯ")
         item("Автопереключение · ${if(State.autoEnabled)"включено" else "выключено"}") {
             send(if(State.autoEnabled)NavService.AUTO_OFF else NavService.AUTO_ON)
-        }
-        item("Выбрать приложение фиктивного местоположения") {
-            try { startActivity(Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS)) }
-            catch (_: Exception) { startActivity(Intent(Settings.ACTION_SETTINGS)) }
         }
         dialog.show()
     }
@@ -832,21 +823,10 @@ class MainActivity : Activity() {
         }
         root.addView(status)
         addSensorCards()
+        addButton(root,"Вернуться к Google Maps") { finish() }
         addButton(root,"Настройки") { showSettingsMenu() }
         addButton(root,"Принудительно: вести по датчикам") { send(NavService.START_DR) }
         addButton(root,"Вернуться к GPS") { send(NavService.STOP_DR) }
-        addButton(root,"Google Maps · маршрут + OBD/DR") {
-            startActivity(Intent(this,GoogleDrMapActivity::class.java))
-        }
-        addButton(root,"Навигатор · маршрут и голосовые повороты") {
-            startActivity(Intent(this,NavigatorActivity::class.java))
-        }
-        addButton(root,"Векторная офлайн-карта · дороги и адреса") {
-            startActivity(Intent(this,OfflineVectorNavigatorActivity::class.java))
-        }
-        addButton(root,"Тест двух треков · GPS и DR без GPS") {
-            startActivity(Intent(this, InertialMapActivity::class.java))
-        }
         addButton(root,"Остановить мониторинг") { send(NavService.EXIT) }
         handler.post {showStartupPermissionsIfMissing()}
         // Offline maps are checked on the offline screen, and are never
@@ -855,14 +835,6 @@ class MainActivity : Activity() {
     }
     override fun onResume() {
         super.onResume()
-        State.offlineUkraineStatus="Проверяю карту Украины и базу адресов..."
-        OfflineUkraineAssets.scanAsync(this){found->
-            if(!isDestroyed){
-                val map=if(found.mapValid)"найдена" else "не найдена"
-                val poi=if(found.poiValid)"найдены" else "не найдены"
-                State.offlineUkraineStatus="карта Украины $map · адреса $poi"
-            }
-        }
         monitorGpsSpeed()
         if(hasPermissions()) send(NavService.MONITOR)
         handler.removeCallbacks(refresh)
