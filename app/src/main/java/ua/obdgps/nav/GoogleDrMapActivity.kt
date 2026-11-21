@@ -458,6 +458,84 @@ class GoogleDrMapActivity:Activity() {
         ensurePermissionsAndMonitoring()
     }
 
+    private fun hasLocationPermission():Boolean =
+        checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)==
+            PackageManager.PERMISSION_GRANTED ||
+        checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION)==
+            PackageManager.PERMISSION_GRANTED
+
+    /** A weak network/cell estimate can locate the map but not drive navigation. */
+    private fun bestPositionForMap(now:Long):State.NavFix? {
+        val accepted=State.navFix?.takeIf {
+            now-it.elapsedMs in 0L..12000L &&
+                !it.source.contains("Ручн") &&
+                !GpsSpoofGuard.isLima(it.lat,it.lon)
+        }
+        val rough=State.approximateFix?.takeIf {
+            ApproximateFixStore.usable(it,now)
+        }
+        return accepted?:rough
+    }
+
+    private fun roughZoom(metres:Float):Float=when {
+        metres<=30f -> 17f
+        metres<=120f -> 15.6f
+        metres<=450f -> 14f
+        metres<=1500f -> 12.6f
+        metres<=5000f -> 10.7f
+        metres<=15000f -> 9.3f
+        metres<=50000f -> 7.7f
+        else -> 6.4f
+    }
+
+    private fun maybeCenterStartupPosition(fix:State.NavFix) {
+        val g=map?:return
+        if(active || !followCar || !ApproximateFixStore.usable(fix))return
+        val newAccuracy=fix.accuracy
+        if(initialPositionCentered &&
+            newAccuracy>=initialPositionAccuracy*0.65f)return
+        initialPositionCentered=true
+        initialPositionAccuracy=newAccuracy
+        g.animateCamera(CameraUpdateFactory.newLatLngZoom(
+            LatLng(fix.lat,fix.lon),roughZoom(fix.accuracy)),700,null)
+    }
+
+    private fun updateAccuracyCircle(fix:State.NavFix?) {
+        val g=map?:return
+        if(fix==null || !ApproximateFixStore.usable(fix)){
+            accuracyCircle?.isVisible=false
+            return
+        }
+        val p=LatLng(fix.lat,fix.lon)
+        val radius=fix.accuracy.coerceAtLeast(5f).toDouble()
+        val fill=Color.argb(20,98,181,255)
+        val border=Color.argb(66,145,205,255)
+        val old=accuracyCircle
+        if(old==null)accuracyCircle=g.addCircle(CircleOptions()
+            .center(p).radius(radius).fillColor(fill)
+            .strokeColor(border).strokeWidth(dp(1).toFloat())
+            .clickable(false).zIndex(0.2f))
+        else {
+            old.center=p
+            old.radius=radius
+            old.isVisible=true
+        }
+    }
+
+    private fun onApproximateStartupFix(fix:State.NavFix) {
+        if(!::status.isInitialized || active || isFinishing || isDestroyed)return
+        val now=SystemClock.elapsedRealtime()
+        val current=bestPositionForMap(now)?:fix
+        if(current.source.startsWith("Примерно")) {
+            status.text="Положение примерно · ±"+
+                formatDistance(current.accuracy.toDouble())
+            direction.text="По Wi-Fi/сотовой сети или системному кэшу; " +
+                "круг показывает заявленную Android погрешность"
+        }
+        updateAccuracyCircle(current)
+        maybeCenterStartupPosition(current)
+    }
+
     private fun ensurePermissionsAndMonitoring() {
         val required=arrayListOf(Manifest.permission.ACCESS_FINE_LOCATION,
             Manifest.permission.BLUETOOTH_CONNECT,Manifest.permission.BLUETOOTH_SCAN)
@@ -1008,7 +1086,7 @@ class GoogleDrMapActivity:Activity() {
     }
     private fun centerOnCar(){
         followCar=true
-        val fix=latestDisplayed?:State.navFix
+        val fix=latestDisplayed?:State.navFix?:State.approximateFix
         val route=candidates.getOrNull(chosen)
         if(active && fix!=null && route!=null) {
             val progress=route.progress(RoutingEngine.Point(fix.lat,fix.lon))
