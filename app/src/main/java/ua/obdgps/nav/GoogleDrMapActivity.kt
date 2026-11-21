@@ -645,11 +645,30 @@ class GoogleDrMapActivity:Activity() {
         val now=SystemClock.elapsedRealtime()
         val start=listOfNotNull(State.navFix,State.networkFix).firstOrNull{
             now-it.elapsedMs in 0L..15000L &&
-                it.lat.isFinite() && it.lon.isFinite()
+                it.lat.isFinite() && it.lon.isFinite() &&
+                !it.source.contains("Ручн")
+        }?:State.approximateFix?.takeIf {
+            ApproximateFixStore.usable(it,now)
         }?:run{
-            showError("Нет свежей начальной позиции. Включи GPS/сеть и разрешения.")
+            showError("Определяю точку старта по GPS, Wi-Fi и сотовой сети...")
+            startupProbe.start()
             return
         }
+        if(start.source.startsWith("Примерно") || start.accuracy>250f){
+            AlertDialog.Builder(this).setTitle("Старт приблизительный")
+                .setMessage("Местоположение получено с погрешностью примерно ±"+
+                    formatDistance(start.accuracy.toDouble())+
+                    ". Начальная дорога может быть неверной. "+
+                    "Построить маршрут от приблизительного центра?")
+                .setNegativeButton("Подождать GPS",null)
+                .setPositiveButton("Построить"){_,_->requestRouteFrom(start,to)}
+                .show()
+            return
+        }
+        requestRouteFrom(start,to)
+    }
+
+    private fun requestRouteFrom(start:State.NavFix,to:RoutingEngine.Point){
         if(fetching)return
         fetching=true
         routeButton.isEnabled=false
