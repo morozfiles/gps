@@ -886,12 +886,18 @@ class GoogleDrMapActivity:Activity() {
             offRouteSinceMs=0L
             return
         }
+        // Avoid false rerouting on a low-quality but still accepted fix.
+        // A confirmed wrong turn should be visible after multiple samples.
+        if(raw.accuracy>25f){offRouteSinceMs=0L;return}
         val lateral=route.progress(RoutingEngine.Point(raw.lat,raw.lon)).lateralMeters
-        if(lateral<125.0){offRouteSinceMs=0L;return}
+        if(lateral<max(65.0,raw.accuracy*2.0+25.0)){
+            offRouteSinceMs=0L
+            return
+        }
         if(offRouteSinceMs==0L)offRouteSinceMs=now
         if(!reroutePending)
             direction.text="Возможный съезд с маршрута — проверяю GPS"
-        if(now-offRouteSinceMs<15_000L || now-lastRerouteAt<120_000L ||
+        if(now-offRouteSinceMs<8_000L || now-lastRerouteAt<120_000L ||
             reroutePending)return
         val to=destination?:return
         lastRerouteAt=now
@@ -916,6 +922,39 @@ class GoogleDrMapActivity:Activity() {
                     (e.localizedMessage?:"сеть")
             })
         }
+    }
+
+    /**
+     * Display-only snapping to a nearby Google route segment. A genuine
+     * off-route GPS position remains unsnapped and can trigger a reroute.
+     * Never feeds this position into Android GPS or spoofing checks.
+     */
+    private fun snapAcceptedGps(fix:State.NavFix,
+                                route:RoutingEngine.Route):State.NavFix {
+        val progress=route.progress(RoutingEngine.Point(fix.lat,fix.lon))
+        if(progress.lateralMeters>35.0)return fix
+        val idx=progress.nearestShapeIndex.coerceIn(0,route.points.lastIndex-1)
+        val a=route.points[idx]
+        val b=route.points[idx+1]
+        val metersLat=111195.0
+        val metersLon=metersLat*cos(Math.toRadians(fix.lat))
+        val ax=(a.lon-fix.lon)*metersLon
+        val ay=(a.lat-fix.lat)*metersLat
+        val bx=(b.lon-fix.lon)*metersLon
+        val by=(b.lat-fix.lat)*metersLat
+        val dx=bx-ax
+        val dy=by-ay
+        val length=dx*dx+dy*dy
+        val ratio=if(length<0.001)0.0
+            else (-ax*dx-ay*dy).div(length).coerceIn(0.0,1.0)
+        val nearestLat=a.lat+(b.lat-a.lat)*ratio
+        val nearestLon=a.lon+(b.lon-a.lon)*ratio
+        val strength=(0.82-fix.accuracy/150.0).coerceIn(0.35,0.72)
+        return fix.copy(
+            lat=fix.lat+(nearestLat-fix.lat)*strength,
+            lon=fix.lon+(nearestLon-fix.lon)*strength,
+            bearing=if((latestSpeedKmh?:0.0)>6.0)routeBearing(a,b) else fix.bearing
+        )
     }
 
     private fun freshTrustedGps():Boolean{
@@ -976,16 +1015,17 @@ class GoogleDrMapActivity:Activity() {
                     State.yawDegPerSec)
                 val gnssTrusted=raw!=null && raw.source=="GPS" &&
                     !State.dr && !AirAlerts.autoNavigationAlertActive() &&
-                    raw.accuracy in 0f..25f &&
+                    raw.accuracy in 0f..50f &&
                     (gpsSpeed?:0.0)<=180.0
-                val gpsAgrees=gnssTrusted && raw!=null && projected!=null &&
-                    RoutingEngine.meters(RoutingEngine.Point(raw.lat,raw.lon),
-                        RoutingEngine.Point(projected.lat,projected.lon))<45.0
-                visible=if(gpsAgrees)raw else projected?:raw
-                estimated=!gpsAgrees
+                // NavService has already validated accepted GNSS samples.
+                // Do not block real navigation when OBD is disconnected:
+                // the inertial cursor cannot advance without live OBD.
+                visible=if(gnssTrusted && raw!=null)
+                    snapAcceptedGps(raw,route) else projected?:raw
+                estimated=!gnssTrusted
                 if(visible!=null){
                     val progress=route.progress(RoutingEngine.Point(visible.lat,visible.lon))
-                    showTurnAndTrip(route,progress,latestSpeedKmh,gpsAgrees,now)
+                    showTurnAndTrip(route,progress,latestSpeedKmh,gnssTrusted,now)
                     drawCompletedRoute(route,progress.nearestShapeIndex,visible)
                     if(followCar)moveGuidanceCamera(visible,route,progress,latestSpeedKmh)
                 }else{
