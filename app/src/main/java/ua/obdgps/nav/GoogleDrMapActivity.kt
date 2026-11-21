@@ -570,8 +570,8 @@ class GoogleDrMapActivity:Activity() {
             val title=(if(idx==0)"Основной" else "Вариант "+(idx+1))+
                 " · "+String.format(Locale.getDefault(),"%.1f км",r.lengthKm)+
                 " · "+minutes+" мин"
-            val chip=button(title,if(selected)blue else tint,
-                if(selected)Color.WHITE else dark){chooseRoute(idx)}
+            val chip=button(title,if(selected)blue else glassButton,
+                lightText){chooseRoute(idx)}
             val params=LinearLayout.LayoutParams(-2,dp(45)).apply{
                 rightMargin=dp(7)
             }
