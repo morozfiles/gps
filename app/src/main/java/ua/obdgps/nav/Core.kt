@@ -187,6 +187,8 @@ object State {
     var manualStart:NavigatorPrefs.ManualStart?=null
     var navigationDestination:Pair<Double,Double>?=null
     var activeRouting=false
+    /** In-process route keeps turn instructions without persisting Google content. */
+    var currentGoogleRoute:RoutingEngine.Route?=null
     /**
      * An explicit route-origin and ahead direction selected by the driver.
      * Used ONLY as a last-resort DR seed if accepted GPS/network/manual
