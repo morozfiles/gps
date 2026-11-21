@@ -41,19 +41,26 @@ android {
     buildFeatures { buildConfig = true }
     compileSdk = 36
     defaultConfig {
-        applicationId = if (parallelInstall) "ua.obdgps.nav.parallel"
-            else "ua.obdgps.nav"
+        applicationId = if (parallelInstall) "ua.obdgps.nav.fyt7870.google.parallel"
+            else "ua.obdgps.nav.fyt7870.google"
         manifestPlaceholders["appDisplayName"] = if (parallelInstall)
-            "OBD GPS Navigator 2" else "OBD GPS Navigator"
+            "FYT 7870 Google Nav 2" else "FYT 7870 Google Nav"
         minSdk = 31
         targetSdk = 35
-        versionCode = 51
-        versionName = "0.12.9-home-voice"
+        versionCode = 52
+        versionName = "0.13.0-fyt-google"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-        manifestPlaceholders["googleMapsApiKey"] = System.getenv("GOOGLE_MAPS_ANDROID_KEY") ?: ""
+        // Dedicated FYT keys take precedence. Phone keys serve only as a build
+        // fallback and MUST be separately allowlisted for this package/signature.
+        val mapsKey=(System.getenv("GOOGLE_MAPS_FYT7870_KEY") ?: "")
+            .ifBlank { System.getenv("GOOGLE_MAPS_ANDROID_KEY") ?: "" }
+        val routesKey=(System.getenv("GOOGLE_ROUTES_FYT7870_KEY") ?: "")
+            .ifBlank { System.getenv("GOOGLE_ROUTES_API_KEY") ?: "" }
+        manifestPlaceholders["googleMapsApiKey"] = mapsKey
         buildConfigField("boolean", "GOOGLE_MAPS_CONFIGURED",
-            (!System.getenv("GOOGLE_MAPS_ANDROID_KEY").isNullOrBlank()).toString())
-        buildConfigField("String", "GOOGLE_ROUTES_KEY", "\""+(System.getenv("GOOGLE_ROUTES_API_KEY") ?: "")+"\"")
+            mapsKey.isNotBlank().toString())
+        buildConfigField("String", "GOOGLE_ROUTES_KEY", "\""+routesKey+"\"")
+        buildConfigField("boolean", "FYT7870_HEAD_UNIT", "true")
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
