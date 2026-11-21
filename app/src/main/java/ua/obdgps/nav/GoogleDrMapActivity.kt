@@ -1401,8 +1401,10 @@ class GoogleDrMapActivity:Activity() {
                     now-State.speedUpdatedElapsedMs in 0L..3500L
                 hardwareStatus.text=fytCapabilities.summary+" · OBD "+
                     (if(speedFresh)"✓" else "нет свежей скорости")+
-                    if(!fytCapabilities.gyro)" · повороты по маршруту (без гироскопа)"
-                    else ""
+                    (if(!fytCapabilities.gyro)
+                        " · повороты оценочно (нет гироскопа)" else "")+
+                    (if(BuildConfig.FYT_GOOGLE_KEY_FALLBACK)
+                        " · Google API: проверь доступ FYT" else "")
             }
             val gpsSpeed=State.gpsSpeedKmh?.takeIf {
                 State.gpsSpeedUpdatedElapsedMs>0L &&
