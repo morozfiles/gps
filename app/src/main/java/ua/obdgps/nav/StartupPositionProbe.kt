@@ -32,8 +32,8 @@ internal object ApproximateFixStore {
     private fun score(fix:State.NavFix,now:Long):Double {
         val age=(now-fix.elapsedMs).coerceAtLeast(0L)/1000.0
         val sourcePenalty=when {
-            fix.source.contains("Wi-Fi/сеть")->0.0
             fix.source.contains("Fused")->200.0
+            fix.source.contains("Wi-Fi/сеть")->0.0
             else->500.0
         }
         return fix.accuracy.toDouble()+age*5.0+sourcePenalty
@@ -48,6 +48,22 @@ internal object ApproximateFixStore {
             location.bearing.takeIf{location.hasBearing()}?.toDouble(),
             location.accuracy,"Примерно · "+source,now-ageNanos/1_000_000L)
         if(!usable(fix,now))return null
+        // Play-services fused and cached GPS can contain a spoofed GNSS fix.
+        // When recent direct NETWORK_PROVIDER evidence disagrees by tens of
+        // kilometres, keep the coarse network estimate rather than jumping.
+        if(source.contains("Fused") || source.contains("GPS")) {
+            val independent=State.approximateFix?.takeIf {
+                it.source.contains("Wi-Fi/сеть") && !it.source.contains("Fused") &&
+                    now-it.elapsedMs in 0L..120_000L && usable(it,now)
+            }
+            if(independent!=null) {
+                val metres=RoutingEngine.meters(
+                    RoutingEngine.Point(fix.lat,fix.lon),
+                    RoutingEngine.Point(independent.lat,independent.lon))
+                if(metres>max(5000.0,independent.accuracy*3.0+
+                    fix.accuracy))return null
+            }
+        }
         val previous=State.approximateFix
         if(previous==null || !usable(previous,now) ||
             score(fix,now)<score(previous,now) ||
