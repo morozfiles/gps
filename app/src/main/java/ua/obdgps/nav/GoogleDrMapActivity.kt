@@ -386,6 +386,7 @@ class GoogleDrMapActivity:Activity() {
         }
         root.addView(bottom,bottomParams)
         setContentView(root)
+        restoreRouteSession()
         updateButtons()
 
         mapView.getMapAsync { google ->
@@ -415,9 +416,33 @@ class GoogleDrMapActivity:Activity() {
                 if(reason==GoogleMap.OnCameraMoveStartedListener.REASON_GESTURE)
                     followCar=false
             }
-            val f=State.navFix
-            google.moveCamera(CameraUpdateFactory.newLatLngZoom(
-                LatLng(f?.lat?:50.4501,f?.lon?:30.5234),15f))
+            val snapshot=restoredSnapshot
+            if(snapshot!=null){
+                val d=snapshot.route.destination
+                goal=google.addMarker(MarkerOptions().position(LatLng(d.lat,d.lon))
+                    .title("Цель сохранённого маршрута"))
+                drawRoutes()
+                showRouteOptions()
+                updateButtons()
+                val cached=snapshot.pose
+                if(cached!=null) {
+                    car=google.addMarker(MarkerOptions()
+                        .position(LatLng(cached.lat,cached.lon))
+                        .icon(arrowIcon()).anchor(0.5f,0.5f).flat(true)
+                        .rotation((snapshot.bearing?:0.0).toFloat())
+                        .title("Последняя сохранённая позиция — может быть устаревшей"))
+                }
+                if(snapshot.active && cached!=null){
+                    val fix=State.NavFix(cached.lat,cached.lon,snapshot.bearing,
+                        150f,"Сохранённая позиция",0L)
+                    val prog=snapshot.route.progress(cached)
+                    moveGuidanceCamera(fix,snapshot.route,prog,null)
+                }else orientRoutePreview(snapshot.route)
+            }else {
+                val f=State.navFix
+                google.moveCamera(CameraUpdateFactory.newLatLngZoom(
+                    LatLng(f?.lat?:50.4501,f?.lon?:30.5234),15f))
+            }
         }
         speech=TextToSpeech(this) { code ->
             speechReady=code==TextToSpeech.SUCCESS
@@ -503,6 +528,8 @@ class GoogleDrMapActivity:Activity() {
         goal=map?.addMarker(MarkerOptions().position(LatLng(lat,lon)).title(label))
         map?.animateCamera(CameraUpdateFactory.newLatLngZoom(LatLng(lat,lon),15f))
         candidates=emptyList()
+        session.clear()
+        restoredSnapshot=null
         clearRoutes()
         status.text=label.take(90)
         direction.text="Нажми «Маршрут», чтобы увидеть варианты Google"
@@ -535,6 +562,7 @@ class GoogleDrMapActivity:Activity() {
                 orientRoutePreview(routes[0])
                 updateButtons()
                 status.text="Выбери маршрут · "+routes.size+" вариант(ов)"
+                saveRouteSession(false)
                 direction.text="Выбери линию на карте или вариант ниже, затем «Поехали»"
             },onFailure={e->
                 showError("Маршрут Google: "+(e.localizedMessage?:"нет ответа"))
@@ -591,6 +619,7 @@ class GoogleDrMapActivity:Activity() {
         status.text="Выбран маршрут "+(index+1)+" из "+candidates.size
         direction.text="Нажми «Поехали» для начала движения"
         updateButtons()
+        saveRouteSession(false)
     }
     private fun orientRoutePreview(route:RoutingEngine.Route) {
         val google=map?:return
@@ -629,6 +658,41 @@ class GoogleDrMapActivity:Activity() {
         tripRow.visibility=if(active)View.VISIBLE else View.GONE
     }
 
+    private fun saveRouteSession(inProgress:Boolean=active) {
+        val chosenRoute=candidates.getOrNull(chosen)?:return
+        session.save(chosenRoute,inProgress,tracker.progressMeters,
+            latestDisplayed?:State.navFix)
+    }
+
+    private fun restoreRouteSession() {
+        val snapshot=session.load()?:return
+        restoredSnapshot=snapshot
+        candidates=listOf(snapshot.route)
+        chosen=0
+        destination=snapshot.route.destination
+        val last=snapshot.pose?.let {
+            State.NavFix(it.lat,it.lon,snapshot.bearing,120f,
+                "Последняя сохранённая позиция",0L)
+        }
+        latestDisplayed=last
+        tracker.bind(snapshot.route,last,snapshot.progressMeters)
+        active=snapshot.active
+        State.activeRouting=active
+        State.gpsFilterRoutePoints=if(active)snapshot.route.points else emptyList()
+        val first=snapshot.route.points.first()
+        val bearing=routeBearing(first,snapshot.route.points[1])
+        State.routeDrSeed=if(active) {
+            val anchor=last?:State.NavFix(first.lat,first.lon,bearing,120f,
+                "Старт сохранённого маршрута",SystemClock.elapsedRealtime())
+            anchor.copy(elapsedMs=SystemClock.elapsedRealtime())
+        }else null
+        status.text=if(active)"Маршрут восстановлен · GPS/OBD подключаются"
+            else "Сохранённый маршрут Google"
+        direction.text=if(active)"После возвращения в приложение путь мог измениться. "+
+            "Позиция проверяется заново."
+            else "Нажми «Поехали» для продолжения"
+    }
+
     private fun startGuidance(){
         val route=candidates.getOrNull(chosen)?:run{showError("Сначала выбери маршрут");return}
         active=true
@@ -654,10 +718,12 @@ class GoogleDrMapActivity:Activity() {
         status.text="Ведение по Google Maps включено"
         direction.text="GPS + сеть; при потере GPS — расчёт по OBD"
         updateButtons()
+        saveRouteSession(true)
         handler.removeCallbacks(refresh)
         handler.post(refresh)
     }
     private fun stopGuidance(){
+        saveRouteSession(false)
         active=false
         tracker.reset()
         State.activeRouting=false
@@ -963,10 +1029,13 @@ class GoogleDrMapActivity:Activity() {
         if(::mapView.isInitialized){
             mapView.onResume()
             handler.removeCallbacks(refresh);handler.post(refresh)
+            if(checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)==
+                PackageManager.PERMISSION_GRANTED)startMonitoring()
         }
     }
     override fun onPause(){
         handler.removeCallbacks(refresh)
+        saveRouteSession()
         if(::mapView.isInitialized)mapView.onPause()
         super.onPause()
     }
@@ -981,7 +1050,7 @@ class GoogleDrMapActivity:Activity() {
         handler.removeCallbacks(refresh)
         searchRequest++
         geocodeWorker.shutdownNow()
-        if(active)stopGuidance()
+        saveRouteSession()
         speech?.stop()
         speech?.shutdown()
         speech=null
