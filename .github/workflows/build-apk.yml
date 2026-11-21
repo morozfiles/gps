@@ -1,7 +1,7 @@
 name: Build PHONE APK
 on:
   push:
-    branches: [main, 'feature/mobile-startup-approx-arrow']
+    branches: [main, 'feature/mobile-home-history-voice']
   pull_request:
   workflow_dispatch:
 jobs:
