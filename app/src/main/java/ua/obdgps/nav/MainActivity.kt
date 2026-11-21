@@ -750,6 +750,36 @@ class MainActivity : Activity() {
             .setNegativeButton("Отмена",null).show()
     }
 
+    private fun showFytGyroAxisPicker(){
+        val prefs=getSharedPreferences("motion",MODE_PRIVATE)
+        val keys=FytGyroAxis.choices
+        val labels=arrayOf(
+            "Y+ — вертикальная ось экрана (по умолчанию)",
+            "Y− — вертикальная ось, обратное направление",
+            "X+ — горизонтальная ось экрана",
+            "X− — горизонтальная ось, обратное направление",
+            "Z+ — ось перпендикулярно экрану",
+            "Z− — перпендикулярно экрану, обратная"
+        )
+        val current=prefs.getString("fytGyroAxis","Y+")?:"Y+"
+        AlertDialog.Builder(this)
+            .setTitle("FYT · ориентация гироскопа")
+            .setMessage("Если на магнитоле нет датчика гравитации, "+
+                "выбери ось, вокруг которой машина поворачивает. "+
+                "Для почти вертикального экрана обычно Y. "+
+                "Знак меняй, если левый поворот распознаётся как правый. "+
+                "После изменения откалибруй гироскоп на стоянке.")
+            .setSingleChoiceItems(labels,keys.indexOf(current).coerceAtLeast(0)){dialog,index->
+                prefs.edit().putString("fytGyroAxis",keys[index]).apply()
+                State.gyroCalibrated=false
+                prefs.edit().remove("yawBias").apply()
+                Toast.makeText(this,"Выбрана ось "+keys[index]+
+                    ". Откалибруй гироскоп",Toast.LENGTH_LONG).show()
+                dialog.dismiss()
+            }
+            .setNegativeButton("Отмена",null).show()
+    }
+
     private fun showSettingsMenu() {
         // Landscape split dialog: no long single narrow phone menu.
         val columns=LinearLayout(this).apply {
@@ -840,6 +870,9 @@ class MainActivity : Activity() {
         section("ДАТЧИКИ")
         item("Калибровка гироскопа FYT · 5 секунд") {
             showFytGyroCalibration()
+        }
+        item("Ось гироскопа FYT · ориентация монтажа") {
+            showFytGyroAxisPicker()
         }
         item("Источники GPS · GM906BT / внутренний") {
             showGpsSourceStatus()
