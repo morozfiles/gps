@@ -43,7 +43,6 @@ class NavService: Service(), LocationListener {
     private val handler = Handler(Looper.getMainLooper())
     private lateinit var lm: LocationManager
     private lateinit var motion: MotionSensors
-    private lateinit var fused: FusedMockRelay
     private lateinit var hybridLocator: HybridLocator
     private lateinit var settings: NavigatorPrefs
     private var gatt: BluetoothGatt? = null
@@ -69,7 +68,6 @@ class NavService: Service(), LocationListener {
     private var gpsTime = 0L
     private var speedTime = 0L
     private var tickTime = 0L
-    private var lastMockSent = 0L
     private var lastDrStart = 0L
     private var gpsInvalidSince = 0L
     private var gpsRecoveryCount = 0
@@ -94,7 +92,6 @@ class NavService: Service(), LocationListener {
     private var lastGpsCorrectionMs=0L
     private var manualMode = false
     private var reverse = false
-    private var fusedStarting = false
     private var autoEnabled = true
     private var connected = false
     private val responseBuffer = StringBuilder()
@@ -209,7 +206,6 @@ class NavService: Service(), LocationListener {
         State.directionText="Не определено — требуется калибровка"
         State.directionConfirmed=false
         State.reverseSelected=false
-        fused = FusedMockRelay(this)
         hybridLocator = HybridLocator(this) { location,source ->
             acceptNetworkLocation(location,source)
         }
@@ -320,7 +316,7 @@ class NavService: Service(), LocationListener {
             }
             MONITOR -> {
                 val key=settings.adapterKey
-                if(key!=null && !connected && !fusedStarting &&
+                if(key!=null && !connected &&
                     checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT)==PackageManager.PERMISSION_GRANTED &&
                     bt.isEnabled) {
                     State.message="Подключение к сохранённому ELM327..."
@@ -1149,12 +1145,6 @@ class NavService: Service(), LocationListener {
                     (pose.bearing+if(reverse)180.0 else 0.0)%360.0,
                     obdKmh,now)
                 State.navigationMode=if(manualMode) "Датчики (вручную)" else "Датчики (авто)"
-                if(fused.active && now-lastMockSent > 900L) {
-                    lastMockSent=now
-                    fused.publish(pose.lat,pose.lon,
-                        (pose.bearing+if(reverse)180.0 else 0.0)%360.0,obdKmh.toInt(),
-                        (15.0+State.driftMeters).coerceAtMost(250.0).toFloat())
-                }
             }
         } else {
             State.navigationMode="GPS"
@@ -1266,7 +1256,6 @@ class NavService: Service(), LocationListener {
         State.recordInertialPoint(fix.latitude,fix.longitude,course,
             correctedSpeed()?:0.0,now)
         tickTime=now
-        lastMockSent=0L
         gpsRecoveryCount=0
         gpsRecoveryLast=0L
         gpsRecoverySince=0L
@@ -1284,25 +1273,11 @@ class NavService: Service(), LocationListener {
             routeSeed!=null->"DR: старт с маршрута; курс приблизительный, GPS нет"
             else->"Инерциальное ведение включено: OBD + гироскоп + компас"
         }
-        // In-app navigation DOES NOT need Android mock-location permission.
-        // Google Maps injection is an optional extra, not a start prerequisite.
-        fused.start { ok,detail ->
-            if(!ok && State.dr) {
-                State.message="DR работает внутри приложения. Внешние карты: $detail"
-            } else if(ok && State.dr) {
-                fused.publish(fix.latitude,fix.longitude,course,
-                    correctedSpeed()?.toInt()?:0,20f)
-            } else if(ok)fused.stop()
-        }
     }
     private fun stopDr() {
-        if(State.dr || fusedStarting || fused.active) {
-            fused.stop()
-        }
         State.dr=false
         State.manualForced=false
         manualMode=false
-        fusedStarting=false
         gpsRecoveryCount=0
         gpsRecoveryLast=0L
         gpsRecoverySince=0L
