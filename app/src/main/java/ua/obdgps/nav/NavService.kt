@@ -986,7 +986,19 @@ class NavService: Service(), LocationListener {
         }
 
         val gpsRecent=!gpsQuarantined && gps!=null && now-gpsTime<8000L
-        if(gpsRecent)return
+        if(gpsRecent){
+            // Only the direct Android NETWORK_PROVIDER is independent of
+            // GNSS. Retain plausible Wi-Fi/cellular fixes as a weak
+            // correction, without mutating the validated GPS anchor.
+            if(provider=="Wi-Fi/сеть" && location.accuracy in 1f..120f){
+                val gap=gps!!.distanceTo(location).toDouble()
+                if(gap<=max(65.0,location.accuracy*1.8)){
+                    State.networkFix=candidate
+                    previousNetworkFix=candidate
+                }
+            }
+            return
+        }
         val anchor=gps
         if(anchor!=null) {
             val dt=(now-gpsTime).coerceAtLeast(0L)/1000.0
@@ -1026,10 +1038,33 @@ class NavService: Service(), LocationListener {
         }
         val currentGps=if(gpsQuarantined)null else gps
         if(currentGps!=null && now-gpsTime<7500L) {
-            State.navFix=State.NavFix(currentGps.latitude,currentGps.longitude,
+            var latitude=currentGps.latitude
+            var longitude=currentGps.longitude
+            var adjusted=false
+            val network=State.networkFix?.takeIf {
+                it.source=="Wi-Fi/сеть" && it.accuracy in 1f..120f &&
+                    now-it.elapsedMs in 0L..10_000L
+            }
+            if(network!=null) {
+                val sample=Location(LocationManager.NETWORK_PROVIDER).apply{
+                    this.latitude=network.lat
+                    this.longitude=network.lon
+                }
+                val gap=currentGps.distanceTo(sample).toDouble()
+                if(gap in 0.5..max(65.0,network.accuracy*1.8)) {
+                    // Cap the correction to 4 metres from the independently
+                    // accepted GPS location. No system location injection.
+                    val alpha=min(0.05,4.0/gap)
+                    latitude+=(network.lat-latitude)*alpha
+                    longitude+=(network.lon-longitude)*alpha
+                    adjusted=true
+                }
+            }
+            State.navFix=State.NavFix(latitude,longitude,
                 if(currentGps.hasBearing())currentGps.bearing.toDouble() else null,
                 currentGps.accuracy,"GPS",now)
-            State.sourceDescription="GPS · точность ~${currentGps.accuracy.toInt()} м"
+            State.sourceDescription="GPS"+(if(adjusted)" + Wi-Fi/сеть" else "")+
+                " · точность ~${currentGps.accuracy.toInt()} м"
             return
         }
         val net=State.networkFix?.takeIf{
