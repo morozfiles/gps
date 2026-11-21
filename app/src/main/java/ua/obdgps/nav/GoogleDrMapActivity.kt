@@ -608,6 +608,168 @@ class GoogleDrMapActivity:Activity() {
         }
     }
 
+    /** Floating menu stays inside the Google Maps search bar, not a new map. */
+    private fun showSearchDropdown() {
+        if(active || !::searchBar.isInitialized || isFinishing || isDestroyed)return
+        searchPopup?.dismiss()
+        if(searchBar.width<=0)return
+        val panel=LinearLayout(this).apply {
+            orientation=LinearLayout.VERTICAL
+            background=rounded(glass,18)
+            elevation=dp(10).toFloat()
+            setPadding(dp(8),dp(7),dp(8),dp(7))
+        }
+        fun heading(title:String) {
+            panel.addView(TextView(this).apply {
+                text=title
+                textSize=12f
+                setTextColor(mutedText)
+                setPadding(dp(13),dp(9),dp(6),dp(5))
+            })
+        }
+        fun entry(title:String,subtitle:String?=null,action:()->Unit) {
+            val item=LinearLayout(this).apply {
+                orientation=LinearLayout.VERTICAL
+                background=rounded(glassButton,12)
+                setPadding(dp(13),dp(8),dp(10),dp(8))
+                isClickable=true
+                isFocusable=true
+                setOnClickListener {
+                    searchPopup?.dismiss()
+                    searchPopup=null
+                    action()
+                }
+            }
+            item.addView(TextView(this).apply {
+                text=title
+                textSize=15f
+                maxLines=2
+                ellipsize=android.text.TextUtils.TruncateAt.END
+                setTextColor(lightText)
+            })
+            if(!subtitle.isNullOrBlank())item.addView(TextView(this).apply {
+                text=subtitle
+                textSize=12f
+                maxLines=2
+                ellipsize=android.text.TextUtils.TruncateAt.END
+                setTextColor(mutedText)
+            })
+            panel.addView(item,LinearLayout.LayoutParams(-1,-2).apply {
+                bottomMargin=dp(5)
+            })
+        }
+        val saved=searchPrefs.homeAddress
+        heading("ИЗБРАННОЕ")
+        if(saved.isNotBlank()){
+            entry("⌂  Дом",saved){
+                searchField.setText(saved)
+                searchField.setSelection(saved.length)
+                search()
+            }
+            entry("✎  Изменить адрес дома"){editHomeAddress()}
+        }else{
+            entry("⌂  Дом","Добавить постоянный адрес дома"){
+                editHomeAddress()
+            }
+        }
+        heading("ПОСЛЕДНИЕ ПОИСКИ")
+        val recent=searchPrefs.recent()
+        if(recent.isEmpty()) {
+            panel.addView(TextView(this).apply {
+                text="Пока нет сохранённых поисков"
+                textSize=13f
+                setTextColor(mutedText)
+                setPadding(dp(13),dp(8),dp(10),dp(12))
+            })
+        }else for(query in recent){
+            entry("◷  "+query){
+                searchField.setText(query)
+                searchField.setSelection(query.length)
+                search()
+            }
+        }
+        val popup=PopupWindow(panel,searchBar.width,
+            WindowManager.LayoutParams.WRAP_CONTENT,true).apply {
+            isOutsideTouchable=true
+            inputMethodMode=PopupWindow.INPUT_METHOD_NOT_NEEDED
+            elevation=dp(10).toFloat()
+            setBackgroundDrawable(rounded(glass,18))
+        }
+        searchPopup=popup
+        popup.showAsDropDown(searchBar,0,dp(6))
+    }
+
+    /** The user owns the Home template; editing never uses GPS implicitly. */
+    private fun editHomeAddress(){
+        val editor=EditText(this).apply {
+            hint="Город, улица, номер дома"
+            setSingleLine(true)
+            setText(searchPrefs.homeAddress)
+            setTextColor(lightText)
+            setHintTextColor(mutedText)
+            setPadding(dp(16),dp(12),dp(16),dp(12))
+            inputType=android.text.InputType.TYPE_CLASS_TEXT or
+                android.text.InputType.TYPE_TEXT_VARIATION_POSTAL_ADDRESS
+            setSelection(text.length)
+        }
+        AlertDialog.Builder(this).setTitle("Дом · постоянный адрес")
+            .setMessage("Укажи адрес, который будет всегда доступен в поиске.")
+            .setView(editor)
+            .setPositiveButton("Сохранить"){_,_->
+                val address=editor.text.toString().trim()
+                if(address.length<4) {
+                    showError("Адрес слишком короткий — введи улицу и номер дома")
+                }else{
+                    searchPrefs.homeAddress=address
+                    Toast.makeText(this,"Адрес «Дом» сохранён",Toast.LENGTH_SHORT).show()
+                }
+            }
+            .setNeutralButton("Удалить"){_,_->
+                searchPrefs.homeAddress=""
+                Toast.makeText(this,"Адрес «Дом» очищен",Toast.LENGTH_SHORT).show()
+            }
+            .setNegativeButton("Отмена",null)
+            .show()
+    }
+
+    /** Uses the Android installed speech recognition UI, not a microphone
+     * recorder in this app; the recognised address goes into normal search.
+     */
+    @Suppress("DEPRECATION")
+    private fun startVoiceSearch(){
+        if(active)return
+        searchPopup?.dismiss()
+        val recognition=Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL,
+                RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE,
+                Locale.getDefault().toLanguageTag())
+            putExtra(RecognizerIntent.EXTRA_MAX_RESULTS,3)
+            putExtra(RecognizerIntent.EXTRA_PROMPT,
+                "Назови адрес или место назначения")
+        }
+        try{
+            startActivityForResult(recognition,voiceSearchRequestCode)
+        }catch(_:Exception){
+            showError("Голосовой ввод недоступен. Установи системный сервис распознавания речи.")
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    override fun onActivityResult(requestCode:Int,resultCode:Int,data:Intent?){
+        super.onActivityResult(requestCode,resultCode,data)
+        if(requestCode!=voiceSearchRequestCode || resultCode!=RESULT_OK)return
+        val words=data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
+            ?.firstOrNull{it.isNotBlank()}?.trim()
+        if(words.isNullOrBlank()){
+            showError("Адрес не распознан — попробуй ещё раз")
+            return
+        }
+        searchField.setText(words)
+        searchField.setSelection(words.length)
+        search()
+    }
+
     @Suppress("DEPRECATION")
     private fun search() {
         searchPopup?.dismiss()
