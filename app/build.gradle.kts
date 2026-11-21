@@ -47,8 +47,8 @@ android {
             "OBD GPS Navigator 2" else "OBD GPS Navigator"
         minSdk = 31
         targetSdk = 35
-        versionCode = 50
-        versionName = "0.12.8-approx-arrow"
+        versionCode = 51
+        versionName = "0.12.9-home-voice"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         manifestPlaceholders["googleMapsApiKey"] = System.getenv("GOOGLE_MAPS_ANDROID_KEY") ?: ""
         buildConfigField("boolean", "GOOGLE_MAPS_CONFIGURED",
