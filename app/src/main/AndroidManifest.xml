@@ -61,5 +61,7 @@
             android:exported="false" android:foregroundServiceType="dataSync"/>
         <service android:name=".NavService" android:exported="false"
             android:foregroundServiceType="location|connectedDevice"/>
+        <meta-data android:name="com.google.android.geo.API_KEY" android:value="${googleMapsApiKey}"/>
+        <activity android:name=".GoogleDrMapActivity" android:exported="false"/>
     </application>
 </manifest>
