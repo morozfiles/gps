@@ -973,13 +973,23 @@ internal class RouteOdometer {
     private var lastTime=0L
     private var lastFixTime=0L
     private var yaw=0.0
-    fun reset(){route=null;lengths=DoubleArray(0);distance=0.0;lastTime=0L;lastFixTime=0L;yaw=0.0}
-    fun bind(r:RoutingEngine.Route,initial:State.NavFix?){
+    private var lastTurnMatched=-1
+    private var lastTurnMatchMs=0L
+    val progressMeters:Double get()=distance
+    fun reset(){
+        route=null;lengths=DoubleArray(0);distance=0.0
+        lastTime=0L;lastFixTime=0L;yaw=0.0
+        lastTurnMatched=-1;lastTurnMatchMs=0L
+    }
+    fun bind(r:RoutingEngine.Route,initial:State.NavFix?,
+             restoredProgressMeters:Double?=null){
         reset();route=r
         lengths=DoubleArray(r.points.size)
         for(i in 1 until r.points.size)lengths[i]=lengths[i-1]+
             RoutingEngine.meters(r.points[i-1],r.points[i])
-        distance=initial?.let{project(it.lat,it.lon)?.first}?:0.0
+        distance=(restoredProgressMeters?.takeIf{it.isFinite()}
+            ?:initial?.let{project(it.lat,it.lon,true)?.first}
+            ?:0.0).coerceIn(0.0,lengths.last())
         lastTime=SystemClock.elapsedRealtime()
     }
     fun update(now:Long,obd:Double?,fix:State.NavFix?,
@@ -993,29 +1003,45 @@ internal class RouteOdometer {
             yaw=(yaw+yawDegreesPerSecond*dt).coerceIn(-140.0,140.0)
         else yaw*=0.7
         // Turn only to a nearby maneuver, with a strict bounded adjustment.
-        if(abs(yaw)>30 && obd!=null) {
+        if(abs(yaw)>27 && obd!=null && obd>4.0 &&
+            now-lastTurnMatchMs>=3500L) {
             val step=r.maneuvers.firstOrNull{
                 val idx=it.shapeIndex.coerceIn(1,r.points.lastIndex-1)
                 val before=bearing(r.points[idx-1],r.points[idx])
                 val after=bearing(r.points[idx],r.points[idx+1])
                 val delta=((after-before+540.0)%360.0)-180.0
                 abs(delta)>25 && sign(delta)==sign(yaw) &&
-                    lengths[idx] in (distance-20.0)..(distance+45.0)
+                    it.shapeIndex!=lastTurnMatched &&
+                    lengths[idx] in (distance-25.0)..(distance+55.0)
             }
             if(step!=null){
-                distance=max(distance,min(distance+12.0,lengths[step.shapeIndex]))
+                val idx=step.shapeIndex.coerceIn(0,r.points.lastIndex)
+                val delta=(lengths[idx]-distance).coerceIn(-5.0,10.0)
+                // A turn is evidence, not an absolute position.
+                // Apply a bounded smooth correction; never teleport.
+                distance=(distance+delta*0.70).coerceIn(0.0,lengths.last())
+                lastTurnMatched=step.shapeIndex
+                lastTurnMatchMs=now
                 yaw=0.0
             }
         }
-        for(candidate in listOfNotNull(fix,network)){
-            if(candidate.elapsedMs<=lastFixTime || candidate.accuracy>150f)continue
-            if(candidate.source.contains("Ручн"))continue
+        // Use the most recent *independently validated* GPS samples,
+        // including during OBD dead reckoning. The DR position must NOT
+        // feed back into itself as independent evidence.
+        for(candidate in listOfNotNull(State.recentTrustedGps,network,fix)){
+            if(candidate.elapsedMs<=lastFixTime ||
+                now-candidate.elapsedMs !in 0L..15000L ||
+                candidate.accuracy !in 1f..150f)continue
+            if(candidate.source!="GPS" && candidate.source!="Wi-Fi/сеть")continue
+            if(candidate.source=="GPS" && candidate.accuracy>50f)continue
             val matched=project(candidate.lat,candidate.lon)?:continue
             val along=matched.first
             val lateral=matched.second
             if(lateral>max(70.0,candidate.accuracy*1.8))continue
             if(abs(along-distance)>max(90.0,candidate.accuracy*2.5))continue
-            val confidence=if(candidate.source=="GPS" && candidate.accuracy<30f)0.12 else 0.04
+            val confidence=if(candidate.source=="GPS")
+                if(candidate.accuracy<=25f)0.12 else 0.06
+                else 0.035
             distance=(distance+(along-distance).coerceIn(-20.0,20.0)*confidence)
                 .coerceIn(0.0,lengths.last())
             lastFixTime=candidate.elapsedMs
@@ -1030,12 +1056,14 @@ internal class RouteOdometer {
             a.lon+(b.lon-a.lon)*fraction,bearing(a,b),100f,
             "OBD · расчёт по маршруту",now)
     }
-    private fun project(lat:Double,lon:Double):Pair<Double,Double>? {
+    private fun project(lat:Double,lon:Double,
+                        entireRoute:Boolean=false):Pair<Double,Double>? {
         val r=route?:return null
         var min=Double.POSITIVE_INFINITY;var along=0.0
         for(i in 0 until r.points.lastIndex){
             // Avoid snapping across a later loop of the same route.
-            if(lengths[i+1]<distance-300.0 || lengths[i]>distance+300.0)continue
+            if(!entireRoute &&
+                (lengths[i+1]<distance-300.0 || lengths[i]>distance+300.0))continue
             val a=r.points[i];val b=r.points[i+1]
             val scale=111195.0;val cosLat=cos(Math.toRadians(lat))
             val ax=(a.lon-lon)*cosLat*scale;val ay=(a.lat-lat)*scale
