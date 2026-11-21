@@ -54,6 +54,7 @@ class GoogleDrMapActivity:Activity() {
     private val client by lazy { GoogleRouteClient(applicationContext) }
     private val session by lazy { PhoneRouteSession(applicationContext) }
     private var restoredSnapshot:PhoneRouteSession.Snapshot?=null
+    private var savedRouteRefreshAttempted=false
     private val geocodeWorker=Executors.newSingleThreadExecutor()
     private lateinit var mapView:MapView
     private lateinit var searchField:EditText
@@ -529,6 +530,7 @@ class GoogleDrMapActivity:Activity() {
         map?.animateCamera(CameraUpdateFactory.newLatLngZoom(LatLng(lat,lon),15f))
         candidates=emptyList()
         session.clear()
+        State.currentGoogleRoute=null
         restoredSnapshot=null
         clearRoutes()
         status.text=label.take(90)
@@ -660,6 +662,7 @@ class GoogleDrMapActivity:Activity() {
 
     private fun saveRouteSession(inProgress:Boolean=active) {
         val chosenRoute=candidates.getOrNull(chosen)?:return
+        State.currentGoogleRoute=chosenRoute
         session.save(chosenRoute,inProgress,tracker.progressMeters,
             latestDisplayed?:State.navFix)
     }
@@ -667,20 +670,29 @@ class GoogleDrMapActivity:Activity() {
     private fun restoreRouteSession() {
         val snapshot=session.load()?:return
         restoredSnapshot=snapshot
-        candidates=listOf(snapshot.route)
+        val current=State.currentGoogleRoute
+        val persisted=snapshot.route
+        val restoredRoute=if(current!=null &&
+            current.points.size==persisted.points.size &&
+            RoutingEngine.meters(current.destination,persisted.destination)<2.0 &&
+            RoutingEngine.meters(current.points[current.points.size/2],
+                persisted.points[persisted.points.size/2])<2.0)current
+            else persisted
+        candidates=listOf(restoredRoute)
         chosen=0
-        destination=snapshot.route.destination
+        destination=restoredRoute.destination
         val last=snapshot.pose?.let {
             State.NavFix(it.lat,it.lon,snapshot.bearing,120f,
                 "Последняя сохранённая позиция",0L)
         }
         latestDisplayed=last
-        tracker.bind(snapshot.route,last,snapshot.progressMeters)
+        tracker.bind(restoredRoute,last,snapshot.progressMeters)
         active=snapshot.active
         State.activeRouting=active
-        State.gpsFilterRoutePoints=if(active)snapshot.route.points else emptyList()
-        val first=snapshot.route.points.first()
-        val bearing=routeBearing(first,snapshot.route.points[1])
+        State.currentGoogleRoute=restoredRoute
+        State.gpsFilterRoutePoints=if(active)restoredRoute.points else emptyList()
+        val first=restoredRoute.points.first()
+        val bearing=routeBearing(first,restoredRoute.points[1])
         State.routeDrSeed=if(active) {
             val anchor=last?:State.NavFix(first.lat,first.lon,bearing,120f,
                 "Старт сохранённого маршрута",SystemClock.elapsedRealtime())
@@ -911,6 +923,7 @@ class GoogleDrMapActivity:Activity() {
                 if(options.isNotEmpty()){
                     candidates=options;chosen=0
                     tracker.bind(options[0],State.navFix)
+                    saveRouteSession(true)
                     State.gpsFilterRoutePoints=options[0].points
                     drawRoutes()
                     offRouteSinceMs=0L
@@ -955,6 +968,33 @@ class GoogleDrMapActivity:Activity() {
             lon=fix.lon+(nearestLon-fix.lon)*strength,
             bearing=if((latestSpeedKmh?:0.0)>6.0)routeBearing(a,b) else fix.bearing
         )
+    }
+
+    /** Only used if Android killed the app process and cached maneuver
+     * instructions are no longer in RAM. One authenticated online request
+     * can refresh the selected route from a fresh genuine position.
+     */
+    private fun refreshRestoredTurns(fix:State.NavFix?,now:Long){
+        val selected=candidates.getOrNull(chosen)?:return
+        if(!active || selected.maneuvers.isNotEmpty() || savedRouteRefreshAttempted ||
+            fix==null || now-fix.elapsedMs !in 0L..10000L ||
+            fix.source!="GPS" || fix.accuracy>50f || State.dr ||
+            AirAlerts.autoNavigationAlertActive())return
+        val dest=destination?:return
+        savedRouteRefreshAttempted=true
+        client.requestAlternatives(RoutingEngine.Point(fix.lat,fix.lon),dest){result->
+            if(isFinishing || isDestroyed || !active)return@requestAlternatives
+            result.getOrNull()?.firstOrNull()?.let{newRoute->
+                candidates=listOf(newRoute)
+                chosen=0
+                tracker.bind(newRoute,State.navFix)
+                State.gpsFilterRoutePoints=newRoute.points
+                State.currentGoogleRoute=newRoute
+                drawRoutes()
+                saveRouteSession(true)
+                direction.text="Маршрут Google и повороты восстановлены"
+            }
+        }
     }
 
     private fun freshTrustedGps():Boolean{
@@ -1011,6 +1051,7 @@ class GoogleDrMapActivity:Activity() {
             var visible=raw
             var estimated=false
             if(active && route!=null){
+                refreshRestoredTurns(raw,now)
                 val projected=tracker.update(now,obd,raw,State.networkFix,
                     State.yawDegPerSec)
                 val gnssTrusted=raw!=null && raw.source=="GPS" &&
