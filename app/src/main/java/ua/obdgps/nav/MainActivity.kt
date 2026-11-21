@@ -751,6 +751,9 @@ class MainActivity : Activity() {
                 "Акселерометр: "+(if(h.accelerometer)"есть" else "нет")+"\n"+
                 "Магнитометр: "+(if(h.compass)"есть" else "нет")+"\n"+
                 "Bluetooth Android: "+(if(h.systemBluetooth)"доступен" else "нет")+
+                "\nGoogle API: "+(if(BuildConfig.FYT_GOOGLE_KEY_FALLBACK)
+                    "ключи телефона, проверь разрешение FYT в Google Cloud"
+                    else "отдельные ключи FYT")+ 
                 "\n\n"+h.inertialExplanation+
                 "\nЕсли FYT использует фирменный Bluetooth MCU, приложение "+
                 "не может управлять им напрямую без интерфейса производителя."
