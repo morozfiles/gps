@@ -457,6 +457,9 @@ class GoogleDrMapActivity:Activity() {
         routeOptions.removeAllViews()
     }
     private fun drawRoutes(){
+        drivenLine?.remove()
+        drivenLine=null
+        drivenIndex=-1
         polylines.forEach{it.remove()}
         polylines.clear()
         val google=map?:return
@@ -510,6 +513,9 @@ class GoogleDrMapActivity:Activity() {
         startButton.visibility=if(!active && candidates.isNotEmpty())View.VISIBLE else View.GONE
         stopButton.visibility=if(active)View.VISIBLE else View.GONE
         routesRow.visibility=if(!active && candidates.isNotEmpty())View.VISIBLE else View.GONE
+        searchBar.visibility=if(active)View.GONE else View.VISIBLE
+        maneuverCard.visibility=if(active)View.VISIBLE else View.GONE
+        tripRow.visibility=if(active)View.VISIBLE else View.GONE
     }
 
     private fun startGuidance(){
@@ -517,6 +523,12 @@ class GoogleDrMapActivity:Activity() {
         active=true
         tracker.bind(route,State.navFix)
         followCar=true
+        cameraHeading=null
+        cameraZoom=null
+        displayHeading=null
+        announcedKey=""
+        offRouteSinceMs=0L
+        speech?.stop()
         State.activeRouting=true
         State.gpsFilterRoutePoints=route.points
         val start=route.points.first()
@@ -531,6 +543,8 @@ class GoogleDrMapActivity:Activity() {
         status.text="Ведение по Google Maps включено"
         direction.text="GPS + сеть; при потере GPS — расчёт по OBD"
         updateButtons()
+        handler.removeCallbacks(refresh)
+        handler.post(refresh)
     }
     private fun stopGuidance(){
         active=false
@@ -538,6 +552,15 @@ class GoogleDrMapActivity:Activity() {
         State.activeRouting=false
         State.gpsFilterRoutePoints=emptyList()
         State.routeDrSeed=null
+        speech?.stop()
+        announcedKey=""
+        cameraHeading=null
+        cameraZoom=null
+        displayHeading=null
+        offRouteSinceMs=0L
+        drivenLine?.remove()
+        drivenLine=null
+        drivenIndex=-1
         status.text="Навигация завершена"
         direction.text="Можно выбрать другой маршрут или новую цель"
         updateButtons()
@@ -725,7 +748,14 @@ class GoogleDrMapActivity:Activity() {
     }
     private fun centerOnCar(){
         followCar=true
-        val p=car?.position?:State.navFix?.let{LatLng(it.lat,it.lon)}
+        val fix=latestDisplayed?:State.navFix
+        val route=candidates.getOrNull(chosen)
+        if(active && fix!=null && route!=null) {
+            val progress=route.progress(RoutingEngine.Point(fix.lat,fix.lon))
+            moveGuidanceCamera(fix,route,progress,latestSpeedKmh)
+            return
+        }
+        val p=fix?.let{LatLng(it.lat,it.lon)}
         if(p!=null)map?.animateCamera(CameraUpdateFactory.newLatLngZoom(p,16f))
         else showError("Координаты пока не получены")
     }
@@ -734,51 +764,68 @@ class GoogleDrMapActivity:Activity() {
             val now=SystemClock.elapsedRealtime()
             val raw=State.navFix?.takeIf{now-it.elapsedMs in 0L..12000L}
             val route=candidates.getOrNull(chosen)
+            val obd=State.obdSpeedKmh()?.takeIf{
+                State.speedUpdatedElapsedMs>0L &&
+                now-State.speedUpdatedElapsedMs in 0L..3500L &&
+                it.isFinite() && it in 0.0..180.0
+            }
+            val gpsSpeed=State.gpsSpeedKmh?.takeIf {
+                State.gpsSpeedUpdatedElapsedMs>0L &&
+                now-State.gpsSpeedUpdatedElapsedMs in 0L..6000L &&
+                it.isFinite() && it in 0.0..180.0
+            }
+            latestSpeedKmh=obd?:gpsSpeed
             var visible=raw
             var estimated=false
             if(active && route!=null){
-                val obd=State.obdSpeedKmh()?.takeIf{
-                    State.speedUpdatedElapsedMs>0L &&
-                    now-State.speedUpdatedElapsedMs in 0L..3500L &&
-                    it.isFinite() && it in 0.0..180.0
-                }
-                val position=tracker.update(now,obd,raw,State.networkFix,
+                val projected=tracker.update(now,obd,raw,State.networkFix,
                     State.yawDegPerSec)
-                val gpsOk=raw!=null && raw.source=="GPS" &&
-                    !AirAlerts.autoNavigationAlertActive() &&
-                    raw.accuracy<=25f && (State.gpsSpeedKmh?:0.0)<=180.0 &&
-                    position!=null &&
+                val gnssTrusted=raw!=null && raw.source=="GPS" &&
+                    !State.dr && !AirAlerts.autoNavigationAlertActive() &&
+                    raw.accuracy in 0f..25f &&
+                    (gpsSpeed?:0.0)<=180.0
+                val gpsAgrees=gnssTrusted && raw!=null && projected!=null &&
                     RoutingEngine.meters(RoutingEngine.Point(raw.lat,raw.lon),
-                        RoutingEngine.Point(position.lat,position.lon))<45.0
-                visible=if(gpsOk)raw else position?:raw
-                estimated=!gpsOk
+                        RoutingEngine.Point(projected.lat,projected.lon))<45.0
+                visible=if(gpsAgrees)raw else projected?:raw
+                estimated=!gpsAgrees
                 if(visible!=null){
-                    val progress=route.progress(
-                        RoutingEngine.Point(visible.lat,visible.lon))
-                    status.text=(if(gpsOk)"GPS" else "OBD/DR · расчётная позиция")+
-                        " · "+String.format(Locale.getDefault(),"%.1f км",progress.remainingMeters/1000.0)
-                    direction.text=if(progress.arrived)"Вы прибыли к пункту назначения"
-                    else progress.nextTurn?.let {
-                        "Через "+progress.nextTurnMeters.roundToInt()+" м: "+it.instruction
-                    }?:"Продолжай движение по маршруту"
-                } else {
-                    status.text="Нет координат и скорости OBD"
-                    direction.text="Положение не определено — проверь разрешения и адаптер"
+                    val progress=route.progress(RoutingEngine.Point(visible.lat,visible.lon))
+                    showTurnAndTrip(route,progress,latestSpeedKmh,gpsAgrees,now)
+                    drawCompletedRoute(route,progress.nearestShapeIndex,visible)
+                    if(followCar)moveGuidanceCamera(visible,route,progress,latestSpeedKmh)
+                }else{
+                    status.text="Положение неизвестно: GPS и OBD недоступны"
+                    direction.text="Проверь GPS, сеть и Bluetooth-адаптер"
+                    maneuverCard.visibility=View.GONE
                 }
+                // Accepted GPS evidence can justify rerouting. Never trigger
+                // this from DR, Wi-Fi alone or a spoofed GPS jump.
+                checkOffRoute(route,raw,gnssTrusted,now)
             }
+            latestDisplayed=visible
             if(visible!=null){
                 val p=LatLng(visible.lat,visible.lon)
-                if(car==null)car=map?.addMarker(MarkerOptions().position(p)
-                    .title("Положение автомобиля"))
-                else car?.position=p
+                val heading=visible.bearing?.takeIf{it.isFinite()}
+                    ?:route?.points?.takeIf{it.size>1}?.let{
+                        val idx=route.progress(RoutingEngine.Point(visible.lat,visible.lon))
+                            .nearestShapeIndex.coerceIn(0,it.size-2)
+                        routeBearing(it[idx],it[idx+1])
+                    }
+                displayHeading=NavigationCameraMath.smoothBearing(displayHeading,
+                    if((latestSpeedKmh?:0.0)>=2.0)heading else null,40.0)
+                    ?:NavigationCameraMath.normalizeBearing(heading?:0.0)
+                if(car==null){
+                    car=map?.addMarker(MarkerOptions().position(p)
+                        .icon(arrowIcon()).anchor(0.5f,0.5f).flat(true)
+                        .rotation(displayHeading!!.toFloat()).zIndex(12f)
+                        .title("Автомобиль"))
+                }else{
+                    car?.position=p
+                    car?.rotation=displayHeading!!.toFloat()
+                }
                 car?.title=if(estimated)"Расчётная позиция · GPS ненадёжен"
                     else "Автомобиль · GPS/сеть"
-                if(active && followCar){
-                    val builder=CameraPosition.Builder().target(p)
-                        .zoom(17f).tilt(40f)
-                    visible.bearing?.takeIf{it.isFinite()}?.let{builder.bearing(it.toFloat())}
-                    map?.animateCamera(CameraUpdateFactory.newCameraPosition(builder.build()),500,null)
-                }
             }
             handler.postDelayed(this,1000L)
         }
@@ -807,6 +854,9 @@ class GoogleDrMapActivity:Activity() {
         searchRequest++
         geocodeWorker.shutdownNow()
         if(active)stopGuidance()
+        speech?.stop()
+        speech?.shutdown()
+        speech=null
         if(::mapView.isInitialized)mapView.onDestroy()
         super.onDestroy()
     }
