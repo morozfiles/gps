@@ -73,6 +73,7 @@ class GoogleDrMapActivity:Activity() {
     private lateinit var etaValue:TextView
     private lateinit var remainingValue:TextView
     private lateinit var speedValue:TextView
+    private lateinit var speedBadgeBackground:GradientDrawable
     private lateinit var speedNumber:TextView
     private lateinit var speedSourceLabel:TextView
     private var displayedSpeedSource="НЕТ ДАННЫХ"
@@ -281,7 +282,7 @@ class GoogleDrMapActivity:Activity() {
             gravity=Gravity.CENTER
             includeFontPadding=false
         }
-        val speedBadgeBackground=rounded(glass,10)
+        speedBadgeBackground=rounded(glass,10)
         val speedBadge=LinearLayout(this).apply {
             orientation=LinearLayout.VERTICAL
             gravity=Gravity.CENTER
