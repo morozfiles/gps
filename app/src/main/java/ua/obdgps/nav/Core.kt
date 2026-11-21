@@ -180,6 +180,8 @@ object State {
     )
     var navFix:NavFix?=null
     var networkFix:NavFix?=null
+    /** Last independently validated GNSS sample, kept even while the active view uses DR. */
+    @Volatile var recentTrustedGps:NavFix?=null
     var sourceDescription="Нет координат"
     var offlineUkraineStatus="Карта Украины / адреса: проверка файлов"
     var manualStart:NavigatorPrefs.ManualStart?=null
