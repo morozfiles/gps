@@ -1,7 +1,7 @@
 name: Build FYT7870 Google APK
 on:
   push:
-    branches: [fyt7870-google, 'feature/fyt-compact-route-panel']
+    branches: [fyt7870-google, 'feature/fyt-restore-hud-fix-settings']
   workflow_dispatch:
 jobs:
   build:
