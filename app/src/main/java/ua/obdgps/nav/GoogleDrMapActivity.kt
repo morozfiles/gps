@@ -166,6 +166,34 @@ class GoogleDrMapActivity:Activity() {
         window.navigationBarColor=Color.BLACK
         // White battery, clock and notification icons over dark status bar.
         window.decorView.systemUiVisibility=0
+        if(BuildConfig.FYT7870_HEAD_UNIT && !fytCapabilities.googleServices) {
+            // Google Maps SDK depends on GMS; do not display an unexplained
+            // blank map or pretend the location engine is running.
+            val page=LinearLayout(this).apply{
+                orientation=LinearLayout.VERTICAL
+                setBackgroundColor(tint)
+                setPadding(dp(36),dp(30),dp(36),dp(16))
+            }
+            page.addView(TextView(this).apply {
+                text="FYT 7870 · нужны Google Play Services"
+                textSize=25f
+                setTextColor(lightText)
+                setTypeface(null,Typeface.BOLD)
+            })
+            page.addView(TextView(this).apply {
+                text="Google Maps SDK не запустится без работающих сервисов Google. "+
+                    "Проверь прошивку FYT, наличие Google Play Services и подключение к Интернету. "+
+                    "Установка этой APK не устанавливает сервисы Google автоматически."
+                textSize=16f
+                setTextColor(mutedText)
+                setPadding(0,dp(17),0,dp(17))
+            })
+            page.addView(button("Диагностика OBD и датчиков",blue){
+                startActivity(Intent(this,MainActivity::class.java))
+            })
+            setContentView(page)
+            return
+        }
         if(!BuildConfig.GOOGLE_MAPS_CONFIGURED || BuildConfig.GOOGLE_ROUTES_KEY.isBlank()) {
             val message=TextView(this).apply {
                 text="Для Google Maps нужны действующие ключи Maps SDK for Android и Routes API."
@@ -1361,6 +1389,14 @@ class GoogleDrMapActivity:Activity() {
                 State.speedUpdatedElapsedMs>0L &&
                 now-State.speedUpdatedElapsedMs in 0L..3500L &&
                 it.isFinite() && it in 0.0..180.0
+            }
+            if(::hardwareStatus.isInitialized && BuildConfig.FYT7870_HEAD_UNIT) {
+                val speedFresh=State.speed!=null &&
+                    now-State.speedUpdatedElapsedMs in 0L..3500L
+                hardwareStatus.text=fytCapabilities.summary+" · OBD "+
+                    (if(speedFresh)"✓" else "нет свежей скорости")+
+                    if(!fytCapabilities.gyro)" · повороты по маршруту (без гироскопа)"
+                    else ""
             }
             val gpsSpeed=State.gpsSpeedKmh?.takeIf {
                 State.gpsSpeedUpdatedElapsedMs>0L &&
