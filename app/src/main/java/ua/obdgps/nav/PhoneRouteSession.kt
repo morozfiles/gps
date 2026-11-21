@@ -3,6 +3,7 @@ package ua.obdgps.nav
 import android.content.Context
 import org.json.JSONArray
 import org.json.JSONObject
+import kotlin.math.roundToInt
 
 /** Keeps only the Google route selected by the driver, never a phone location history. */
 internal class PhoneRouteSession(context:Context) {
@@ -20,7 +21,7 @@ internal class PhoneRouteSession(context:Context) {
              pose:State.NavFix?) {
         if(route.points.size<2 || route.points.size>200_000)return
         val first=route.points.first()
-        fun grid(x:Double)=(x*100000).toInt()
+        fun grid(x:Double)=(x*100000).roundToInt()
         val middle=route.points[route.points.size/2]
         val routeKey="${grid(first.lat)}:${grid(first.lon)}:"+
             "${grid(route.destination.lat)}:${grid(route.destination.lon)}:"+
@@ -49,8 +50,8 @@ internal class PhoneRouteSession(context:Context) {
         // route is retained for reuse, not re-fetched on each resume.
         val points=JSONArray()
         for(p in route.points){
-            points.put((p.lat*100000).toInt())
-            points.put((p.lon*100000).toInt())
+            points.put((p.lat*100000).roundToInt())
+            points.put((p.lon*100000).roundToInt())
         }
         doc.put("p",points)
         if(pose!=null && pose.lat.isFinite() && pose.lon.isFinite())
