@@ -707,38 +707,60 @@ class MainActivity : Activity() {
     }
 
     private fun showSettingsMenu() {
-        val list=LinearLayout(this).apply {
+        // Landscape split dialog: no long single narrow phone menu.
+        val columns=LinearLayout(this).apply {
+            orientation=LinearLayout.HORIZONTAL
+            setPadding(dip(8),dip(5),dip(8),dip(5))
+        }
+        fun column():LinearLayout=LinearLayout(this).apply {
             orientation=LinearLayout.VERTICAL
-            setPadding(dip(14),dip(3),dip(14),dip(8))
+            setPadding(dip(9),dip(3),dip(9),dip(12))
         }
-        val scroll=ScrollView(this).apply {
-            addView(list)
+        val left=column()
+        val right=column()
+        fun scroll(content:LinearLayout)=ScrollView(this).apply {
             isFillViewport=false
+            addView(content)
         }
-        val dialog=AlertDialog.Builder(this).setTitle("Настройки")
-            .setView(scroll).setNegativeButton("Закрыть",null).create()
-        fun section(name: String) {
-            list.addView(TextView(this).apply {
+        columns.addView(scroll(left),LinearLayout.LayoutParams(0,-1,1f))
+        columns.addView(scroll(right),LinearLayout.LayoutParams(0,-1,1f))
+        var current=left
+        val dialog=AlertDialog.Builder(this)
+            .setTitle("FYT 7870 · настройки")
+            .setView(columns)
+            .setNegativeButton("Закрыть",null).create()
+        fun section(name:String){
+            current=if(name=="ДАТЧИКИ" || name=="ВОЗДУШНЫЕ ТРЕВОГИ")
+                right else left
+            current.addView(TextView(this).apply {
                 text=name
-                textSize=13f
+                textSize=14f
                 typeface=android.graphics.Typeface.DEFAULT_BOLD
                 setTextColor(Color.rgb(142,195,251))
-                setPadding(0,dip(18),0,dip(7))
+                setPadding(dip(4),dip(16),0,dip(7))
             })
-            list.addView(View(this).apply { setBackgroundColor(Color.rgb(85,95,110)) },
-                LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,dip(1)))
+            current.addView(View(this).apply {
+                setBackgroundColor(Color.rgb(85,95,110))
+            },LinearLayout.LayoutParams(-1,dip(1)))
         }
-        fun item(caption: String, action: ()->Unit) {
-            list.addView(TextView(this).apply {
+        fun item(caption:String,action:()->Unit){
+            current.addView(TextView(this).apply {
                 text=caption
                 textSize=15f
+                minHeight=dip(54)
+                gravity=Gravity.CENTER_VERTICAL
                 setTextColor(primaryText)
-                setPadding(dip(8),dip(14),dip(8),dip(14))
-                setOnClickListener { dialog.dismiss();action() }
-            },LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT))
-            list.addView(View(this).apply { setBackgroundColor(Color.rgb(54,62,73)) },
-                LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,dip(1)))
+                setPadding(dip(11),dip(10),dip(7),dip(10))
+                isClickable=true
+                isFocusable=true
+                background=GradientDrawable().apply {
+                    setColor(panelColor)
+                    cornerRadius=dip(9).toFloat()
+                }
+                setOnClickListener{dialog.dismiss();action()}
+            },LinearLayout.LayoutParams(-1,-2).apply {
+                topMargin=dip(5)
+            })
         }
 
         section("МАГНИТОЛА FYT 7870")
@@ -810,6 +832,11 @@ class MainActivity : Activity() {
         }
 
         dialog.show()
+        val display=resources.displayMetrics
+        dialog.window?.setLayout(
+            (display.widthPixels*0.94).toInt(),
+            (display.heightPixels*0.84).toInt()
+        )
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
