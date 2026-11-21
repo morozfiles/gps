@@ -6,6 +6,11 @@ import android.app.AlertDialog
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Color
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Paint
+import android.graphics.Path
+import android.speech.tts.TextToSpeech
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.location.Geocoder
@@ -25,6 +30,7 @@ import com.google.android.gms.maps.MapView
 import com.google.android.gms.maps.GoogleMap
 import com.google.android.gms.maps.CameraUpdateFactory
 import com.google.android.gms.maps.model.CameraPosition
+import com.google.android.gms.maps.model.BitmapDescriptorFactory
 import com.google.android.gms.maps.model.LatLng
 import com.google.android.gms.maps.model.LatLngBounds
 import com.google.android.gms.maps.model.Marker
@@ -32,6 +38,8 @@ import com.google.android.gms.maps.model.MarkerOptions
 import com.google.android.gms.maps.model.Polyline
 import com.google.android.gms.maps.model.PolylineOptions
 import java.util.Locale
+import java.util.Date
+import java.text.SimpleDateFormat
 import java.util.concurrent.Executors
 import kotlin.math.*
 
@@ -46,6 +54,8 @@ class GoogleDrMapActivity:Activity() {
     private val geocodeWorker=Executors.newSingleThreadExecutor()
     private lateinit var mapView:MapView
     private lateinit var searchField:EditText
+    private lateinit var searchBar:LinearLayout
+    private lateinit var tripRow:LinearLayout
     private lateinit var status:TextView
     private lateinit var direction:TextView
     private lateinit var routeOptions:LinearLayout
@@ -53,12 +63,34 @@ class GoogleDrMapActivity:Activity() {
     private lateinit var routeButton:Button
     private lateinit var startButton:Button
     private lateinit var stopButton:Button
+    private lateinit var maneuverCard:LinearLayout
+    private lateinit var maneuverTitle:TextView
+    private lateinit var maneuverDistance:TextView
+    private lateinit var maneuverGlyph:TextView
+    private lateinit var etaValue:TextView
+    private lateinit var remainingValue:TextView
+    private lateinit var speedValue:TextView
     private var map:GoogleMap?=null
     private var destination:RoutingEngine.Point?=null
     private var candidates=emptyList<RoutingEngine.Route>()
     private var chosen=0
     private var polylines=ArrayList<Polyline>()
     private var car:Marker?=null
+    private var drivenLine:Polyline?=null
+    private var drivenIndex=-1
+    private var cameraHeading:Double?=null
+    private var cameraZoom:Float?=null
+    private var speech:TextToSpeech?=null
+    private var speechReady=false
+    private var voiceEnabled=true
+    private lateinit var soundButton:Button
+    private var announcedKey=""
+    private var offRouteSinceMs=0L
+    private var lastRerouteAt=0L
+    private var reroutePending=false
+    private var latestDisplayed:State.NavFix?=null
+    private var latestSpeedKmh:Double?=null
+    private var displayHeading:Double?=null
     private var goal:Marker?=null
     private var active=false
     private var fetching=false
@@ -129,7 +161,7 @@ class GoogleDrMapActivity:Activity() {
         root.addView(mapView,FrameLayout.LayoutParams(-1,-1))
 
         // Search sits directly on Google map, styled as a floating Google-like pill.
-        val searchBar=LinearLayout(this).apply {
+        searchBar=LinearLayout(this).apply {
             orientation=LinearLayout.HORIZONTAL
             gravity=Gravity.CENTER_VERTICAL
             background=rounded(Color.WHITE,28)
@@ -153,9 +185,37 @@ class GoogleDrMapActivity:Activity() {
         val searchIcon=button("⌕",Color.WHITE,blue){search()}
         searchIcon.textSize=25f
         searchBar.addView(searchIcon,LinearLayout.LayoutParams(dp(49),dp(49)))
+        maneuverGlyph=TextView(this).apply {
+            text="↑";textSize=36f;setTextColor(Color.WHITE)
+            gravity=Gravity.CENTER
+        }
+        maneuverTitle=TextView(this).apply {
+            text="Продолжай движение";textSize=17f;setTextColor(Color.WHITE)
+            setTypeface(null,Typeface.BOLD);maxLines=2
+        }
+        maneuverDistance=TextView(this).apply {
+            text="";textSize=14f;setTextColor(Color.WHITE)
+        }
+        maneuverCard=LinearLayout(this).apply {
+            orientation=LinearLayout.HORIZONTAL
+            gravity=Gravity.CENTER_VERTICAL
+            background=rounded(Color.rgb(24,113,220),16)
+            elevation=dp(5).toFloat()
+            setPadding(dp(10),dp(6),dp(12),dp(6))
+            visibility=View.GONE
+            addView(maneuverGlyph,LinearLayout.LayoutParams(dp(56),dp(61)))
+            addView(LinearLayout(this@GoogleDrMapActivity).apply {
+                orientation=LinearLayout.VERTICAL
+                addView(maneuverTitle)
+                addView(maneuverDistance)
+            },LinearLayout.LayoutParams(0,-2,1f))
+        }
         val top=LinearLayout(this).apply {
             orientation=LinearLayout.VERTICAL
             addView(searchBar,LinearLayout.LayoutParams(-1,dp(58)))
+            addView(maneuverCard,LinearLayout.LayoutParams(-1,-2).apply {
+                topMargin=dp(10)
+            })
         }
         val topParams=FrameLayout.LayoutParams(-1,-2,Gravity.TOP).apply {
             setMargins(dp(12),dp(9),dp(12),0)
@@ -172,6 +232,17 @@ class GoogleDrMapActivity:Activity() {
         gear.textSize=23f
         val gearParams=LinearLayout.LayoutParams(dp(54),dp(54)).apply{topMargin=dp(10)}
         rightControls.addView(gear,gearParams)
+        soundButton=button("♫",Color.WHITE,dark) {
+            voiceEnabled=!voiceEnabled
+            if(!voiceEnabled)speech?.stop()
+            soundButton.text=if(voiceEnabled)"♫" else "✕"
+            Toast.makeText(this,if(voiceEnabled)"Голос включён"
+                else "Голос выключен",Toast.LENGTH_SHORT).show()
+        }
+        val soundParams=LinearLayout.LayoutParams(dp(54),dp(54)).apply {
+            topMargin=dp(10)
+        }
+        rightControls.addView(soundButton,soundParams)
         val rightParams=FrameLayout.LayoutParams(-2,-2,Gravity.RIGHT or Gravity.TOP).apply {
             setMargins(0,dp(79),dp(12),0)
         }
@@ -193,6 +264,35 @@ class GoogleDrMapActivity:Activity() {
         }
         bottom.addView(status)
         bottom.addView(direction)
+        tripRow=LinearLayout(this).apply {
+            orientation=LinearLayout.HORIZONTAL
+            gravity=Gravity.CENTER_VERTICAL
+            visibility=View.GONE
+            tag="tripRow"
+            setPadding(0,dp(3),0,dp(8))
+        }
+        fun tripCell(caption:String):TextView {
+            val column=LinearLayout(this).apply {
+                orientation=LinearLayout.VERTICAL
+                gravity=Gravity.CENTER
+            }
+            val label=TextView(this).apply {
+                text=caption;textSize=12f;setTextColor(Color.GRAY)
+                gravity=Gravity.CENTER
+            }
+            val value=TextView(this).apply {
+                text="—";textSize=20f;setTextColor(dark)
+                setTypeface(null,Typeface.BOLD);gravity=Gravity.CENTER
+            }
+            column.addView(value)
+            column.addView(label)
+            tripRow.addView(column,LinearLayout.LayoutParams(0,-2,1f))
+            return value
+        }
+        etaValue=tripCell("Прибытие")
+        remainingValue=tripCell("Осталось")
+        speedValue=tripCell("км/ч")
+        bottom.addView(tripRow)
         routeOptions=LinearLayout(this).apply{orientation=LinearLayout.HORIZONTAL}
         routesRow=HorizontalScrollView(this).apply {
             isHorizontalScrollBarEnabled=false
@@ -224,7 +324,7 @@ class GoogleDrMapActivity:Activity() {
             google.uiSettings.isCompassEnabled=true
             google.uiSettings.isZoomControlsEnabled=false
             // Keep Google logo/attributions visible ABOVE the route panel.
-            google.setPadding(0,dp(72),0,dp(214))
+            google.setPadding(0,dp(155),0,dp(229))
             google.setOnMapClickListener { selectDestination(it.latitude,it.longitude,"Точка на карте") }
             google.setOnPoiClickListener { poi ->
                 selectDestination(poi.latLng.latitude,poi.latLng.longitude,poi.name)
@@ -240,6 +340,10 @@ class GoogleDrMapActivity:Activity() {
             val f=State.navFix
             google.moveCamera(CameraUpdateFactory.newLatLngZoom(
                 LatLng(f?.lat?:50.4501,f?.lon?:30.5234),15f))
+        }
+        speech=TextToSpeech(this) { code ->
+            speechReady=code==TextToSpeech.SUCCESS
+            if(speechReady)speech?.language=Locale("ru","RU")
         }
         ensurePermissionsAndMonitoring()
     }
@@ -366,6 +470,9 @@ class GoogleDrMapActivity:Activity() {
         routeOptions.removeAllViews()
     }
     private fun drawRoutes(){
+        drivenLine?.remove()
+        drivenLine=null
+        drivenIndex=-1
         polylines.forEach{it.remove()}
         polylines.clear()
         val google=map?:return
@@ -419,6 +526,9 @@ class GoogleDrMapActivity:Activity() {
         startButton.visibility=if(!active && candidates.isNotEmpty())View.VISIBLE else View.GONE
         stopButton.visibility=if(active)View.VISIBLE else View.GONE
         routesRow.visibility=if(!active && candidates.isNotEmpty())View.VISIBLE else View.GONE
+        searchBar.visibility=if(active)View.GONE else View.VISIBLE
+        maneuverCard.visibility=if(active)View.VISIBLE else View.GONE
+        tripRow.visibility=if(active)View.VISIBLE else View.GONE
     }
 
     private fun startGuidance(){
@@ -426,6 +536,12 @@ class GoogleDrMapActivity:Activity() {
         active=true
         tracker.bind(route,State.navFix)
         followCar=true
+        cameraHeading=null
+        cameraZoom=null
+        displayHeading=null
+        announcedKey=""
+        offRouteSinceMs=0L
+        speech?.stop()
         State.activeRouting=true
         State.gpsFilterRoutePoints=route.points
         val start=route.points.first()
@@ -440,6 +556,8 @@ class GoogleDrMapActivity:Activity() {
         status.text="Ведение по Google Maps включено"
         direction.text="GPS + сеть; при потере GPS — расчёт по OBD"
         updateButtons()
+        handler.removeCallbacks(refresh)
+        handler.post(refresh)
     }
     private fun stopGuidance(){
         active=false
@@ -447,11 +565,195 @@ class GoogleDrMapActivity:Activity() {
         State.activeRouting=false
         State.gpsFilterRoutePoints=emptyList()
         State.routeDrSeed=null
+        speech?.stop()
+        announcedKey=""
+        cameraHeading=null
+        cameraZoom=null
+        displayHeading=null
+        offRouteSinceMs=0L
+        drivenLine?.remove()
+        drivenLine=null
+        drivenIndex=-1
         status.text="Навигация завершена"
         direction.text="Можно выбрать другой маршрут или новую цель"
         updateButtons()
         map?.let{candidates.getOrNull(chosen)?.let{r->fitRoute(r)}}
     }
+    private fun formatDistance(meters:Double):String =
+        if(meters>=1000.0)String.format(Locale.getDefault(),"%.1f км",meters/1000.0)
+        else meters.roundToInt().coerceAtLeast(0).toString()+" м"
+
+    private fun arrowIcon() : com.google.android.gms.maps.model.BitmapDescriptor {
+        val size=dp(65)
+        val bitmap=Bitmap.createBitmap(size,size,Bitmap.Config.ARGB_8888)
+        val canvas=Canvas(bitmap)
+        val paint=Paint(Paint.ANTI_ALIAS_FLAG)
+        val cx=size/2f;val cy=size/2f
+        paint.color=Color.argb(76,0,0,0)
+        canvas.drawCircle(cx,cy+dp(2),dp(23).toFloat(),paint)
+        paint.color=Color.WHITE
+        canvas.drawCircle(cx,cy,dp(22).toFloat(),paint)
+        paint.color=blue
+        canvas.drawCircle(cx,cy,dp(19).toFloat(),paint)
+        val arrow=Path().apply{
+            moveTo(cx,cy-dp(16))
+            lineTo(cx+dp(12),cy+dp(13))
+            lineTo(cx,cy+dp(7))
+            lineTo(cx-dp(12),cy+dp(13))
+            close()
+        }
+        paint.style=Paint.Style.STROKE
+        paint.strokeWidth=dp(3).toFloat()
+        paint.strokeJoin=Paint.Join.ROUND
+        paint.color=Color.WHITE
+        canvas.drawPath(arrow,paint)
+        paint.style=Paint.Style.FILL
+        paint.color=Color.WHITE
+        canvas.drawPath(arrow,paint)
+        return BitmapDescriptorFactory.fromBitmap(bitmap)
+    }
+
+    private fun speak(text:String){
+        if(voiceEnabled && speechReady && text.isNotBlank())
+            speech?.speak(text,TextToSpeech.QUEUE_FLUSH,null,"google-route-voice")
+    }
+
+    private fun showTurnAndTrip(route:RoutingEngine.Route,
+            progress:RoutingEngine.Progress,speedKmh:Double?,gpsTrusted:Boolean,
+            now:Long){
+        tripRow.visibility=View.VISIBLE
+        val left=progress.remainingMeters.coerceAtLeast(0.0)
+        remainingValue.text=formatDistance(left)
+        val minutes=(progress.secondsRemaining/60).coerceAtLeast(0)
+        etaValue.text=SimpleDateFormat("HH:mm",Locale.getDefault())
+            .format(Date(System.currentTimeMillis()+progress.secondsRemaining.toLong()*1000L))
+        speedValue.text=speedKmh?.roundToInt()?.toString()?:"—"
+        status.text=(if(gpsTrusted)"GPS" else "Расчётная позиция OBD/DR")+
+            " · "+minutes+" мин до прибытия"
+        val next=progress.nextTurn
+        maneuverCard.visibility=View.VISIBLE
+        if(progress.arrived){
+            maneuverGlyph.text="✓"
+            maneuverTitle.text="Вы прибыли в пункт назначения"
+            maneuverDistance.text=""
+            direction.text="Маршрут завершён"
+            if(announcedKey!="arrival"){
+                announcedKey="arrival"
+                speak("Вы прибыли в пункт назначения")
+            }
+            return
+        }
+        if(next!=null){
+            maneuverGlyph.text=when(next.type){
+                1->"↰"
+                2->"↱"
+                3->"↑"
+                4->"↶"
+                5->"⟳"
+                else->"↗"
+            }
+            maneuverTitle.text=next.instruction.ifBlank{"Следующий манёвр"}
+            maneuverDistance.text="Через "+formatDistance(progress.nextTurnMeters)
+            direction.text="Двигайся по выбранному маршруту Google"
+            val band=when{
+                progress.nextTurnMeters<=35.0->"now"
+                progress.nextTurnMeters<=150.0->"150"
+                progress.nextTurnMeters<=420.0->"420"
+                else->""
+            }
+            val key=next.shapeIndex.toString()+":"+band
+            if(band.isNotEmpty() && key!=announcedKey){
+                announcedKey=key
+                val speechText=when(band){
+                    "now"->next.instruction
+                    else->"Через "+progress.nextTurnMeters.roundToInt()+
+                        " метров: "+next.instruction
+                }
+                speak(speechText)
+            }
+        }else{
+            maneuverGlyph.text="↑"
+            maneuverTitle.text="Следуй по маршруту"
+            maneuverDistance.text=formatDistance(left)+" до цели"
+            direction.text="Двигайся по выбранному маршруту Google"
+        }
+    }
+
+    private fun drawCompletedRoute(route:RoutingEngine.Route,
+            index:Int,fix:State.NavFix) {
+        val idx=index.coerceIn(0,route.points.lastIndex)
+        if(idx==drivenIndex)return
+        drivenIndex=idx
+        drivenLine?.remove()
+        if(idx<1)return
+        val trail=route.points.take(idx+1).map{LatLng(it.lat,it.lon)}
+        drivenLine=map?.addPolyline(PolylineOptions().addAll(trail)
+            .color(Color.rgb(177,181,188)).width(dp(7).toFloat()).zIndex(3f))
+    }
+
+    private fun moveGuidanceCamera(fix:State.NavFix,route:RoutingEngine.Route,
+                    progress:RoutingEngine.Progress,speedKmh:Double?) {
+        val m=map?:return
+        val course=fix.bearing?.takeIf{it.isFinite()}
+            ?:route.points.getOrNull(progress.nearestShapeIndex+1)?.let{
+                routeBearing(route.points[progress.nearestShapeIndex],it)
+            }
+        // Camera bearing is smoothed through 0/360 degrees. Keep the last
+        // heading at a standstill to avoid compass jitter rotating the map.
+        cameraHeading=NavigationCameraMath.smoothBearing(cameraHeading,
+            if((speedKmh?:0.0)>=3.0)course else null,27.0)
+            ?:NavigationCameraMath.normalizeBearing(course?:0.0)
+        val targetZoom=NavigationCameraMath.zoom(speedKmh,progress.nextTurnMeters)
+        cameraZoom=if(cameraZoom==null)targetZoom else
+            (cameraZoom!!+(targetZoom-cameraZoom!!)*0.34f)
+        val center=NavigationCameraMath.routeLookAhead(route.points,
+            progress.nearestShapeIndex,RoutingEngine.Point(fix.lat,fix.lon),
+            NavigationCameraMath.lookAheadMeters(speedKmh))
+        val camera=CameraPosition.Builder().target(LatLng(center.lat,center.lon))
+            .bearing(cameraHeading!!.toFloat()).zoom(cameraZoom!!)
+            .tilt(NavigationCameraMath.tilt(speedKmh)).build()
+        m.animateCamera(CameraUpdateFactory.newCameraPosition(camera),850,null)
+    }
+
+    /** No rerouting from spoofed, network-only or DR-estimated positions. */
+    private fun checkOffRoute(route:RoutingEngine.Route,raw:State.NavFix?,
+                    trustedGps:Boolean,now:Long) {
+        if(!active || !trustedGps || raw==null || State.dr){
+            offRouteSinceMs=0L
+            return
+        }
+        val lateral=route.progress(RoutingEngine.Point(raw.lat,raw.lon)).lateralMeters
+        if(lateral<125.0){offRouteSinceMs=0L;return}
+        if(offRouteSinceMs==0L)offRouteSinceMs=now
+        if(!reroutePending)
+            direction.text="Возможный съезд с маршрута — проверяю GPS"
+        if(now-offRouteSinceMs<15_000L || now-lastRerouteAt<120_000L ||
+            reroutePending)return
+        val to=destination?:return
+        lastRerouteAt=now
+        reroutePending=true
+        direction.text="Отклонение от маршрута. Перестраиваю по GPS..."
+        val origin=RoutingEngine.Point(raw.lat,raw.lon)
+        client.requestAlternatives(origin,to){result->
+            reroutePending=false
+            if(isFinishing || isDestroyed || !active)return@requestAlternatives
+            result.fold(onSuccess={options->
+                if(options.isNotEmpty()){
+                    candidates=options;chosen=0
+                    tracker.bind(options[0],State.navFix)
+                    State.gpsFilterRoutePoints=options[0].points
+                    drawRoutes()
+                    offRouteSinceMs=0L
+                    announcedKey=""
+                    speak("Маршрут перестроен")
+                }
+            },onFailure={e->
+                direction.text="Перестроение не удалось: "+
+                    (e.localizedMessage?:"сеть")
+            })
+        }
+    }
+
     private fun freshTrustedGps():Boolean{
         val f=State.navFix?:return false
         return f.source=="GPS" && f.accuracy in 0f..30f &&
@@ -461,7 +763,14 @@ class GoogleDrMapActivity:Activity() {
     }
     private fun centerOnCar(){
         followCar=true
-        val p=car?.position?:State.navFix?.let{LatLng(it.lat,it.lon)}
+        val fix=latestDisplayed?:State.navFix
+        val route=candidates.getOrNull(chosen)
+        if(active && fix!=null && route!=null) {
+            val progress=route.progress(RoutingEngine.Point(fix.lat,fix.lon))
+            moveGuidanceCamera(fix,route,progress,latestSpeedKmh)
+            return
+        }
+        val p=fix?.let{LatLng(it.lat,it.lon)}
         if(p!=null)map?.animateCamera(CameraUpdateFactory.newLatLngZoom(p,16f))
         else showError("Координаты пока не получены")
     }
@@ -470,51 +779,68 @@ class GoogleDrMapActivity:Activity() {
             val now=SystemClock.elapsedRealtime()
             val raw=State.navFix?.takeIf{now-it.elapsedMs in 0L..12000L}
             val route=candidates.getOrNull(chosen)
+            val obd=State.obdSpeedKmh()?.takeIf{
+                State.speedUpdatedElapsedMs>0L &&
+                now-State.speedUpdatedElapsedMs in 0L..3500L &&
+                it.isFinite() && it in 0.0..180.0
+            }
+            val gpsSpeed=State.gpsSpeedKmh?.takeIf {
+                State.gpsSpeedUpdatedElapsedMs>0L &&
+                now-State.gpsSpeedUpdatedElapsedMs in 0L..6000L &&
+                it.isFinite() && it in 0.0..180.0
+            }
+            latestSpeedKmh=obd?:gpsSpeed
             var visible=raw
             var estimated=false
             if(active && route!=null){
-                val obd=State.obdSpeedKmh()?.takeIf{
-                    State.speedUpdatedElapsedMs>0L &&
-                    now-State.speedUpdatedElapsedMs in 0L..3500L &&
-                    it.isFinite() && it in 0.0..180.0
-                }
-                val position=tracker.update(now,obd,raw,State.networkFix,
+                val projected=tracker.update(now,obd,raw,State.networkFix,
                     State.yawDegPerSec)
-                val gpsOk=raw!=null && raw.source=="GPS" &&
-                    !AirAlerts.autoNavigationAlertActive() &&
-                    raw.accuracy<=25f && (State.gpsSpeedKmh?:0.0)<=180.0 &&
-                    position!=null &&
+                val gnssTrusted=raw!=null && raw.source=="GPS" &&
+                    !State.dr && !AirAlerts.autoNavigationAlertActive() &&
+                    raw.accuracy in 0f..25f &&
+                    (gpsSpeed?:0.0)<=180.0
+                val gpsAgrees=gnssTrusted && raw!=null && projected!=null &&
                     RoutingEngine.meters(RoutingEngine.Point(raw.lat,raw.lon),
-                        RoutingEngine.Point(position.lat,position.lon))<45.0
-                visible=if(gpsOk)raw else position?:raw
-                estimated=!gpsOk
+                        RoutingEngine.Point(projected.lat,projected.lon))<45.0
+                visible=if(gpsAgrees)raw else projected?:raw
+                estimated=!gpsAgrees
                 if(visible!=null){
-                    val progress=route.progress(
-                        RoutingEngine.Point(visible.lat,visible.lon))
-                    status.text=(if(gpsOk)"GPS" else "OBD/DR · расчётная позиция")+
-                        " · "+String.format(Locale.getDefault(),"%.1f км",progress.remainingMeters/1000.0)
-                    direction.text=if(progress.arrived)"Вы прибыли к пункту назначения"
-                    else progress.nextTurn?.let {
-                        "Через "+progress.nextTurnMeters.roundToInt()+" м: "+it.instruction
-                    }?:"Продолжай движение по маршруту"
-                } else {
-                    status.text="Нет координат и скорости OBD"
-                    direction.text="Положение не определено — проверь разрешения и адаптер"
+                    val progress=route.progress(RoutingEngine.Point(visible.lat,visible.lon))
+                    showTurnAndTrip(route,progress,latestSpeedKmh,gpsAgrees,now)
+                    drawCompletedRoute(route,progress.nearestShapeIndex,visible)
+                    if(followCar)moveGuidanceCamera(visible,route,progress,latestSpeedKmh)
+                }else{
+                    status.text="Положение неизвестно: GPS и OBD недоступны"
+                    direction.text="Проверь GPS, сеть и Bluetooth-адаптер"
+                    maneuverCard.visibility=View.GONE
                 }
+                // Accepted GPS evidence can justify rerouting. Never trigger
+                // this from DR, Wi-Fi alone or a spoofed GPS jump.
+                checkOffRoute(route,raw,gnssTrusted,now)
             }
+            latestDisplayed=visible
             if(visible!=null){
                 val p=LatLng(visible.lat,visible.lon)
-                if(car==null)car=map?.addMarker(MarkerOptions().position(p)
-                    .title("Положение автомобиля"))
-                else car?.position=p
+                val heading=visible.bearing?.takeIf{it.isFinite()}
+                    ?:route?.points?.takeIf{it.size>1}?.let{
+                        val idx=route.progress(RoutingEngine.Point(visible.lat,visible.lon))
+                            .nearestShapeIndex.coerceIn(0,it.size-2)
+                        routeBearing(it[idx],it[idx+1])
+                    }
+                displayHeading=NavigationCameraMath.smoothBearing(displayHeading,
+                    if((latestSpeedKmh?:0.0)>=2.0)heading else null,40.0)
+                    ?:NavigationCameraMath.normalizeBearing(heading?:0.0)
+                if(car==null){
+                    car=map?.addMarker(MarkerOptions().position(p)
+                        .icon(arrowIcon()).anchor(0.5f,0.5f).flat(true)
+                        .rotation(displayHeading!!.toFloat()).zIndex(12f)
+                        .title("Автомобиль"))
+                }else{
+                    car?.position=p
+                    car?.rotation=displayHeading!!.toFloat()
+                }
                 car?.title=if(estimated)"Расчётная позиция · GPS ненадёжен"
                     else "Автомобиль · GPS/сеть"
-                if(active && followCar){
-                    val builder=CameraPosition.Builder().target(p)
-                        .zoom(17f).tilt(40f)
-                    visible.bearing?.takeIf{it.isFinite()}?.let{builder.bearing(it.toFloat())}
-                    map?.animateCamera(CameraUpdateFactory.newCameraPosition(builder.build()),500,null)
-                }
             }
             handler.postDelayed(this,1000L)
         }
@@ -543,6 +869,9 @@ class GoogleDrMapActivity:Activity() {
         searchRequest++
         geocodeWorker.shutdownNow()
         if(active)stopGuidance()
+        speech?.stop()
+        speech?.shutdown()
+        speech=null
         if(::mapView.isInitialized)mapView.onDestroy()
         super.onDestroy()
     }
