@@ -825,8 +825,6 @@ class MainActivity : Activity() {
         addSensorCards()
         addButton(root,"Вернуться к Google Maps") { finish() }
         addButton(root,"Настройки") { showSettingsMenu() }
-        addButton(root,"Принудительно: вести по датчикам") { send(NavService.START_DR) }
-        addButton(root,"Вернуться к GPS") { send(NavService.STOP_DR) }
         addButton(root,"Остановить мониторинг") { send(NavService.EXIT) }
         handler.post {showStartupPermissionsIfMissing()}
         // Offline maps are checked on the offline screen, and are never
