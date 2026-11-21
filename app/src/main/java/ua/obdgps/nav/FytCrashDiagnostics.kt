@@ -32,7 +32,8 @@ internal object FytCrashDiagnostics {
             .putBoolean("armed",true)
             .putString("result","running")
             .putString("phase","Нажата кнопка диагностики")
-            .putBoolean("read",false).commit()
+            .remove("seen_phases")
+            .commit()
         if(!saved)return false
         runCatching {
             reportFile(context).writeText(
@@ -49,8 +50,13 @@ internal object FytCrashDiagnostics {
     fun mark(context:Context,phase:String) {
         if(!isArmed(context))return
         val state=prefs(context)
-        if(state.getString("phase",null)==phase)return
-        state.edit().putString("phase",phase.take(180)).commit()
+        val short=phase.take(180)
+        val seen=state.getStringSet("seen_phases",emptySet()).orEmpty()
+        if(short in seen)return
+        state.edit()
+            .putString("phase",short)
+            .putStringSet("seen_phases",seen.toMutableSet().apply{add(short)})
+            .commit()
         runCatching {
             if(reportFile(context).length()<MAX_TEXT)
                 reportFile(context).appendText("[${Instant.now()}] ${phase.take(180)}\n")
