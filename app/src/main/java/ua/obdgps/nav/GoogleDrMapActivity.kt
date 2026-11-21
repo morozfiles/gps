@@ -58,7 +58,13 @@ class GoogleDrMapActivity:Activity() {
     private val session by lazy { PhoneRouteSession(applicationContext) }
     private val fytCapabilities by lazy { FytHeadUnitProfile.read(this) }
     private val widescreen:Boolean get() =
-        BuildConfig.FYT7870_HEAD_UNIT && resources.configuration.screenWidthDp>=690
+        BuildConfig.FYT7870_HEAD_UNIT &&
+            resources.configuration.orientation==
+                android.content.res.Configuration.ORIENTATION_LANDSCAPE
+    /** Keeps search/route card clear of FYT's right-side speed controls
+     * across the various 1024x600, 1280x720 and high-density panels. */
+    private fun fytPanelWidth():Int=dp(
+        (resources.configuration.screenWidthDp-120).coerceIn(300,560))
     private val searchPrefs by lazy { SearchPlacesPrefs(applicationContext) }
     private val startupProbe by lazy { StartupPositionProbe(this) { onApproximateStartupFix(it) } }
     private var restoredSnapshot:PhoneRouteSession.Snapshot?=null
@@ -286,7 +292,7 @@ class GoogleDrMapActivity:Activity() {
             })
         }
         val topParams=FrameLayout.LayoutParams(
-            if(widescreen)dp(530) else -1,-2,Gravity.TOP).apply {
+            if(widescreen)fytPanelWidth() else -1,-2,Gravity.TOP).apply {
             setMargins(dp(if(widescreen)18 else 12),dp(9),dp(12),0)
         }
         root.addView(top,topParams)
@@ -446,7 +452,7 @@ class GoogleDrMapActivity:Activity() {
         actions.addView(stopButton,LinearLayout.LayoutParams(0,dp(49),1f))
         bottom.addView(actions)
         val bottomParams=FrameLayout.LayoutParams(
-            if(widescreen)dp(530) else -1,-2,Gravity.BOTTOM or Gravity.LEFT).apply {
+            if(widescreen)fytPanelWidth() else -1,-2,Gravity.BOTTOM or Gravity.LEFT).apply {
             setMargins(dp(if(widescreen)18 else 12),0,dp(12),dp(12))
         }
         root.addView(bottom,bottomParams)
