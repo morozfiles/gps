@@ -543,6 +543,179 @@ class GoogleDrMapActivity:Activity() {
         updateButtons()
         map?.let{candidates.getOrNull(chosen)?.let{r->fitRoute(r)}}
     }
+    private fun formatDistance(meters:Double):String =
+        if(meters>=1000.0)String.format(Locale.getDefault(),"%.1f км",meters/1000.0)
+        else meters.roundToInt().coerceAtLeast(0).toString()+" м"
+
+    private fun arrowIcon() : com.google.android.gms.maps.model.BitmapDescriptor {
+        val size=dp(65)
+        val bitmap=Bitmap.createBitmap(size,size,Bitmap.Config.ARGB_8888)
+        val canvas=Canvas(bitmap)
+        val paint=Paint(Paint.ANTI_ALIAS_FLAG)
+        val cx=size/2f;val cy=size/2f
+        paint.color=Color.argb(76,0,0,0)
+        canvas.drawCircle(cx,cy+dp(2),dp(23).toFloat(),paint)
+        paint.color=Color.WHITE
+        canvas.drawCircle(cx,cy,dp(22).toFloat(),paint)
+        paint.color=blue
+        canvas.drawCircle(cx,cy,dp(19).toFloat(),paint)
+        val arrow=Path().apply{
+            moveTo(cx,cy-dp(16))
+            lineTo(cx+dp(12),cy+dp(13))
+            lineTo(cx,cy+dp(7))
+            lineTo(cx-dp(12),cy+dp(13))
+            close()
+        }
+        paint.style=Paint.Style.STROKE
+        paint.strokeWidth=dp(3).toFloat()
+        paint.strokeJoin=Paint.Join.ROUND
+        paint.color=Color.WHITE
+        canvas.drawPath(arrow,paint)
+        paint.style=Paint.Style.FILL
+        paint.color=Color.WHITE
+        canvas.drawPath(arrow,paint)
+        return BitmapDescriptorFactory.fromBitmap(bitmap)
+    }
+
+    private fun speak(text:String){
+        if(speechReady && text.isNotBlank())
+            speech?.speak(text,TextToSpeech.QUEUE_FLUSH,null,"google-route-voice")
+    }
+
+    private fun showTurnAndTrip(route:RoutingEngine.Route,
+            progress:RoutingEngine.Progress,speedKmh:Double?,gpsTrusted:Boolean,
+            now:Long){
+        tripRow.visibility=View.VISIBLE
+        val left=progress.remainingMeters.coerceAtLeast(0.0)
+        remainingValue.text=formatDistance(left)
+        val minutes=(progress.secondsRemaining/60).coerceAtLeast(0)
+        etaValue.text=SimpleDateFormat("HH:mm",Locale.getDefault())
+            .format(Date(System.currentTimeMillis()+progress.secondsRemaining.toLong()*1000L))
+        speedValue.text=speedKmh?.roundToInt()?.toString()?:"—"
+        status.text=(if(gpsTrusted)"GPS" else "Расчётная позиция OBD/DR")+
+            " · "+minutes+" мин до прибытия"
+        val next=progress.nextTurn
+        maneuverCard.visibility=View.VISIBLE
+        if(progress.arrived){
+            maneuverGlyph.text="✓"
+            maneuverTitle.text="Вы прибыли в пункт назначения"
+            maneuverDistance.text=""
+            direction.text="Маршрут завершён"
+            if(announcedKey!="arrival"){
+                announcedKey="arrival"
+                speak("Вы прибыли в пункт назначения")
+            }
+            return
+        }
+        if(next!=null){
+            maneuverGlyph.text=when(next.type){
+                1->"↰"
+                2->"↱"
+                3->"↑"
+                4->"↶"
+                5->"⟳"
+                else->"↗"
+            }
+            maneuverTitle.text=next.instruction.ifBlank{"Следующий манёвр"}
+            maneuverDistance.text="Через "+formatDistance(progress.nextTurnMeters)
+            direction.text="Двигайся по выбранному маршруту Google"
+            val band=when{
+                progress.nextTurnMeters<=35.0->"now"
+                progress.nextTurnMeters<=150.0->"150"
+                progress.nextTurnMeters<=420.0->"420"
+                else->""
+            }
+            val key=next.shapeIndex.toString()+":"+band
+            if(band.isNotEmpty() && key!=announcedKey){
+                announcedKey=key
+                val speechText=when(band){
+                    "now"->next.instruction
+                    else->"Через "+progress.nextTurnMeters.roundToInt()+
+                        " метров: "+next.instruction
+                }
+                speak(speechText)
+            }
+        }else{
+            maneuverGlyph.text="↑"
+            maneuverTitle.text="Следуй по маршруту"
+            maneuverDistance.text=formatDistance(left)+" до цели"
+            direction.text="Двигайся по выбранному маршруту Google"
+        }
+    }
+
+    private fun drawCompletedRoute(route:RoutingEngine.Route,
+            index:Int,fix:State.NavFix) {
+        val idx=index.coerceIn(0,route.points.lastIndex)
+        if(idx==drivenIndex)return
+        drivenIndex=idx
+        drivenLine?.remove()
+        if(idx<1)return
+        val trail=route.points.take(idx+1).map{LatLng(it.lat,it.lon)}
+        drivenLine=map?.addPolyline(PolylineOptions().addAll(trail)
+            .color(Color.rgb(177,181,188)).width(dp(7).toFloat()).zIndex(3f))
+    }
+
+    private fun moveGuidanceCamera(fix:State.NavFix,route:RoutingEngine.Route,
+                    progress:RoutingEngine.Progress,speedKmh:Double?) {
+        val m=map?:return
+        val course=fix.bearing?.takeIf{it.isFinite()}
+            ?:route.points.getOrNull(progress.nearestShapeIndex+1)?.let{
+                routeBearing(route.points[progress.nearestShapeIndex],it)
+            }
+        // Camera bearing is smoothed through 0/360 degrees. Keep the last
+        // heading at a standstill to avoid compass jitter rotating the map.
+        cameraHeading=NavigationCameraMath.smoothBearing(cameraHeading,
+            if((speedKmh?:0.0)>=3.0)course else null,27.0)
+            ?:NavigationCameraMath.normalizeBearing(course?:0.0)
+        val targetZoom=NavigationCameraMath.zoom(speedKmh,progress.nextTurnMeters)
+        cameraZoom=if(cameraZoom==null)targetZoom else
+            (cameraZoom!!+(targetZoom-cameraZoom!!)*0.34f)
+        val center=NavigationCameraMath.routeLookAhead(route.points,
+            progress.nearestShapeIndex,RoutingEngine.Point(fix.lat,fix.lon),
+            NavigationCameraMath.lookAheadMeters(speedKmh))
+        val camera=CameraPosition.Builder().target(LatLng(center.lat,center.lon))
+            .bearing(cameraHeading!!.toFloat()).zoom(cameraZoom!!)
+            .tilt(NavigationCameraMath.tilt(speedKmh)).build()
+        m.animateCamera(CameraUpdateFactory.newCameraPosition(camera),850,null)
+    }
+
+    /** No rerouting from spoofed, network-only or DR-estimated positions. */
+    private fun checkOffRoute(route:RoutingEngine.Route,raw:State.NavFix?,
+                    trustedGps:Boolean,now:Long) {
+        if(!active || !trustedGps || raw==null || State.dr){
+            offRouteSinceMs=0L
+            return
+        }
+        val lateral=route.progress(RoutingEngine.Point(raw.lat,raw.lon)).lateralMeters
+        if(lateral<125.0){offRouteSinceMs=0L;return}
+        if(offRouteSinceMs==0L)offRouteSinceMs=now
+        if(now-offRouteSinceMs<15_000L || now-lastRerouteAt<120_000L ||
+            reroutePending)return
+        val to=destination?:return
+        lastRerouteAt=now
+        reroutePending=true
+        direction.text="Отклонение от маршрута. Перестраиваю по GPS..."
+        val origin=RoutingEngine.Point(raw.lat,raw.lon)
+        client.requestAlternatives(origin,to){result->
+            reroutePending=false
+            if(isFinishing || isDestroyed || !active)return@requestAlternatives
+            result.fold(onSuccess={options->
+                if(options.isNotEmpty()){
+                    candidates=options;chosen=0
+                    tracker.bind(options[0],State.navFix)
+                    State.gpsFilterRoutePoints=options[0].points
+                    drawRoutes()
+                    offRouteSinceMs=0L
+                    announcedKey=""
+                    speak("Маршрут перестроен")
+                }
+            },onFailure={e->
+                direction.text="Перестроение не удалось: "+
+                    (e.localizedMessage?:"сеть")
+            })
+        }
+    }
+
     private fun freshTrustedGps():Boolean{
         val f=State.navFix?:return false
         return f.source=="GPS" && f.accuracy in 0f..30f &&
