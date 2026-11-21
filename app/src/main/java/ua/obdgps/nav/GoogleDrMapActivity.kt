@@ -52,6 +52,8 @@ import kotlin.math.*
 class GoogleDrMapActivity:Activity() {
     private val handler=Handler(Looper.getMainLooper())
     private val client by lazy { GoogleRouteClient(applicationContext) }
+    private val session by lazy { PhoneRouteSession(applicationContext) }
+    private var restoredSnapshot:PhoneRouteSession.Snapshot?=null
     private val geocodeWorker=Executors.newSingleThreadExecutor()
     private lateinit var mapView:MapView
     private lateinit var searchField:EditText
@@ -86,7 +88,7 @@ class GoogleDrMapActivity:Activity() {
     private var cameraZoom:Float?=null
     private var speech:TextToSpeech?=null
     private var speechReady=false
-    private var voiceEnabled=true
+    private var voiceEnabled=false
     private lateinit var soundButton:Button
     private var announcedKey=""
     private var offRouteSinceMs=0L
@@ -247,7 +249,7 @@ class GoogleDrMapActivity:Activity() {
         gear.textSize=23f
         val gearParams=LinearLayout.LayoutParams(dp(54),dp(54)).apply{topMargin=dp(10)}
         rightControls.addView(gear,gearParams)
-        soundButton=button("♫",glassButton,lightText) {
+        soundButton=button("✕",glassButton,lightText) {
             voiceEnabled=!voiceEnabled
             if(!voiceEnabled)speech?.stop()
             soundButton.text=if(voiceEnabled)"♫" else "✕"
@@ -279,10 +281,11 @@ class GoogleDrMapActivity:Activity() {
             gravity=Gravity.CENTER
             includeFontPadding=false
         }
+        val speedBadgeBackground=rounded(glass,10)
         val speedBadge=LinearLayout(this).apply {
             orientation=LinearLayout.VERTICAL
             gravity=Gravity.CENTER
-            background=rounded(glass,20)
+            background=speedBadgeBackground
             elevation=dp(4).toFloat()
             setPadding(dp(6),dp(8),dp(6),dp(8))
             isClickable=true
@@ -307,7 +310,7 @@ class GoogleDrMapActivity:Activity() {
             addView(speedUnit)
             addView(speedSourceLabel)
         }
-        val speedParams=LinearLayout.LayoutParams(dp(93),dp(92)).apply {
+        val speedParams=LinearLayout.LayoutParams(dp(77),dp(66)).apply {
             topMargin=dp(11)
         }
         rightControls.addView(speedBadge,speedParams)
@@ -528,7 +531,7 @@ class GoogleDrMapActivity:Activity() {
                 chosen=0
                 drawRoutes()
                 showRouteOptions()
-                fitRoute(routes[0])
+                orientRoutePreview(routes[0])
                 updateButtons()
                 status.text="Выбери маршрут · "+routes.size+" вариант(ов)"
                 direction.text="Выбери линию на карте или вариант ниже, затем «Поехали»"
@@ -583,11 +586,31 @@ class GoogleDrMapActivity:Activity() {
         chosen=index
         drawRoutes()
         showRouteOptions()
-        fitRoute(candidates[index])
+        orientRoutePreview(candidates[index])
         status.text="Выбран маршрут "+(index+1)+" из "+candidates.size
         direction.text="Нажми «Поехали» для начала движения"
         updateButtons()
     }
+    private fun orientRoutePreview(route:RoutingEngine.Route) {
+        val google=map?:return
+        if(route.points.size<2)return
+        val current=State.navFix?.takeIf {
+            SystemClock.elapsedRealtime()-it.elapsedMs in 0L..15000L
+        }
+        val candidate=current?.let{
+            route.progress(RoutingEngine.Point(it.lat,it.lon)).nearestShapeIndex
+        }?:0
+        val idx=candidate.coerceIn(0,route.points.size-2)
+        val from=route.points[idx]
+        val to=route.points[idx+1]
+        val bearing=routeBearing(from,to)
+        val target=current?.let { LatLng(it.lat,it.lon) }
+            ?:LatLng(from.lat,from.lon)
+        val camera=CameraPosition.Builder().target(target)
+            .bearing(bearing.toFloat()).zoom(15.7f).tilt(28f).build()
+        google.animateCamera(CameraUpdateFactory.newCameraPosition(camera),750,null)
+    }
+
     private fun fitRoute(route:RoutingEngine.Route){
         if(route.points.size<2)return
         val builder=LatLngBounds.Builder()
@@ -875,6 +898,10 @@ class GoogleDrMapActivity:Activity() {
             speedSourceLabel.text=selectedSpeed.source
             speedSourceLabel.setTextColor(if(selectedSpeed.available)
                 Color.rgb(140,204,255) else mutedText)
+            speedBadgeBackground.setStroke(
+                dp(if(selectedSpeed.source=="OBD")3 else 1),
+                if(selectedSpeed.source=="OBD")
+                    Color.rgb(255,65,67) else Color.argb(65,197,211,230))
             var visible=raw
             var estimated=false
             if(active && route!=null){
