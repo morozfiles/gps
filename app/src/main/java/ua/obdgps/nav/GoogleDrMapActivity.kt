@@ -692,7 +692,11 @@ class GoogleDrMapActivity:Activity() {
         State.currentGoogleRoute=restoredRoute
         State.gpsFilterRoutePoints=if(active)restoredRoute.points else emptyList()
         val first=restoredRoute.points.first()
-        val bearing=routeBearing(first,restoredRoute.points[1])
+        val restoredPoint=last?.let{RoutingEngine.Point(it.lat,it.lon)}?:first
+        val segment=restoredRoute.progress(restoredPoint).nearestShapeIndex
+            .coerceIn(0,restoredRoute.points.size-2)
+        val bearing=routeBearing(restoredRoute.points[segment],
+            restoredRoute.points[segment+1])
         State.routeDrSeed=if(active) {
             val anchor=last?:State.NavFix(first.lat,first.lon,bearing,120f,
                 "Старт сохранённого маршрута",SystemClock.elapsedRealtime())
