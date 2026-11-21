@@ -1,7 +1,7 @@
 name: Build PHONE APK
 on:
   push:
-    branches: [main, 'feature/mobile-dark-google-speed']
+    branches: [main, 'feature/mobile-auto-fusion-resume']
   pull_request:
   workflow_dispatch:
 jobs:
