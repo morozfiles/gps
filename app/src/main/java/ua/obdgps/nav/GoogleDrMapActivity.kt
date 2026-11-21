@@ -130,6 +130,8 @@ class GoogleDrMapActivity:Activity() {
     private var active=false
     private var fetching=false
     private var followCar=true
+    // Cancel pending route previews when the selected route or mode changes.
+    private var routePreviewRequest=0
     private var searchRequest=0
     private val tracker=RouteOdometer()
     private val blue=Color.rgb(26,115,232)
@@ -569,7 +571,8 @@ class GoogleDrMapActivity:Activity() {
                         150f,"Сохранённая позиция",0L)
                     val prog=snapshot.route.progress(cached)
                     moveGuidanceCamera(fix,snapshot.route,prog,null)
-                }else orientRoutePreview(snapshot.route)
+                }else if(snapshot.active)focusGuidanceStart(snapshot.route)
+                else orientRoutePreview(snapshot.route)
             }else {
                 val f=bestPositionForMap(SystemClock.elapsedRealtime())
                 if(f!=null){
@@ -1049,31 +1052,57 @@ class GoogleDrMapActivity:Activity() {
         updateButtons()
         saveRouteSession(false)
     }
+    /** Planning mode: show the complete selected route from start to finish. */
     private fun orientRoutePreview(route:RoutingEngine.Route) {
-        val google=map?:return
-        if(route.points.size<2)return
-        val current=State.navFix?.takeIf {
-            SystemClock.elapsedRealtime()-it.elapsedMs in 0L..15000L
-        }
-        val candidate=current?.let{
-            route.progress(RoutingEngine.Point(it.lat,it.lon)).nearestShapeIndex
-        }?:0
-        val idx=candidate.coerceIn(0,route.points.size-2)
-        val from=route.points[idx]
-        val to=route.points[idx+1]
-        val bearing=routeBearing(from,to)
-        val target=current?.let { LatLng(it.lat,it.lon) }
-            ?:LatLng(from.lat,from.lon)
-        val camera=CameraPosition.Builder().target(target)
-            .bearing(bearing.toFloat()).zoom(15.7f).tilt(28f).build()
-        google.animateCamera(CameraUpdateFactory.newCameraPosition(camera),750,null)
+        fitRoute(route)
     }
 
     private fun fitRoute(route:RoutingEngine.Route){
+        val google=map?:return
         if(route.points.size<2)return
         val builder=LatLngBounds.Builder()
         for(p in route.points)builder.include(LatLng(p.lat,p.lon))
-        runCatching{map?.animateCamera(CameraUpdateFactory.newLatLngBounds(builder.build(),dp(65)))}
+        val bounds=builder.build()
+        val request=++routePreviewRequest
+        // The explicit map dimensions make this safe even on a freshly
+        // restored FYT screen whose GoogleMap layout is not ready yet.
+        mapView.post {
+            if(active || request!=routePreviewRequest ||
+                candidates.getOrNull(chosen)!==route || map!==google)return@post
+            val width=mapView.width
+            val height=mapView.height
+            if(width<=0 || height<=0)return@post
+            // Google Maps bounds updates reset bearing and tilt to zero.
+            // Map padding already reserves space for the route/HUD panels.
+            google.animateCamera(CameraUpdateFactory.newLatLngBounds(
+                bounds,width,height,dp(48)),750,null)
+        }
+    }
+
+    /** Driving mode: immediately focus ahead on the chosen route, even without GPS. */
+    private fun focusGuidanceStart(route:RoutingEngine.Route){
+        val google=map?:return
+        if(route.points.size<2)return
+        val now=SystemClock.elapsedRealtime()
+        val current=listOfNotNull(latestDisplayed,State.navFix,State.networkFix)
+            .firstOrNull {
+                now-it.elapsedMs in 0L..15000L &&
+                    it.lat.isFinite() && it.lon.isFinite() &&
+                    route.progress(RoutingEngine.Point(it.lat,it.lon)).lateralMeters<3000.0
+            }
+        val anchor=current?.let{RoutingEngine.Point(it.lat,it.lon)}
+            ?:route.points.first()
+        val progress=route.progress(anchor)
+        val segment=progress.nearestShapeIndex.coerceIn(0,route.points.size-2)
+        val heading=routeBearing(route.points[segment],route.points[segment+1])
+        cameraHeading=heading
+        cameraZoom=NavigationCameraMath.zoom(latestSpeedKmh,progress.nextTurnMeters)
+        val ahead=NavigationCameraMath.routeLookAhead(route.points,segment,
+            anchor,NavigationCameraMath.lookAheadMeters(latestSpeedKmh))
+        val camera=CameraPosition.Builder().target(LatLng(ahead.lat,ahead.lon))
+            .bearing(heading.toFloat()).zoom(cameraZoom!!)
+            .tilt(NavigationCameraMath.tilt(latestSpeedKmh)).build()
+        google.animateCamera(CameraUpdateFactory.newCameraPosition(camera),750,null)
     }
     private fun updateFytNotices() {
         if(!widescreen || !active)return
@@ -1166,6 +1195,7 @@ class GoogleDrMapActivity:Activity() {
     private fun startGuidance(){
         val route=candidates.getOrNull(chosen)?:run{showError("Сначала выбери маршрут");return}
         active=true
+        ++routePreviewRequest
         tracker.bind(route,State.navFix)
         followCar=true
         cameraHeading=null
@@ -1189,6 +1219,7 @@ class GoogleDrMapActivity:Activity() {
         direction.text="GPS + сеть; при потере GPS — расчёт по OBD"
         updateButtons()
         saveRouteSession(true)
+        focusGuidanceStart(route)
         handler.removeCallbacks(refresh)
         handler.post(refresh)
     }
