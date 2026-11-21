@@ -636,7 +636,17 @@ class GoogleDrMapActivity:Activity() {
             PackageManager.PERMISSION_GRANTED
 
     /** A weak network/cell estimate can locate the map but not drive navigation. */
+    private fun manualPreviewFix(now:Long=SystemClock.elapsedRealtime()):State.NavFix? {
+        if(active)return null
+        val origin=manualOrigin?:return null
+        // Only our map marker and camera use this user-picked location.
+        // Never write it to State.navFix or the system's GPS provider.
+        return State.NavFix(origin.lat,origin.lon,null,25f,
+            "Ручная точка старта",now)
+    }
+
     private fun bestPositionForMap(now:Long):State.NavFix? {
+        manualPreviewFix(now)?.let{return it}
         val accepted=State.navFix?.takeIf {
             now-it.elapsedMs in 0L..12000L &&
                 !it.source.contains("Ручн") &&
@@ -661,8 +671,8 @@ class GoogleDrMapActivity:Activity() {
 
     private fun maybeCenterStartupPosition(fix:State.NavFix) {
         val g=map?:return
-        if(active || !followCar || destination!=null || fetching ||
-            !ApproximateFixStore.usable(fix))return
+        if(active || manualOrigin!=null || !followCar || destination!=null ||
+            fetching || !ApproximateFixStore.usable(fix))return
         val newAccuracy=fix.accuracy
         if(initialPositionCentered &&
             newAccuracy>=initialPositionAccuracy*0.65f)return
@@ -674,7 +684,9 @@ class GoogleDrMapActivity:Activity() {
 
     private fun updateAccuracyCircle(fix:State.NavFix?) {
         val g=map?:return
-        if(fix==null || !ApproximateFixStore.usable(fix)){
+        // A manually chosen position has no measured GPS accuracy.
+        if(fix==null || fix.source=="Ручная точка старта" ||
+            !ApproximateFixStore.usable(fix)){
             accuracyCircle?.isVisible=false
             return
         }
@@ -1026,6 +1038,18 @@ class GoogleDrMapActivity:Activity() {
                     saveManualOrigin(null)
                     updateOriginMarker()
                     invalidateRoutes()
+                    if(latestDisplayed?.source=="Ручная точка старта"){
+                        latestDisplayed=null
+                        car?.remove()
+                        car=null
+                        displayHeading=null
+                    }
+                    followCar=true
+                    val fresh=bestPositionForMap(SystemClock.elapsedRealtime())
+                    if(fresh!=null){
+                        map?.animateCamera(CameraUpdateFactory.newLatLngZoom(
+                            LatLng(fresh.lat,fresh.lon),roughZoom(fresh.accuracy)),700,null)
+                    }
                     status.text="Автоматическое определение старта"
                     direction.text="Выбери «Маршрут», чтобы рассчитать путь от GPS/сети."
                     updateButtons()
@@ -1046,8 +1070,25 @@ class GoogleDrMapActivity:Activity() {
         saveManualOrigin(point)
         updateOriginMarker()
         invalidateRoutes()
-        status.text="Ручная точка старта установлена"
-        direction.text="Голубой маркер — старт. Выбери цель и нажми «Маршрут»."
+        // Immediately move the vehicle marker; the periodic refresh must
+        // retain this visual position until guidance starts or the user resets it.
+        latestDisplayed=manualPreviewFix()
+        val p=LatLng(point.lat,point.lon)
+        if(car==null){
+            car=map?.addMarker(MarkerOptions().position(p)
+                .icon(arrowIcon()).anchor(0.5f,0.5f).flat(true)
+                .alpha(0.88f).zIndex(12f)
+                .title("Положение задано вручную · не GPS"))
+        }else{
+            car?.position=p
+            car?.title="Положение задано вручную · не GPS"
+        }
+        followCar=true
+        initialPositionCentered=true
+        initialPositionAccuracy=25f
+        map?.animateCamera(CameraUpdateFactory.newLatLngZoom(p,17.0f),750,null)
+        status.text="Моё положение задано вручную"
+        direction.text="Автомобиль и голубой маркер — здесь. Выбери цель и построй маршрут."
         updateButtons()
     }
 
@@ -1685,7 +1726,7 @@ class GoogleDrMapActivity:Activity() {
     }
     private fun centerOnCar(){
         followCar=true
-        val fix=latestDisplayed?:State.navFix?:State.approximateFix
+        val fix=manualPreviewFix()?:latestDisplayed?:State.navFix?:State.approximateFix
         val route=candidates.getOrNull(chosen)
         if(active && fix!=null && route!=null) {
             val progress=route.progress(RoutingEngine.Point(fix.lat,fix.lon))
@@ -1744,7 +1785,10 @@ class GoogleDrMapActivity:Activity() {
                 dp(if(selectedSpeed.source=="OBD")3 else 1),
                 if(selectedSpeed.source=="OBD")
                     Color.rgb(255,65,67) else Color.argb(65,197,211,230))
-            var visible=if(active)raw else raw?:approximate
+            // When the driver picks a manual start, show it as the vehicle
+            // position before guidance, regardless of stale GPS/network fixes.
+            // On guidance start, the route odometer provides the position.
+            var visible=if(active)raw else manualPreviewFix(now)?:raw?:approximate
             var estimated=visible?.source?.startsWith("Примерно")==true
             if(active && route!=null){
                 refreshRestoredTurns(raw,now)
@@ -1753,7 +1797,11 @@ class GoogleDrMapActivity:Activity() {
                 val gnssTrusted=raw!=null && raw.source=="GPS" &&
                     !State.dr && !AirAlerts.autoNavigationAlertActive() &&
                     raw.accuracy in 0f..50f &&
-                    (gpsSpeed?:0.0)<=180.0
+                    (gpsSpeed?:0.0)<=180.0 &&
+                    // A manual route must not snap to a confident-looking
+                    // spoofed fix far away from the selected road geometry.
+                    (manualOrigin==null || route.progress(
+                        RoutingEngine.Point(raw.lat,raw.lon)).lateralMeters<=150.0)
                 if(gnssTrusted && raw!=null)tracker.alignWithValidatedGps(raw)
                 // NavService has already validated accepted GNSS samples.
                 // Do not block real navigation when OBD is disconnected:
@@ -1777,7 +1825,8 @@ class GoogleDrMapActivity:Activity() {
             }
             latestDisplayed=visible
             updateAccuracyCircle(visible)
-            if(!active && visible!=null && destination==null){
+            if(!active && visible!=null && destination==null &&
+                visible.source!="Ручная точка старта"){
                 if(visible.source.startsWith("Примерно")){
                     status.text="Приблизительное положение · ±"+
                         formatDistance(visible.accuracy.toDouble())
@@ -1811,6 +1860,8 @@ class GoogleDrMapActivity:Activity() {
                     car?.rotation=displayHeading!!.toFloat()
                 }
                 car?.title=when {
+                    visible.source=="Ручная точка старта" ->
+                        "Положение задано вручную · не GPS"
                     visible.source.startsWith("Примерно") ->
                         "Положение приблизительное (±"+
                             formatDistance(visible.accuracy.toDouble())+")"
