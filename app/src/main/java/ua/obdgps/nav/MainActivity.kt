@@ -461,26 +461,31 @@ class MainActivity : Activity() {
     }
     private fun send(action: String, address: String? = null) {
         if (!hasPermissions()) { checkBluetoothGps(); return }
+        if(action in setOf(NavService.SCAN,NavService.CONNECT) && !hasBluetoothPermissions()){
+            askPermissions()
+            return
+        }
         val i = Intent(this, NavService::class.java).setAction(action)
         if (address != null) i.putExtra("address",address)
         try { startForegroundService(i) } catch (e: Exception) { State.message = e.message ?: "Ошибка запуска" }
     }
     private var startupPermissionsChecked=false
 
-    private fun requiredPermissions()=arrayOf(
-        Manifest.permission.ACCESS_FINE_LOCATION,
+    // Coarse Wi-Fi/cell location is still useful on GPS-jammed FYT units.
+    private fun hasPermissions()=
+        checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)==
+            PackageManager.PERMISSION_GRANTED ||
+        checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION)==
+            PackageManager.PERMISSION_GRANTED
+    private fun hasBluetoothPermissions()=arrayOf(
         Manifest.permission.BLUETOOTH_SCAN,
         Manifest.permission.BLUETOOTH_CONNECT
-    )
-    private fun hasPermissions()=requiredPermissions().all {
-        checkSelfPermission(it)==PackageManager.PERMISSION_GRANTED
-    }
+    ).all { checkSelfPermission(it)==PackageManager.PERMISSION_GRANTED }
 
     private fun missingRuntimePermissions():Array<String> {
         val missing=ArrayList<String>()
         // Fine + coarse must be requested together on modern Android.
-        if(checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)!=
-            PackageManager.PERMISSION_GRANTED) {
+        if(!hasPermissions()) {
             missing.add(Manifest.permission.ACCESS_FINE_LOCATION)
             missing.add(Manifest.permission.ACCESS_COARSE_LOCATION)
         }
@@ -543,7 +548,7 @@ class MainActivity : Activity() {
         requestPermissions(missing,12)
     }
     private fun chooseBluetooth() {
-        if (!hasPermissions() || !isBluetoothEnabled()) {
+        if(!hasPermissions() || !hasBluetoothPermissions() || !isBluetoothEnabled()){
             checkBluetoothGps()
         } else {
             State.devices.clear()
@@ -818,7 +823,16 @@ class MainActivity : Activity() {
             setPadding(dip(4), dip(8), dip(4), dip(15))
         }
         root.addView(status)
-        addSensorCards()
+        val fyt=FytHeadUnitProfile.read(this)
+        if(fyt.gyro || fyt.accelerometer || fyt.compass) addSensorCards()
+        else root.addView(TextView(this).apply {
+            text="FYT 7870: встроенные гироскоп, акселерометр и компас не обнаружены. "+
+                "Ведение по маршруту возможно с GPS и скоростью OBD, "+
+                "но подтверждать повороты датчиком нечем."
+            textSize=14f
+            setTextColor(secondaryText)
+            setPadding(dip(10),dip(14),dip(10),dip(10))
+        })
         addButton(root,"Вернуться к Google Maps") { finish() }
         addButton(root,"Настройки") { showSettingsMenu() }
         addButton(root,"Остановить мониторинг") { send(NavService.EXIT) }
@@ -853,9 +867,10 @@ class MainActivity : Activity() {
             } else {
                 AlertDialog.Builder(this)
                     .setTitle("Не все разрешения выданы")
-                    .setMessage("Для OBD и инерциальной навигации нужны "+
-                        "точное местоположение и разрешения Bluetooth. "+
-                        "При запрете через Android их можно включить в настройках.")
+                    .setMessage("Для точного GPS нужна точная геолокация, но "+
+                        "приблизительная подходит для поиска через сеть. "+
+                        "Bluetooth разрешения необходимы только для ELM327, "+
+                        "когда FYT предоставляет стандартный Bluetooth Android.")
                     .setPositiveButton("Открыть настройки"){_,_->
                         openApplicationPermissions()
                     }
