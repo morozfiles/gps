@@ -75,10 +75,11 @@ class NavService: Service(), LocationListener {
     private var gpsRecoverySince = 0L
     // GPS may briefly look valid during spoofing. Correct DR after 3
     // independently corroborated fixes; auto-return only after a 30 s
-    // continuous stable window with >=18 measurements.
+    // Five verified seconds to recover from normal signal loss. Suspected
+    // spoofing still requires independent multi-sample quarantine release.
     private val gpsCorrectionFixes=3
-    private val gpsReturnFixes=18
-    private val gpsReturnStableMs=30_000L
+    private val gpsReturnFixes=5
+    private val gpsReturnStableMs=5_000L
     private val gpsRecoveryMaxGapMs=5_000L
     private var lastRejectedGps = 0L
     private var lastGpsTeleport = 0L
@@ -188,8 +189,9 @@ class NavService: Service(), LocationListener {
         State.learnedDrDetail=learnedDr.detail()
         AirAlerts.initialize(this)
         State.obdFactor = settings.obdFactor
-        autoEnabled = settings.autoEnabled
-        State.autoEnabled = autoEnabled
+        autoEnabled = true
+        settings.autoEnabled = true
+        State.autoEnabled = true
         protocolMode=settings.protocolMode
         mutMode=protocolMode=="MUT"
         protocols=candidates(protocolMode)
@@ -288,16 +290,15 @@ class NavService: Service(), LocationListener {
                 learnedDr.save()
             }
             STOP_DR -> {
-                autoEnabled=false
-                State.autoEnabled=false
-                settings.autoEnabled=false
                 stopDr()
-                State.message="GPS выбран вручную; автоведение отключено в настройках"
+                State.message="GPS выбран; автоматическое переключение включено"
             }
-            AUTO_ON -> { autoEnabled=true; State.autoEnabled=true; settings.autoEnabled=true
-                State.message="Автоведение включено" }
-            AUTO_OFF -> { autoEnabled=false; State.autoEnabled=false; settings.autoEnabled=false
-                State.message="Автоведение отключено" }
+            AUTO_ON, AUTO_OFF -> {
+                autoEnabled=true
+                State.autoEnabled=true
+                settings.autoEnabled=true
+                State.message="Автопереключение всегда включено"
+            }
             CALIBRATE -> {
                 val text=motion.calibrate(State.speed,SystemClock.elapsedRealtime()-speedTime<3000)
                 State.message=text
@@ -1334,7 +1335,7 @@ class NavService: Service(), LocationListener {
                     " · скорость >180 км/ч" else ""))
             return
         }
-        if(!location.hasAccuracy() || location.accuracy>45f) {
+        if(!location.hasAccuracy() || location.accuracy>50f) {
             State.gpsText="GPS: низкая точность"
             if(gpsQuarantined)resetQuarantineEvidence(
                 "GPS в карантине · недостаточная точность")
@@ -1420,6 +1421,10 @@ class NavService: Service(), LocationListener {
         val acceptedPosition=gpsConsensus.add(location,now)
         gps=Location(acceptedPosition)
         gpsTime=now
+        State.recentTrustedGps=State.NavFix(acceptedPosition.latitude,
+            acceptedPosition.longitude,
+            if(acceptedPosition.hasBearing())acceptedPosition.bearing.toDouble() else null,
+            acceptedPosition.accuracy,"GPS",now)
         lastAcceptedGps=now
         State.markRawGpsApproved(now)
         // Learn ONLY from trusted GPS fixes in the explicit two-track
@@ -1490,10 +1495,9 @@ class NavService: Service(), LocationListener {
             if(!manualMode && gpsRecoveryCount>=gpsReturnFixes &&
                 gpsRecoverySince>0L &&
                 now-gpsRecoverySince>=gpsReturnStableMs &&
-                now-lastDrStart>=gpsReturnStableMs &&
                 !gpsQuarantined){
                 stopDr()
-                State.message="GPS стабилен 30+ с: возврат к спутниковой навигации"
+                State.message="GPS стабилен 5+ с: возврат к спутниковой навигации"
             }
         }
     }
