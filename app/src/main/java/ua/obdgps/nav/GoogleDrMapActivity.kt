@@ -502,7 +502,8 @@ class GoogleDrMapActivity:Activity() {
 
     private fun maybeCenterStartupPosition(fix:State.NavFix) {
         val g=map?:return
-        if(active || !followCar || !ApproximateFixStore.usable(fix))return
+        if(active || !followCar || destination!=null || fetching ||
+            !ApproximateFixStore.usable(fix))return
         val newAccuracy=fix.accuracy
         if(initialPositionCentered &&
             newAccuracy>=initialPositionAccuracy*0.65f)return
@@ -1142,7 +1143,8 @@ class GoogleDrMapActivity:Activity() {
             return
         }
         val p=fix?.let{LatLng(it.lat,it.lon)}
-        if(p!=null)map?.animateCamera(CameraUpdateFactory.newLatLngZoom(p,16f))
+        if(p!=null)map?.animateCamera(CameraUpdateFactory.newLatLngZoom(
+            p,if(fix.accuracy>120f)roughZoom(fix.accuracy) else 16f))
         else showError("Координаты пока не получены")
     }
     private val refresh=object:Runnable{
@@ -1215,7 +1217,7 @@ class GoogleDrMapActivity:Activity() {
             }
             latestDisplayed=visible
             updateAccuracyCircle(visible)
-            if(!active && visible!=null){
+            if(!active && visible!=null && destination==null){
                 if(visible.source.startsWith("Примерно")){
                     status.text="Приблизительное положение · ±"+
                         formatDistance(visible.accuracy.toDouble())
