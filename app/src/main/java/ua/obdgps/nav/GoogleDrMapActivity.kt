@@ -520,7 +520,11 @@ class GoogleDrMapActivity:Activity() {
             return
         }
         val p=LatLng(fix.lat,fix.lon)
-        val radius=fix.accuracy.coerceAtLeast(5f).toDouble()
+        val drDrift=if(State.dr && fix.source.contains("OBD"))
+            State.driftMeters.coerceAtLeast(0.0) else 0.0
+        // In DR mode also visualize the growing estimated inertial drift;
+        // network/GPS radius is still Android's reported uncertainty.
+        val radius=max(fix.accuracy.toDouble(),drDrift).coerceIn(5.0,100_000.0)
         val fill=Color.argb(20,98,181,255)
         val border=Color.argb(66,145,205,255)
         val old=accuracyCircle
