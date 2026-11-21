@@ -1,7 +1,7 @@
 name: Build PHONE APK
 on:
   push:
-    branches: [main, 'feature/mobile-guidance-camera']
+    branches: [main, 'feature/mobile-dark-google-speed']
   pull_request:
   workflow_dispatch:
 jobs:
