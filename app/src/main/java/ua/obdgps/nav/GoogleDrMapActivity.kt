@@ -2,6 +2,7 @@ package ua.obdgps.nav
 
 import android.Manifest
 import android.app.Activity
+import android.animation.ValueAnimator
 import android.app.AlertDialog
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -24,6 +25,7 @@ import android.view.Gravity
 import android.view.View
 import android.view.WindowInsets
 import android.view.WindowManager
+import android.view.animation.LinearInterpolator
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputMethodManager
 import android.widget.*
@@ -118,6 +120,8 @@ class GoogleDrMapActivity:Activity() {
     private var chosen=0
     private var polylines=ArrayList<Polyline>()
     private var car:Marker?=null
+    // Animates only the displayed Google Maps marker, never the sensor/DR pose.
+    private var carAnimator:ValueAnimator?=null
     private var accuracyCircle:Circle?=null
     private var initialPositionCentered=false
     private var initialPositionAccuracy=Float.POSITIVE_INFINITY
@@ -1044,6 +1048,7 @@ class GoogleDrMapActivity:Activity() {
                     invalidateRoutes()
                     if(latestDisplayed?.source=="Ручная точка старта"){
                         latestDisplayed=null
+                        cancelCarAnimation()
                         car?.remove()
                         car=null
                         displayHeading=null
@@ -1077,6 +1082,8 @@ class GoogleDrMapActivity:Activity() {
         // Immediately move the vehicle marker; the periodic refresh must
         // retain this visual position until guidance starts or the user resets it.
         latestDisplayed=manualPreviewFix()
+        // A deliberately selected location must apply immediately.
+        cancelCarAnimation()
         val p=LatLng(point.lat,point.lon)
         if(car==null){
             car=map?.addMarker(MarkerOptions().position(p)
@@ -1464,30 +1471,83 @@ class GoogleDrMapActivity:Activity() {
         handler.post(refresh)
     }
     private fun stopGuidance(){
-        saveRouteSession(false)
+        // "Завершить" must cancel the entire plan, not simply pause guidance.
         active=false
         tracker.reset()
         State.activeRouting=false
-        State.gpsFilterRoutePoints=emptyList()
         State.routeDrSeed=null
         speech?.stop()
+        cancelCarAnimation()
         announcedKey=""
         cameraHeading=null
         cameraZoom=null
         displayHeading=null
         offRouteSinceMs=0L
+        reroutePending=false
+        ++routePreviewRequest
         drivenLine?.remove()
         drivenLine=null
         drivenIndex=-1
-        status.text="Навигация завершена"
-        direction.text="Можно выбрать другой маршрут или новую цель"
+        invalidateRoutes() // Removes ALL alternatives and the saved route session.
+        destination=null
+        goal?.remove()
+        goal=null
+        pickingOrigin=false
+        followCar=true
+        initialPositionCentered=false
+        initialPositionAccuracy=Float.POSITIVE_INFINITY
+        // Keep a deliberately selected manual origin, but not an old route.
         updateOriginMarker()
+        status.text="Навигация завершена · все маршруты удалены"
+        direction.text="Выбери новую цель, чтобы построить маршрут."
         updateButtons()
-        map?.let{candidates.getOrNull(chosen)?.let{r->fitRoute(r)}}
     }
     private fun formatDistance(meters:Double):String =
         if(meters>=1000.0)String.format(Locale.getDefault(),"%.1f км",meters/1000.0)
         else meters.roundToInt().coerceAtLeast(0).toString()+" м"
+
+    /** Stop any pending drawing frames before removing or repositioning the marker. */
+    private fun cancelCarAnimation(){
+        carAnimator?.cancel()
+        carAnimator=null
+    }
+
+    /**
+     * Interpolate the map marker continuously between 1-second GPS/OBD
+     * updates. Route progress, sensor readings and the trusted fix remain
+     * unchanged. Large discontinuities are snapped, not animated as driving.
+     */
+    private fun animateCarMarker(to:LatLng,heading:Float){
+        val marker=car?:return
+        val from=marker.position
+        val distance=RoutingEngine.meters(
+            RoutingEngine.Point(from.latitude,from.longitude),
+            RoutingEngine.Point(to.latitude,to.longitude))
+        val oldHeading=marker.rotation
+        val delta=((heading-oldHeading+540f)%360f)-180f
+        cancelCarAnimation()
+        if(!distance.isFinite() || distance>250.0){
+            // No fake motion through the city on GPS reacquisition/spoof jumps.
+            marker.position=to
+            marker.rotation=heading
+            return
+        }
+        if(distance<0.08 && abs(delta)<0.7f)return
+        val animator=ValueAnimator.ofFloat(0f,1f).apply{
+            duration=1050L
+            interpolator=LinearInterpolator()
+            addUpdateListener { frame ->
+                if(car!==marker)return@addUpdateListener
+                val t=frame.animatedValue as Float
+                marker.position=LatLng(
+                    from.latitude+(to.latitude-from.latitude)*t,
+                    from.longitude+(to.longitude-from.longitude)*t)
+                marker.rotation=((oldHeading+delta*t)%360f+360f)%360f
+            }
+        }
+        carAnimator=animator
+        animator.start()
+    }
 
     /** Just a translucent direction arrow: no circular badge or halo. */
     private fun arrowIcon():com.google.android.gms.maps.model.BitmapDescriptor {
@@ -1861,8 +1921,7 @@ class GoogleDrMapActivity:Activity() {
                         .rotation(displayHeading!!.toFloat()).zIndex(12f)
                         .title("Автомобиль"))
                 }else{
-                    car?.position=p
-                    car?.rotation=displayHeading!!.toFloat()
+                    animateCarMarker(p,displayHeading!!.toFloat())
                 }
                 car?.title=when {
                     visible.source=="Ручная точка старта" ->
@@ -1891,6 +1950,7 @@ class GoogleDrMapActivity:Activity() {
     }
     override fun onPause(){
         handler.removeCallbacks(refresh)
+        cancelCarAnimation()
         startupProbe.stop()
         saveRouteSession()
         if(::mapView.isInitialized)mapView.onPause()
@@ -1905,6 +1965,7 @@ class GoogleDrMapActivity:Activity() {
     }
     override fun onDestroy(){
         handler.removeCallbacks(refresh)
+        cancelCarAnimation()
         searchPopup?.dismiss()
         searchPopup=null
         searchRequest++
