@@ -19,24 +19,32 @@ internal object NavigationCameraMath {
 
     fun zoom(speedKmh:Double?,turnMeters:Double?):Float {
         val speed=(speedKmh?:0.0).takeIf{it.isFinite()}?.coerceIn(0.0,180.0)?:0.0
-        // Residential roads stay close; higher speeds reveal more road ahead.
+        // FYT screen: stay close to the road. At 60 km/h use zoom 17.4
+        // (previously 16.2), and never zoom out to a region-wide view.
         val normal=when {
-            speed<8.0->18.0
-            speed<30.0->18.0-(speed-8.0)/22.0*.8
-            speed<60.0->17.2-(speed-30.0)/30.0*1.0
-            speed<100.0->16.2-(speed-60.0)/40.0*1.0
-            else->15.2-(speed-100.0)/80.0*.5
+            speed<8.0 -> 18.3
+            speed<30.0 -> 18.3-(speed-8.0)/22.0*0.55
+            speed<60.0 -> 17.75-(speed-30.0)/30.0*0.35
+            speed<100.0 -> 17.4-(speed-60.0)/40.0*0.5
+            else -> 16.9-(speed-100.0)/80.0*0.35
         }
         val turnBoost=if(turnMeters!=null && turnMeters.isFinite() &&
             turnMeters in 0.0..250.0 && speed>=10.0) {
-            0.65*(1.0-turnMeters/250.0)
+            0.55*(1.0-turnMeters/250.0)
         }else 0.0
-        return (normal+turnBoost).coerceIn(14.6,18.4).toFloat()
+        return (normal+turnBoost).coerceIn(16.55,18.8).toFloat()
     }
 
     fun tilt(speedKmh:Double?):Float {
-        val speed=(speedKmh?:0.0).coerceIn(0.0,150.0)
-        return (if(speed<4.0)25.0 else 40.0+speed/150.0*12.0).toFloat()
+        val speed=(speedKmh?:0.0).takeIf{it.isFinite()}?.coerceIn(0.0,180.0)?:0.0
+        // More road perspective, reaching 60 degrees at 60 km/h.
+        // Google Maps may limit the actual angle for a given zoom level.
+        val angle=when {
+            speed<8.0 -> 35.0+speed/8.0*10.0
+            speed<60.0 -> 45.0+(speed-8.0)/52.0*15.0
+            else -> 60.0+(speed-60.0)/120.0*5.0
+        }
+        return angle.coerceIn(35.0,65.0).toFloat()
     }
 
     fun lookAheadMeters(speedKmh:Double?):Double {

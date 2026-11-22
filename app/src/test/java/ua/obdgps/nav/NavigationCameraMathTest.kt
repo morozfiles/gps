@@ -11,6 +11,16 @@ class NavigationCameraMathTest {
             NavigationCameraMath.zoom(125.0,null))
     }
 
+    @Test fun fyT60KmhKeepsStreetsCloseAndMoreTilted() {
+        assertEquals(17.4f,NavigationCameraMath.zoom(60.0,null),0.02f)
+        assertEquals(60.0f,NavigationCameraMath.tilt(60.0),0.1f)
+        assertTrue(NavigationCameraMath.zoom(100.0,null)>=16.85f)
+        assertTrue(NavigationCameraMath.zoom(180.0,null)>=16.5f)
+        assertTrue(NavigationCameraMath.tilt(100.0)>=60.0f)
+        assertTrue(NavigationCameraMath.zoom(60.0,35.0)>
+            NavigationCameraMath.zoom(60.0,null))
+    }
+
     @Test fun approachingTurnBringsCameraCloser() {
         assertTrue(NavigationCameraMath.zoom(55.0,30.0) >
             NavigationCameraMath.zoom(55.0,1000.0))
