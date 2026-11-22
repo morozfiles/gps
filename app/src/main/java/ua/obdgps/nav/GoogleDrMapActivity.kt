@@ -58,6 +58,9 @@ class GoogleDrMapActivity:Activity() {
     private val session by lazy { PhoneRouteSession(applicationContext) }
     // Only a routing origin: never overrides the actual GPS or vehicle position.
     private val originPrefs by lazy {getSharedPreferences("fyt_route_origin",MODE_PRIVATE)}
+    private val buildings3dPrefs by lazy {
+        getSharedPreferences("fyt_map_3d_buildings",MODE_PRIVATE)
+    }
     private val fytCapabilities by lazy { FytHeadUnitProfile.read(this) }
     private val widescreen:Boolean get() =
         BuildConfig.FYT7870_HEAD_UNIT &&
@@ -127,8 +130,8 @@ class GoogleDrMapActivity:Activity() {
     private var voiceEnabled=false
     private lateinit var soundButton:Button
     private lateinit var buildings3dButton:Button
-    // The Google Maps buildings layer is normally enabled already.
-    // This optional inspection view changes only the camera perspective.
+    // 3D building geometry is independently switchable from the camera pitch.
+    private var buildings3dEnabled=true
     private var inspectingBuildings3d=false
     private var announcedKey=""
     private var offRouteSinceMs=0L
@@ -544,15 +547,16 @@ class GoogleDrMapActivity:Activity() {
         }
         setContentView(root)
         manualOrigin=loadManualOrigin()
+        buildings3dEnabled=buildings3dPrefs.getBoolean("enabled",true)
+        updateBuildings3dButton()
         restoreRouteSession()
         updateButtons()
 
         mapView.getMapAsync { google ->
             map=google
             google.mapType=GoogleMap.MAP_TYPE_NORMAL
-            // Explicitly enable the built-in 3D buildings layer.
-            // Google displays it where data is available (generally zoom >= 17).
-            google.isBuildingsEnabled=true
+            // This is an actual geometry layer toggle, not merely a tilt setting.
+            google.isBuildingsEnabled=buildings3dEnabled
             google.uiSettings.isTiltGesturesEnabled=true
             // Local JSON style, so dark map works without a cloud Map ID.
             val styled=runCatching {
@@ -1254,12 +1258,12 @@ class GoogleDrMapActivity:Activity() {
 
     private fun updateBuildings3dButton() {
         if(!::buildings3dButton.isInitialized)return
-        buildings3dButton.text=if(inspectingBuildings3d)"3D ✓" else "3D"
+        buildings3dButton.text=if(buildings3dEnabled)"3D ✓" else "3D ✕"
         buildings3dButton.background=rounded(
-            if(inspectingBuildings3d)blue else glassButton,22)
+            if(buildings3dEnabled)blue else glassButton,22)
         buildings3dButton.contentDescription=
-            if(inspectingBuildings3d)"Закрыть 3D-обзор зданий"
-            else "Включить 3D-обзор зданий"
+            if(buildings3dEnabled)"3D-здания включены. Нажми для отключения."
+            else "3D-здания выключены. Нажми для включения."
     }
 
     private fun navigationTilt(speedKmh:Double?):Float =
@@ -1267,39 +1271,40 @@ class GoogleDrMapActivity:Activity() {
             max(NavigationCameraMath.tilt(speedKmh),50f)
         else NavigationCameraMath.tilt(speedKmh)
 
-    /** Explicit 3D camera inspection, without paid map styles or route changes. */
+    /** Toggle actual 3D geometry, and use a tilted camera only in 3D preview. */
     private fun toggleBuildings3dPreview(){
         val google=map?:run{showError("Карта ещё загружается");return}
-        inspectingBuildings3d=!inspectingBuildings3d
+        buildings3dEnabled=!buildings3dEnabled
+        buildings3dPrefs.edit().putBoolean("enabled",buildings3dEnabled).apply()
+        // GoogleMap.isBuildingsEnabled controls the 3D buildings layer itself.
+        google.isBuildingsEnabled=buildings3dEnabled
+        inspectingBuildings3d=buildings3dEnabled
         updateBuildings3dButton()
-        if(inspectingBuildings3d){
-            google.isBuildingsEnabled=true
+        if(buildings3dEnabled){
             val current=google.cameraPosition
-            // Buildings appear in Google vector data from about zoom level 17.
-            // Preserve the current center and bearing, simply zoom and tilt.
             val camera=CameraPosition.Builder(current)
                 .zoom(max(current.zoom,17.8f))
                 .tilt(50f).build()
             google.animateCamera(CameraUpdateFactory.newCameraPosition(camera),
                 800,null)
-            Toast.makeText(this,
-                "3D-обзор: если Google имеет 3D-здания в этом районе, они будут объёмными",
-                Toast.LENGTH_LONG).show()
-        }else if(active){
-            // Resume ordinary guidance pitch, without resetting navigation.
-            followCar=true
-            val camera=CameraPosition.Builder(google.cameraPosition)
-                .tilt(navigationTilt(latestSpeedKmh)).build()
-            google.animateCamera(CameraUpdateFactory.newCameraPosition(camera),
-                700,null)
+            Toast.makeText(this,"3D-здания включены",Toast.LENGTH_SHORT).show()
         }else{
-            val route=candidates.getOrNull(chosen)
-            if(route!=null)fitRoute(route)
-            else{
+            Toast.makeText(this,"3D-здания выключены",Toast.LENGTH_SHORT).show()
+            if(active){
+                followCar=true
                 val camera=CameraPosition.Builder(google.cameraPosition)
-                    .tilt(0f).build()
+                    .tilt(navigationTilt(latestSpeedKmh)).build()
                 google.animateCamera(CameraUpdateFactory.newCameraPosition(camera),
                     700,null)
+            }else{
+                val route=candidates.getOrNull(chosen)
+                if(route!=null)fitRoute(route)
+                else{
+                    val camera=CameraPosition.Builder(google.cameraPosition)
+                        .tilt(0f).build()
+                    google.animateCamera(CameraUpdateFactory.newCameraPosition(camera),
+                        700,null)
+                }
             }
         }
     }
