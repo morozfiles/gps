@@ -1959,11 +1959,11 @@ class GoogleDrMapActivity:Activity() {
                     animateCarMarker(p,displayHeading!!.toFloat())
                 }
                 car?.title=when {
-                    visible.source=="Ручная точка старта" ->
+                    shown.source=="Ручная точка старта" ->
                         "Положение задано вручную · не GPS"
-                    visible.source.startsWith("Примерно") ->
+                    shown.source.startsWith("Примерно") ->
                         "Положение приблизительное (±"+
-                            formatDistance(visible.accuracy.toDouble())+")"
+                            formatDistance(shown.accuracy.toDouble())+")"
                     estimated->"Расчётная позиция · GPS ненадёжен"
                     else->"Автомобиль · GPS/сеть"
                 }
