@@ -122,11 +122,11 @@ class GoogleDrMapActivity:Activity() {
     private var car:Marker?=null
     // Animates only the displayed Google Maps marker, never the sensor/DR pose.
     private var carAnimator:ValueAnimator?=null
+    private var remainingRoute:RoutingEngine.Route?=null
+    private var remainingAlongMeters=0.0
     private var accuracyCircle:Circle?=null
     private var initialPositionCentered=false
     private var initialPositionAccuracy=Float.POSITIVE_INFINITY
-    private var drivenLine:Polyline?=null
-    private var drivenIndex=-1
     private var cameraHeading:Double?=null
     private var cameraZoom:Float?=null
     private var speech:TextToSpeech?=null
@@ -1182,26 +1182,44 @@ class GoogleDrMapActivity:Activity() {
     private fun clearRoutes(){
         polylines.forEach{it.remove()}
         polylines.clear()
+        remainingRoute=null
+        remainingAlongMeters=0.0
         routesRow.visibility=View.GONE
         routeOptions.removeAllViews()
     }
     private fun drawRoutes(){
-        drivenLine?.remove()
-        drivenLine=null
-        drivenIndex=-1
         polylines.forEach{it.remove()}
         polylines.clear()
+        remainingRoute=null
+        remainingAlongMeters=0.0
         val google=map?:return
-        for((idx,r) in candidates.withIndex()){
-            val primary=idx==chosen
-            val line=google.addPolyline(PolylineOptions()
+        // Preview all alternatives, but only the chosen road during guidance.
+        val shown=if(active)listOfNotNull(candidates.getOrNull(chosen)) else candidates
+        for((idx,r) in shown.withIndex()){
+            val primary=active || idx==chosen
+            polylines.add(google.addPolyline(PolylineOptions()
                 .addAll(r.points.map{LatLng(it.lat,it.lon)})
                 .color(if(primary)blue else Color.rgb(151,157,164))
                 .width(if(primary)dp(8).toFloat() else dp(5).toFloat())
                 .zIndex(if(primary)2f else 1f)
-                .clickable(true))
-            polylines.add(line)
+                .clickable(!active)))
         }
+    }
+    /** Remove driven blue geometry; do not draw a grey trail. */
+    private fun updateRemainingRoute(route:RoutingEngine.Route,fix:State.NavFix){
+        if(!active || polylines.isEmpty())return
+        if(remainingRoute!==route){
+            remainingRoute=route
+            remainingAlongMeters=0.0
+        }
+        val projection=RouteDisplayGeometry.project(
+            route.points,RoutingEngine.Point(fix.lat,fix.lon))?:return
+        if(projection.lateralMeters>60.0)return
+        val along=max(remainingAlongMeters,projection.alongMeters)
+        if(along-remainingAlongMeters<1.5)return
+        remainingAlongMeters=along
+        val forward=RouteDisplayGeometry.remaining(route.points,along)
+        polylines[0].points=forward.map{LatLng(it.lat,it.lon)}
     }
     private fun showRouteOptions(){
         routeOptions.removeAllViews()
@@ -1441,6 +1459,7 @@ class GoogleDrMapActivity:Activity() {
         val route=candidates.getOrNull(chosen)?:run{showError("Сначала выбери маршрут");return}
         active=true
         ++routePreviewRequest
+        drawRoutes() // Drop alternative lines when guidance begins.
         // Manual routing should not initialize OBD progress from a spoofed fix.
         tracker.bind(route,if(manualOrigin!=null)null else State.navFix)
         updateOriginMarker()
@@ -1485,9 +1504,6 @@ class GoogleDrMapActivity:Activity() {
         offRouteSinceMs=0L
         reroutePending=false
         ++routePreviewRequest
-        drivenLine?.remove()
-        drivenLine=null
-        drivenIndex=-1
         invalidateRoutes() // Removes ALL alternatives and the saved route session.
         destination=null
         goal?.remove()
@@ -1534,7 +1550,7 @@ class GoogleDrMapActivity:Activity() {
         }
         if(distance<0.08 && abs(delta)<0.7f)return
         val animator=ValueAnimator.ofFloat(0f,1f).apply{
-            duration=1050L
+            duration=490L
             interpolator=LinearInterpolator()
             addUpdateListener { frame ->
                 if(car!==marker)return@addUpdateListener
@@ -1549,22 +1565,26 @@ class GoogleDrMapActivity:Activity() {
         animator.start()
     }
 
-    /** Just a translucent direction arrow: no circular badge or halo. */
+    /** Large white location disk with a blue rim and heading pointer. */
     private fun arrowIcon():com.google.android.gms.maps.model.BitmapDescriptor {
-        val size=dp(48)
+        val size=dp(80)
         val bitmap=Bitmap.createBitmap(size,size,Bitmap.Config.ARGB_8888)
         val canvas=Canvas(bitmap)
-        val paint=Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color=Color.argb(205,97,183,251)
-            style=Paint.Style.FILL
-        }
+        val paint=Paint(Paint.ANTI_ALIAS_FLAG)
         val cx=size/2f
         val cy=size/2f
+        paint.color=Color.argb(65,0,0,0)
+        canvas.drawCircle(cx,cy+dp(3),dp(33).toFloat(),paint)
+        paint.color=Color.rgb(29,119,242)
+        canvas.drawCircle(cx,cy,dp(32).toFloat(),paint)
+        paint.color=Color.WHITE
+        canvas.drawCircle(cx,cy,dp(26).toFloat(),paint)
+        paint.color=Color.rgb(16,102,221)
         val arrow=Path().apply {
-            moveTo(cx,cy-dp(19))
-            lineTo(cx+dp(14),cy+dp(17))
+            moveTo(cx,cy-dp(21))
+            lineTo(cx+dp(15),cy+dp(16))
             lineTo(cx,cy+dp(9))
-            lineTo(cx-dp(14),cy+dp(17))
+            lineTo(cx-dp(15),cy+dp(16))
             close()
         }
         canvas.drawPath(arrow,paint)
@@ -1640,18 +1660,6 @@ class GoogleDrMapActivity:Activity() {
         }
     }
 
-    private fun drawCompletedRoute(route:RoutingEngine.Route,
-            index:Int,fix:State.NavFix) {
-        val idx=index.coerceIn(0,route.points.lastIndex)
-        if(idx==drivenIndex)return
-        drivenIndex=idx
-        drivenLine?.remove()
-        if(idx<1)return
-        val trail=route.points.take(idx+1).map{LatLng(it.lat,it.lon)}
-        drivenLine=map?.addPolyline(PolylineOptions().addAll(trail)
-            .color(Color.rgb(177,181,188)).width(dp(7).toFloat()).zIndex(3f))
-    }
-
     private fun moveGuidanceCamera(fix:State.NavFix,route:RoutingEngine.Route,
                     progress:RoutingEngine.Progress,speedKmh:Double?) {
         val m=map?:return
@@ -1673,7 +1681,7 @@ class GoogleDrMapActivity:Activity() {
         val camera=CameraPosition.Builder().target(LatLng(center.lat,center.lon))
             .bearing(cameraHeading!!.toFloat()).zoom(cameraZoom!!)
             .tilt(navigationTilt(speedKmh)).build()
-        m.animateCamera(CameraUpdateFactory.newCameraPosition(camera),850,null)
+        m.animateCamera(CameraUpdateFactory.newCameraPosition(camera),520,null)
     }
 
     /** No rerouting from spoofed, network-only or DR-estimated positions. */
@@ -1782,6 +1790,28 @@ class GoogleDrMapActivity:Activity() {
         }
     }
 
+    /**
+     * Short, bounded display-only extrapolation for an accepted GPS sample.
+     * No predicted coordinates are ever written back into the navigation state.
+     */
+    private fun responsiveMarkerFix(fix:State.NavFix,route:RoutingEngine.Route,
+                                    now:Long,gpsTrusted:Boolean):State.NavFix {
+        if(!gpsTrusted || fix.source!="GPS" || fix.accuracy>35f)return fix
+        val speed=latestSpeedKmh?.takeIf{it.isFinite() && it in 5.0..135.0}
+            ?:return fix
+        val age=now-fix.elapsedMs
+        if(age !in 0L..1800L)return fix
+        val advance=(speed/3.6*(age/1000.0).coerceAtMost(0.7))
+            .coerceIn(0.0,13.0)
+        if(advance<0.7)return fix
+        val projection=RouteDisplayGeometry.project(
+            route.points,RoutingEngine.Point(fix.lat,fix.lon))?:return fix
+        if(projection.lateralMeters>35.0)return fix
+        val forecast=RouteDisplayGeometry.atDistance(
+            route.points,projection.alongMeters+advance)
+        return fix.copy(lat=forecast.lat,lon=forecast.lon)
+    }
+
     private fun freshTrustedGps():Boolean{
         val f=State.navFix?:return false
         return f.source=="GPS" && f.accuracy in 0f..30f &&
@@ -1854,6 +1884,7 @@ class GoogleDrMapActivity:Activity() {
             // position before guidance, regardless of stale GPS/network fixes.
             // On guidance start, the route odometer provides the position.
             var visible=if(active)raw else manualPreviewFix(now)?:raw?:approximate
+            var markerVisible:State.NavFix?=visible
             var estimated=visible?.source?.startsWith("Примерно")==true
             if(active && route!=null){
                 refreshRestoredTurns(raw,now)
@@ -1874,10 +1905,13 @@ class GoogleDrMapActivity:Activity() {
                 visible=if(gnssTrusted && raw!=null)
                     snapAcceptedGps(raw,route) else projected?:raw
                 estimated=!gnssTrusted
+                markerVisible=visible?.let{
+                    responsiveMarkerFix(it,route,now,gnssTrusted)
+                }
                 if(visible!=null){
                     val progress=route.progress(RoutingEngine.Point(visible.lat,visible.lon))
                     showTurnAndTrip(route,progress,latestSpeedKmh,gnssTrusted,now)
-                    drawCompletedRoute(route,progress.nearestShapeIndex,visible)
+                    markerVisible?.let{updateRemainingRoute(route,it)}
                     if(followCar)moveGuidanceCamera(visible,route,progress,latestSpeedKmh)
                 }else{
                     status.text="Положение неизвестно: GPS и OBD недоступны"
@@ -1903,11 +1937,12 @@ class GoogleDrMapActivity:Activity() {
                 }
                 maybeCenterStartupPosition(visible)
             }
-            if(visible!=null){
-                val p=LatLng(visible.lat,visible.lon)
-                val heading=visible.bearing?.takeIf{it.isFinite()}
+            if(markerVisible!=null){
+                val shown=markerVisible
+                val p=LatLng(shown.lat,shown.lon)
+                val heading=shown.bearing?.takeIf{it.isFinite()}
                     ?:route?.points?.takeIf{it.size>1}?.let{
-                        val idx=route.progress(RoutingEngine.Point(visible.lat,visible.lon))
+                        val idx=route.progress(RoutingEngine.Point(shown.lat,shown.lon))
                             .nearestShapeIndex.coerceIn(0,it.size-2)
                         routeBearing(it[idx],it[idx+1])
                     }
@@ -1917,7 +1952,7 @@ class GoogleDrMapActivity:Activity() {
                 if(car==null){
                     car=map?.addMarker(MarkerOptions().position(p)
                         .icon(arrowIcon()).anchor(0.5f,0.5f).flat(true)
-                        .alpha(0.88f)
+                        .alpha(1f)
                         .rotation(displayHeading!!.toFloat()).zIndex(12f)
                         .title("Автомобиль"))
                 }else{
@@ -1934,7 +1969,7 @@ class GoogleDrMapActivity:Activity() {
                 }
             }
             updateFytNotices()
-            handler.postDelayed(this,1000L)
+            handler.postDelayed(this,600L)
         }
     }
     override fun onResume(){
