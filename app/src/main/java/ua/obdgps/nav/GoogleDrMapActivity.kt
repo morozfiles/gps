@@ -1937,8 +1937,8 @@ class GoogleDrMapActivity:Activity() {
                 }
                 maybeCenterStartupPosition(visible)
             }
-            if(markerVisible!=null){
-                val shown=markerVisible
+            val shown=markerVisible
+            if(shown!=null){
                 val p=LatLng(shown.lat,shown.lon)
                 val heading=shown.bearing?.takeIf{it.isFinite()}
                     ?:route?.points?.takeIf{it.size>1}?.let{
