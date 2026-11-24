@@ -16,6 +16,20 @@ class NavigatorPrefs(context: Context) {
         get()=store.getString("adapterName",null)
         set(value){store.edit().putString("adapterName",value).apply()}
 
+    /** Last OBD protocol that returned real speed for this particular adapter. */
+    var lastWorkingProtocolCode:String?
+        get()=store.getString("lastWorkingProtocolCode",null)?.takeIf{
+            it in setOf("0","3","4","5","6","7","8","9")
+        }
+        set(value){
+            if(value==null || value in setOf("0","3","4","5","6","7","8","9"))
+                store.edit().putString("lastWorkingProtocolCode",value).apply()
+        }
+
+    var lastWorkingProtocolAdapter:String?
+        get()=store.getString("lastWorkingProtocolAdapter",null)
+        set(value){store.edit().putString("lastWorkingProtocolAdapter",value).apply()}
+
     var obdFactor: Double
         get()=store.getFloat("obdFactor",0.97f).toDouble().coerceIn(0.70,1.30)
         set(value){

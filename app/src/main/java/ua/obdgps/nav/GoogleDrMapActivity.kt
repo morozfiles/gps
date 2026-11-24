@@ -63,6 +63,9 @@ class GoogleDrMapActivity:Activity() {
     private val buildings3dPrefs by lazy {
         getSharedPreferences("fyt_map_3d_buildings",MODE_PRIVATE)
     }
+    private val motionCalibrationPrefs by lazy {
+        getSharedPreferences("motion",MODE_PRIVATE)
+    }
     private val fytCapabilities by lazy { FytHeadUnitProfile.read(this) }
     private val widescreen:Boolean get() =
         BuildConfig.FYT7870_HEAD_UNIT &&
@@ -134,6 +137,7 @@ class GoogleDrMapActivity:Activity() {
     private var voiceEnabled=false
     private lateinit var soundButton:Button
     private lateinit var buildings3dButton:Button
+    private lateinit var gyroStatusButton:Button
     // 3D building geometry is independently switchable from the camera pitch.
     private var buildings3dEnabled=true
     private var inspectingBuildings3d=false
@@ -410,6 +414,19 @@ class GoogleDrMapActivity:Activity() {
             topMargin=dp(11)
         }
         rightControls.addView(speedBadge,speedParams)
+        // Visible both before navigation and while driving on FYT.
+        gyroStatusButton=button("Гироскоп ✕",glassButton,lightText) {
+            showGyroCalibrationStatus()
+        }.apply {
+            textSize=12f
+            minHeight=0
+            setPadding(dp(7),0,dp(7),0)
+        }
+        rightControls.addView(gyroStatusButton,
+            LinearLayout.LayoutParams(dp(116),dp(38)).apply{
+                topMargin=dp(9)
+            })
+        refreshGyroStatus()
         val rightParams=FrameLayout.LayoutParams(-2,-2,Gravity.RIGHT or Gravity.TOP).apply {
             setMargins(0,dp(if(widescreen)93 else 145),dp(14),0)
         }
@@ -1565,30 +1582,107 @@ class GoogleDrMapActivity:Activity() {
         animator.start()
     }
 
-    /** Large white location disk with a blue rim and heading pointer. */
+    /** The blue outline follows the white vehicle arrow: no circular badge. */
     private fun arrowIcon():com.google.android.gms.maps.model.BitmapDescriptor {
-        val size=dp(80)
+        val size=dp(88)
         val bitmap=Bitmap.createBitmap(size,size,Bitmap.Config.ARGB_8888)
         val canvas=Canvas(bitmap)
-        val paint=Paint(Paint.ANTI_ALIAS_FLAG)
+        val paint=Paint(Paint.ANTI_ALIAS_FLAG).apply{
+            style=Paint.Style.FILL
+        }
         val cx=size/2f
-        val cy=size/2f
-        paint.color=Color.argb(65,0,0,0)
-        canvas.drawCircle(cx,cy+dp(3),dp(33).toFloat(),paint)
-        paint.color=Color.rgb(29,119,242)
-        canvas.drawCircle(cx,cy,dp(32).toFloat(),paint)
-        paint.color=Color.WHITE
-        canvas.drawCircle(cx,cy,dp(26).toFloat(),paint)
-        paint.color=Color.rgb(16,102,221)
-        val arrow=Path().apply {
-            moveTo(cx,cy-dp(21))
-            lineTo(cx+dp(15),cy+dp(16))
-            lineTo(cx,cy+dp(9))
-            lineTo(cx-dp(15),cy+dp(16))
+        val outer=Path().apply {
+            moveTo(cx,dp(7).toFloat())
+            lineTo(cx+dp(32),dp(77).toFloat())
+            lineTo(cx,dp(64).toFloat())
+            lineTo(cx-dp(32),dp(77).toFloat())
             close()
         }
-        canvas.drawPath(arrow,paint)
+        // Drop shadow follows the same pointed silhouette, not a circle.
+        canvas.save()
+        canvas.translate(0f,dp(3).toFloat())
+        paint.color=Color.argb(76,0,0,0)
+        canvas.drawPath(outer,paint)
+        canvas.restore()
+        paint.color=Color.rgb(17,113,235)
+        canvas.drawPath(outer,paint)
+        val inner=Path().apply {
+            moveTo(cx,dp(19).toFloat())
+            lineTo(cx+dp(20),dp(64).toFloat())
+            lineTo(cx,dp(55).toFloat())
+            lineTo(cx-dp(20),dp(64).toFloat())
+            close()
+        }
+        paint.color=Color.WHITE
+        canvas.drawPath(inner,paint)
         return BitmapDescriptorFactory.fromBitmap(bitmap)
+    }
+
+    private fun gyroCalibrationConfirmed():Boolean {
+        if(!fytCapabilities.gyro)return false
+        val saved=motionCalibrationPrefs.contains("yawBias") &&
+            motionCalibrationPrefs.getFloat("yawBias",0f).isFinite()
+        return saved || State.gyroCalibrated
+    }
+
+    private fun refreshGyroStatus() {
+        if(!::gyroStatusButton.isInitialized)return
+        val running=State.stationaryCalibrationRunning
+        val calibrated=gyroCalibrationConfirmed()
+        val label=when {
+            !fytCapabilities.gyro -> "Гироскоп —"
+            running -> "Гироскоп …"
+            calibrated -> "Гироскоп ✓"
+            else -> "Гироскоп ✕"
+        }
+        gyroStatusButton.text=label
+        gyroStatusButton.contentDescription=when {
+            !fytCapabilities.gyro -> "Гироскоп не найден"
+            running -> "Калибровка гироскопа выполняется"
+            calibrated -> "Гироскоп откалиброван, настройка сохранена"
+            else -> "Гироскоп не откалиброван, нажми для калибровки"
+        }
+        val line=when {
+            !fytCapabilities.gyro -> Color.rgb(122,135,151)
+            running -> Color.rgb(245,187,78)
+            calibrated -> Color.rgb(78,206,137)
+            else -> Color.rgb(239,125,126)
+        }
+        (gyroStatusButton.background as? GradientDrawable)?.setStroke(dp(2),line)
+    }
+
+    private fun showGyroCalibrationStatus() {
+        val present=fytCapabilities.gyro
+        val calibrated=gyroCalibrationConfirmed()
+        val running=State.stationaryCalibrationRunning
+        val message=when {
+            !present -> "Android не обнаружил гироскоп на этой магнитоле."
+            running -> "Калибровка выполняется. Автомобиль должен стоять "+
+                "неподвижно 5 секунд.\n\n"+State.calibrationText
+            calibrated -> "✓ Поправка гироскопа успешно сохранена. "+
+                "Повторять калибровку необязательно.\n\n"+
+                State.calibrationText
+            else -> "✕ Успешной сохранённой калибровки нет. "+
+                "Для калибровки поставь автомобиль на стоянку и не двигай "+
+                "его 5 секунд. Нужно минимум 40 измерений гироскопа.\n\n"+
+                State.calibrationText
+        }
+        val dialog=AlertDialog.Builder(this)
+            .setTitle("Гироскоп FYT 7870")
+            .setMessage(message)
+            .setNegativeButton("Закрыть",null)
+        if(present && !running)dialog.setPositiveButton(
+            if(calibrated)"Калибровать заново" else "Калибровать 5 с") { _,_->
+            try{
+                startForegroundService(Intent(this,NavService::class.java)
+                    .setAction(NavService.CALIBRATE_FYT_GYRO))
+                Toast.makeText(this,"Не двигай автомобиль 5 секунд",
+                    Toast.LENGTH_LONG).show()
+            }catch(e:Exception){
+                showError("Калибровка: "+(e.localizedMessage?:"ошибка запуска"))
+            }
+        }
+        dialog.show()
     }
 
     private fun speak(text:String){
@@ -1852,10 +1946,12 @@ class GoogleDrMapActivity:Activity() {
             if(::hardwareStatus.isInitialized && BuildConfig.FYT7870_HEAD_UNIT) {
                 val speedFresh=State.speed!=null &&
                     now-State.speedUpdatedElapsedMs in 0L..3500L
+                refreshGyroStatus()
                 hardwareStatus.text=fytCapabilities.summary+" · OBD "+
                     (if(speedFresh)"✓" else "нет свежей скорости")+
                     (if(!fytCapabilities.gyro)
-                        " · повороты оценочно (нет гироскопа)" else "")+
+                        " · повороты оценочно (нет гироскопа)"
+                        else " · калибровка "+(if(gyroCalibrationConfirmed())"✓" else "✕"))+
                     (if(BuildConfig.FYT_GOOGLE_KEY_FALLBACK)
                         " · Google API: проверь доступ FYT" else "")
             }

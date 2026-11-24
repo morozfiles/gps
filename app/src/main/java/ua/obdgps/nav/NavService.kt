@@ -98,6 +98,12 @@ class NavService: Service(), LocationListener {
     private var reverse = false
     private var autoEnabled = true
     private var connected = false
+    // Persisted device choice is automatically retried without competing
+    // concurrent RFCOMM/GATT connections on FYT resume.
+    private var obdConnecting=false
+    private var obdConnectStartedMs=0L
+    private var nextObdReconnectMs=0L
+    private var obdRetryCount=0
     private val responseBuffer = StringBuilder()
     private val commands = listOf("ATZ", "ATE0", "ATL0", "ATS0", "ATH0", "ATAT1", "ATST96")
     // Experimental Mitsubishi MUT-II K-line startup. Requires ELM firmware
@@ -142,6 +148,13 @@ class NavService: Service(), LocationListener {
     private val loop = object: Runnable {
         override fun run() {
             val now = SystemClock.elapsedRealtime()
+            if(obdConnecting && now-obdConnectStartedMs>18000L){
+                disconnectTransport()
+                scheduleObdReconnect(now)
+                State.message="OBD: превышено время соединения, повторяю"
+            }
+            if(!connected && !obdConnecting && now>=nextObdReconnectMs)
+                reconnectSavedObd(now)
             if (connected && uartReady && (tx != null || sppOutput != null)) {
                 // Never send another ELM command until the preceding prompt (>) arrives.
                 // Initializing ISO9141 / KWP can take several seconds.
@@ -336,13 +349,8 @@ class NavService: Service(), LocationListener {
                 State.message=motion.resetVehicleAlignment()
             }
             MONITOR -> {
-                val key=settings.adapterKey
-                if(key!=null && !connected &&
-                    checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT)==PackageManager.PERMISSION_GRANTED &&
-                    bt?.isEnabled==true) {
-                    State.message="Подключение к сохранённому ELM327..."
-                    connectChoice(key,save=false)
-                } else if(!connected) State.message="Мониторинг датчиков запущен"
+                if(!connected && !obdConnecting)
+                    reconnectSavedObd(SystemClock.elapsedRealtime())
             }
             EXIT -> { stopSelf(); return START_NOT_STICKY }
         }
@@ -355,7 +363,13 @@ class NavService: Service(), LocationListener {
         mutMode=mode=="MUT"
         State.mutMode=mutMode
         State.modeLabel=protocolLabel(mode)
-        protocols=candidates(mode)
+        val possible=candidates(mode)
+        val preferred=settings.lastWorkingProtocolCode?.takeIf { code ->
+            mode!="MUT" && settings.lastWorkingProtocolAdapter==settings.adapterKey &&
+                possible.any{it.first==code}
+        }
+        protocols=if(preferred==null)possible
+            else possible.filter{it.first==preferred}+possible.filter{it.first!=preferred}
         setupIndex=0
         mutSetupIndex=0
         mutFailures=0
@@ -436,16 +450,48 @@ class NavService: Service(), LocationListener {
         State.speed=null
         State.speedUpdatedElapsedMs=0L
     }
+    private fun scheduleObdReconnect(now:Long=SystemClock.elapsedRealtime()){
+        obdConnecting=false
+        obdConnectStartedMs=0L
+        val shift=obdRetryCount.coerceIn(0,4)
+        nextObdReconnectMs=now+(2000L shl shift).coerceAtMost(30000L)
+        obdRetryCount=(obdRetryCount+1).coerceAtMost(5)
+    }
+    private fun obdTransportReady(){
+        obdConnecting=false
+        obdConnectStartedMs=0L
+        obdRetryCount=0
+        nextObdReconnectMs=0L
+    }
+    private fun reconnectSavedObd(now:Long){
+        if(connected || obdConnecting || now<nextObdReconnectMs)return
+        val saved=settings.adapterKey ?: return
+        if(bt?.isEnabled!=true || checkSelfPermission(
+                Manifest.permission.BLUETOOTH_CONNECT)!=PackageManager.PERMISSION_GRANTED)return
+        State.message="OBD: подключаю сохранённый "+(settings.adapterName?:saved)
+        connectChoice(saved,save=false)
+    }
     private fun connectChoice(choice:String, save:Boolean=true) {
         val selectedName=State.devices[choice] ?: settings.adapterName ?: choice
         if(save) {
             settings.adapterKey=choice
             settings.adapterName=selectedName
+            obdRetryCount=0
+            nextObdReconnectMs=0L
         }
         State.deviceName=selectedName
+        // A new MONITOR call must not interrupt an in-progress handshake.
+        obdConnecting=true
+        obdConnectStartedMs=SystemClock.elapsedRealtime()
         val protocol=choice.substringBefore("|")
         val address=choice.substringAfter("|",choice)
-        if(protocol=="SPP") connectClassic(address) else connect(address)
+        try {
+            if(protocol=="SPP")connectClassic(address) else connect(address)
+        }catch(e:Exception){
+            disconnectTransport()
+            scheduleObdReconnect()
+            State.message="OBD: ошибка подключения: "+(e.localizedMessage?:"неизвестная")
+        }
     }
     private fun connectClassic(address:String) {
         stopScan()
@@ -471,6 +517,7 @@ class NavService: Service(), LocationListener {
                         sppOutput=output
                         connected=true
                         uartReady=true
+                        obdTransportReady()
                         State.message="Bluetooth Classic подключён: ELM327"
                     }
                 }
@@ -492,7 +539,8 @@ class NavService: Service(), LocationListener {
                     if(sppSocket===socket) {
                         connected=false;uartReady=false;sppOutput=null
                         State.speed=null
-        State.speedUpdatedElapsedMs=0L
+                        State.speedUpdatedElapsedMs=0L
+                        scheduleObdReconnect()
                         try { socket.close() } catch(_:Exception){}
                     }
                 }
@@ -520,9 +568,8 @@ class NavService: Service(), LocationListener {
                             g.discoverServices()
                         } else {
                             State.message="BLE отключён: $status"
-                            connected=false; uartReady=false; pendingCommand=null
-                            State.speed=null
-        State.speedUpdatedElapsedMs=0L
+                            disconnectTransport()
+                            scheduleObdReconnect()
                         }
                     }
                 }
@@ -530,7 +577,10 @@ class NavService: Service(), LocationListener {
                     handler.post {
                         if (gatt !== g) return@post
                         if(status!=BluetoothGatt.GATT_SUCCESS) {
-                            State.message="Ошибка GATT $status";return@post
+                            State.message="Ошибка GATT $status"
+                            disconnectTransport()
+                            scheduleObdReconnect()
+                            return@post
                         }
                         val entries=g.services.flatMap { srv->srv.characteristics.map { srv to it } }
                         fun canWrite(c:BluetoothGattCharacteristic)=
@@ -551,12 +601,20 @@ class NavService: Service(), LocationListener {
                             }?.let { write to it.second }
                         }
                         val pair=known ?: fallback
-                        if(pair==null) {State.message="BLE UART не найден (нет write+notify)";return@post}
+                        if(pair==null) {
+                            State.message="BLE UART не найден (нет write+notify)"
+                            disconnectTransport()
+                            scheduleObdReconnect()
+                            return@post
+                        }
                         tx=pair.first
                         val notify=pair.second
                         State.message=if(known!=null) "Vgate BLE UART 18F0 найден" else "BLE UART найден, пробую K-Line"
                         if(!g.setCharacteristicNotification(notify,true)) {
-                            State.message="Не удалось подписаться на BLE уведомления";return@post
+                            State.message="Не удалось подписаться на BLE уведомления"
+                            disconnectTransport()
+                            scheduleObdReconnect()
+                            return@post
                         }
                         val desc=notify.getDescriptor(UUID.fromString("00002902-0000-1000-8000-00805f9b34fb"))
                         if(desc!=null) {
@@ -566,9 +624,12 @@ class NavService: Service(), LocationListener {
                             val result=g.writeDescriptor(desc,bytes)
                             if(result!=BluetoothStatusCodes.SUCCESS) {
                                 State.message="Ошибка подписки BLE: $result"
+                                disconnectTransport()
+                                scheduleObdReconnect()
                             }
                         } else {
                             uartReady=true
+                            obdTransportReady()
                             State.message="ELM327: инициализация K-Line"
                         }
                     }
@@ -578,8 +639,13 @@ class NavService: Service(), LocationListener {
                         if (gatt !== g) return@post
                         if(status==BluetoothGatt.GATT_SUCCESS) {
                             uartReady=true
+                            obdTransportReady()
                             State.message="ELM327: инициализация K-Line"
-                        } else State.message="BLE notifications: ошибка $status"
+                        } else {
+                            State.message="BLE notifications: ошибка $status"
+                            disconnectTransport()
+                            scheduleObdReconnect()
+                        }
                     }
                 }
                 override fun onCharacteristicChanged(g:BluetoothGatt,c:BluetoothGattCharacteristic,value:ByteArray) {
@@ -587,7 +653,11 @@ class NavService: Service(), LocationListener {
                 }
             }, BluetoothDevice.TRANSPORT_LE)
             State.message="Подключение к $address"
-        } catch(e:Exception) { State.message="Connection error: ${e.message}" }
+        } catch(e:Exception) {
+            State.message="Connection error: ${e.message}"
+            disconnectTransport()
+            scheduleObdReconnect()
+        }
     }
     private fun write(command:String) {
         try {
@@ -682,6 +752,14 @@ class NavService: Service(), LocationListener {
                 speedTime=SystemClock.elapsedRealtime()
                 State.speedUpdatedElapsedMs=speedTime
                 failedSpeedRequests=0
+                // Record only a protocol that truly returned speed, not an
+                // unsuccessful ATSP selection or speculative scan guess.
+                val working=protocols[protocolIndex].first
+                if(settings.lastWorkingProtocolCode!=working ||
+                   settings.lastWorkingProtocolAdapter!=settings.adapterKey) {
+                    settings.lastWorkingProtocolCode=working
+                    settings.lastWorkingProtocolAdapter=settings.adapterKey
+                }
                 State.message="${protocols[protocolIndex].second}: $kmh км/ч (PID 010D)"
             } else {
                 failedSpeedRequests++
