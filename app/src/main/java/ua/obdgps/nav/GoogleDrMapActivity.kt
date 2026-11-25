@@ -1614,7 +1614,8 @@ class GoogleDrMapActivity:Activity() {
         val freshGps=nav!=null && nav.source=="GPS" &&
             now-nav.elapsedMs in 0L..1700L &&
             nav.accuracy in 0f..45f && !State.dr &&
-            !AirAlerts.autoNavigationAlertActive()
+            (BuildConfig.FYT7870_HEAD_UNIT ||
+                !AirAlerts.autoNavigationAlertActive())
         val freshObd=State.speedUpdatedElapsedMs>0L &&
             now-State.speedUpdatedElapsedMs in 0L..3000L
         motionForecastAllowed=motionSpeedKmh>2.0 &&
@@ -2074,7 +2075,8 @@ class GoogleDrMapActivity:Activity() {
         if(!active || selected.maneuvers.isNotEmpty() || savedRouteRefreshAttempted ||
             fix==null || now-fix.elapsedMs !in 0L..10000L ||
             fix.source!="GPS" || fix.accuracy>50f || State.dr ||
-            AirAlerts.autoNavigationAlertActive())return
+            (!BuildConfig.FYT7870_HEAD_UNIT &&
+                AirAlerts.autoNavigationAlertActive()))return
         val dest=destination?:return
         savedRouteRefreshAttempted=true
         client.requestAlternatives(RoutingEngine.Point(fix.lat,fix.lon),dest){result->
@@ -2124,7 +2126,8 @@ class GoogleDrMapActivity:Activity() {
         return f.source=="GPS" && f.accuracy in 0f..30f &&
             SystemClock.elapsedRealtime()-f.elapsedMs in 0L..5000L &&
             (State.gpsSpeedKmh?:0.0)<=180.0 &&
-            !AirAlerts.autoNavigationAlertActive()
+            (BuildConfig.FYT7870_HEAD_UNIT ||
+                !AirAlerts.autoNavigationAlertActive())
     }
     private fun centerOnCar(){
         followCar=true
@@ -2174,7 +2177,9 @@ class GoogleDrMapActivity:Activity() {
                 it.isFinite() && it in 0.0..180.0
             }
             val gpsTrustedForSpeed=raw!=null && raw.source=="GPS" &&
-                !State.dr && !AirAlerts.autoNavigationAlertActive() &&
+                !State.dr &&
+                (BuildConfig.FYT7870_HEAD_UNIT ||
+                    !AirAlerts.autoNavigationAlertActive()) &&
                 raw.accuracy in 0f..30f &&
                 now-raw.elapsedMs in 0L..5000L && gpsSpeed!=null
             val selectedSpeed=NavigationSpeedSelector.choose(
@@ -2200,7 +2205,9 @@ class GoogleDrMapActivity:Activity() {
                 val projected=tracker.update(now,obd,raw,State.networkFix,
                     State.yawDegPerSec)
                 val gnssTrusted=raw!=null && raw.source=="GPS" &&
-                    !State.dr && !AirAlerts.autoNavigationAlertActive() &&
+                    !State.dr &&
+                    (BuildConfig.FYT7870_HEAD_UNIT ||
+                        !AirAlerts.autoNavigationAlertActive()) &&
                     raw.accuracy in 0f..50f &&
                     now-raw.elapsedMs in 0L..3000L &&
                     (gpsSpeed?:0.0)<=180.0 &&
