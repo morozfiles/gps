@@ -33,6 +33,23 @@ class RouteTurnMatcherTest {
         assertNull(RouteTurnMatcher.choose(listOf(bend),
             bend.meters-65.0,-22.0,bend.vertex))
     }
+    @Test fun nearerPastTurnWinsOverFartherFutureTurn() {
+        val bends=listOf(
+            RouteTurnMatcher.Bend(11,410.0,-85.0),
+            RouteTurnMatcher.Bend(22,565.0,-88.0))
+        // Reported OBD progress 475m: past bend at 410m (65m behind)
+        // is closer than upcoming 565m (90m ahead).
+        assertEquals(bends[0],RouteTurnMatcher.choose(bends,475.0,-70.0))
+        // Reported progress 520m: upcoming bend 45m away is closer.
+        assertEquals(bends[1],RouteTurnMatcher.choose(bends,520.0,-70.0))
+        // Works even if the real turn happened 110m behind the odometer.
+        assertEquals(bends[0],RouteTurnMatcher.choose(bends,520.0,-70.0,
+            bends[1].vertex))
+    }
+    @Test fun pastTurnBeyondSafetyWindowIsNotMatched() {
+        val bend=RouteTurnMatcher.Bend(12,240.0,80.0)
+        assertNull(RouteTurnMatcher.choose(listOf(bend),400.0,70.0))
+    }
     @Test fun gradualSnapNeverTeleports() {
         val x=RouteTurnMatcher.correctionStep(80.0,0.35)
         val y=RouteTurnMatcher.correctionStep(-70.0,0.35)

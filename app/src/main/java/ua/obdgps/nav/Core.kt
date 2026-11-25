@@ -249,8 +249,8 @@ object State {
     var reverseSelected = false
     var directionConfirmed = false
     var directionText = "Направление: определяется"
-    var obdFactor = 0.97
-    fun obdSpeedKmh(): Double? = speed?.times(obdFactor)
+    var obdFactor = ObdSpeedCalibration.DEFAULT_FACTOR
+    fun obdSpeedKmh(): Double? = ObdSpeedCalibration.correctedKmh(speed,obdFactor)
     // Learning compares trusted GNSS only in the two-track test.
     // Corrections are opt-in; the default is never to alter inertial data.
     @Volatile var learnedDrEnabled=false

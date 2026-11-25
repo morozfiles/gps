@@ -1248,8 +1248,15 @@ class GoogleDrMapActivity:Activity() {
         val projection=RouteDisplayGeometry.project(
             route.points,RoutingEngine.Point(fix.lat,fix.lon))?:return
         if(projection.lateralMeters>60.0)return
-        val along=max(remainingAlongMeters,projection.alongMeters)
-        if(along-remainingAlongMeters<1.5)return
+        // A confirmed gyro turn can legitimately correct the OBD odometer
+        // BACKWARD to a previously passed bend. Restore that piece of the
+        // remaining blue route; never rewind from a noisy accepted GPS fix.
+        val correctingBackward=fix.source.startsWith("OBD") &&
+            projection.alongMeters<remainingAlongMeters &&
+            remainingAlongMeters-projection.alongMeters<=125.0
+        val along=if(correctingBackward)projection.alongMeters
+            else max(remainingAlongMeters,projection.alongMeters)
+        if(abs(along-remainingAlongMeters)<1.5)return
         remainingAlongMeters=along
         val forward=RouteDisplayGeometry.remaining(route.points,along)
         polylines[0].points=forward.map{LatLng(it.lat,it.lon)}
@@ -1718,19 +1725,39 @@ class GoogleDrMapActivity:Activity() {
             val wanted=cameraDesired
             if(google!=null && wanted!=null){
                 val currentCamera=google.cameraPosition
-                val center=if(route!=null && predictedAlong!=null)
+                val camAlpha=0.45
+                val center=if(BuildConfig.FYT7870_HEAD_UNIT &&
+                    widescreen && mapView.height>0 &&
+                    fytNoticeBanner?.visibility==View.VISIBLE) {
+                    // Screen-space pinning rather than a fixed meter offset:
+                    // different zoom/tilt/screens should still place the car
+                    // BELOW map center but ABOVE the notification banner.
+                    val noticeTop=(fytNoticeBanner?.top ?: mapView.height)-
+                        mapView.top
+                    val y=GuidanceCameraAnchor.markerY(mapView.height,
+                        noticeTop,dp(66))
+                    val screenAt=google.projection.fromScreenLocation(
+                        android.graphics.Point(mapView.width/2,y))
+                    GuidanceCameraAnchor.shiftedTarget(
+                        RoutingEngine.Point(currentCamera.target.latitude,
+                            currentCamera.target.longitude),
+                        blended,RoutingEngine.Point(
+                            screenAt.latitude,screenAt.longitude))
+                }else if(route!=null && predictedAlong!=null)
                     RouteTurnMatcher.positionAt(route.points,motionRouteLengths,
                         predictedAlong+NavigationCameraMath.lookAheadMeters(
                             latestSpeedKmh))
                 else RoutingEngine.Point(wanted.target.latitude,
                     wanted.target.longitude)
-                val camAlpha=0.45
-                val camera=CameraPosition.Builder()
-                    .target(LatLng(
+                val adjustedCenter=if(BuildConfig.FYT7870_HEAD_UNIT &&
+                    widescreen && fytNoticeBanner?.visibility==View.VISIBLE)
+                    center else RoutingEngine.Point(
                         currentCamera.target.latitude+
                             (center.lat-currentCamera.target.latitude)*camAlpha,
                         currentCamera.target.longitude+
-                            (center.lon-currentCamera.target.longitude)*camAlpha))
+                            (center.lon-currentCamera.target.longitude)*camAlpha)
+                val camera=CameraPosition.Builder()
+                    .target(LatLng(adjustedCenter.lat,adjustedCenter.lon))
                     .bearing(ContinuousMarkerMath.smoothAngle(
                         currentCamera.bearing.toDouble(),wanted.bearing.toDouble(),
                         camAlpha).toFloat())
@@ -2436,12 +2463,16 @@ internal class RouteOdometer {
             obd!=null && obd>4.0 && now-lastTurnMatchMs>=2500L) {
             val match=RouteTurnMatcher.choose(bends,distance,yaw,lastTurnMatched)
             if(match!=null){
+                // Choose the closest matching bend on EITHER side of the
+                // OBD estimate. Keep correction signed: negative means the
+                // physically detected bend was BEHIND the estimated marker.
                 correctionRemainingMeters=(match.meters-distance)
-                    .coerceIn(-55.0,100.0)
+                    .coerceIn(-125.0,125.0)
                 lastTurnMatched=match.vertex
                 lastTurnMatchMs=now
-                turnStatus="↪ поворот найден · коррекция "+
-                    String.format(java.util.Locale.US,"%+.0f м",
+                turnStatus=(if(match.signedAngleDeg>0)"↪" else "↩")+
+                    " поворот "+(if(correctionRemainingMeters<0)"позади" else "впереди")+
+                    " · "+String.format(java.util.Locale.US,"%+.0f м",
                         correctionRemainingMeters)
                 yaw=0.0
             }
@@ -2455,8 +2486,9 @@ internal class RouteOdometer {
             distance=(distance+step).coerceIn(0.0,lengths.last())
             correctionRemainingMeters-=step
             if(abs(correctionRemainingMeters)<0.3)correctionRemainingMeters=0.0
-            turnStatus="Притяжение к повороту · осталось "+
-                String.format(java.util.Locale.US,"%.0f м",
+            turnStatus="Притяжение к повороту "+
+                (if(correctionRemainingMeters<0)"назад" else "вперёд")+
+                " · осталось "+String.format(java.util.Locale.US,"%.0f м",
                     abs(correctionRemainingMeters))
         }
         // Use the most recent *independently validated* GPS samples,

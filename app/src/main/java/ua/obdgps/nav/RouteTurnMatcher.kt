@@ -67,13 +67,18 @@ internal object RouteTurnMatcher {
         return result
     }
 
+    /** Nearest confirmed turn may be BEHIND or AHEAD of an OBD odometer.
+     * A symmetrical window corrects both early and late counted turns.
+     * Reusing the same vertex is forbidden to avoid oscillation.
+     */
     fun choose(bends:List<Bend>,positionMeters:Double,
                turnedDegrees:Double,excludedVertex:Int=-1):Bend? {
         if(!turnedDegrees.isFinite() || abs(turnedDegrees)<12.0)return null
+        val window=125.0
         return bends.asSequence().filter {
             it.vertex!=excludedVertex &&
                 sign(it.signedAngleDeg)==sign(turnedDegrees) &&
-                it.meters in (positionMeters-70.0)..(positionMeters+120.0)
+                abs(it.meters-positionMeters)<=window
         }.minByOrNull { abs(it.meters-positionMeters) }
     }
 

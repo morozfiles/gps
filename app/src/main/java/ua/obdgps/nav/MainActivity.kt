@@ -601,9 +601,24 @@ class MainActivity : Activity() {
             orientation=LinearLayout.VERTICAL
             setPadding(dip(22),0,dip(22),0)
         }
+        val liveRaw=State.speed?.takeIf {
+            State.speedUpdatedElapsedMs>0L &&
+                android.os.SystemClock.elapsedRealtime()-
+                    State.speedUpdatedElapsedMs in 0L..3500L
+        }
+        val liveResult=liveRaw?.let {
+            ObdSpeedCalibration.correctedKmh(it,State.obdFactor)
+        }
         content.addView(TextView(this).apply {
-            text="Коэффициент в процентах от OBD.\n95%: 100 км/ч OBD → 95 км/ч для навигации.\n" +
-                "Спидометр может завышать скорость относительно OBD!"
+            val applied=if(liveRaw!=null && liveResult!=null)
+                "Сейчас: ELM "+liveRaw+" км/ч → навигация "+
+                    String.format(Locale.getDefault(),"%.1f",liveResult)+" км/ч"
+            else "Нет свежей скорости ELM — проверка появится при подключении."
+            text="Коэффициент применяется к скорости OBD при расчёте "+
+                "пути и положения по датчикам.\n"+
+                "98%: 100 км/ч ELM → 98 км/ч в навигации.\n"+
+                applied+"\n"+
+                "Сохранённое значение сохраняется при обновлении приложения."
             textSize=14f
             setTextColor(secondaryText)
         })

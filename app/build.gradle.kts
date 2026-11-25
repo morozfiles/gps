@@ -47,8 +47,8 @@ android {
             "FYT 7870 Google Nav 2" else "FYT 7870 Google Nav"
         minSdk = 31
         targetSdk = 35
-        versionCode = 73
-        versionName = "0.13.21-fyt-continuous-gps-recovery"
+        versionCode = 74
+        versionName = "0.13.22-fyt-low-marker-nearest-gyro-turn-obd98"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         // Dedicated FYT keys take precedence. Phone keys serve only as a build
         // fallback and MUST be separately allowlisted for this package/signature.
