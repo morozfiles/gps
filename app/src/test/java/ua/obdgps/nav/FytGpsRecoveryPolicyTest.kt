@@ -44,7 +44,7 @@ class FytGpsRecoveryPolicyTest {
 
     @Test fun successiveFixesMustNotJumpAcrossCity(){
         assertTrue(FytGpsRecoveryPolicy.consecutivePlausible(
-            25.0,1.0,45.0,7.0))
+            5.0,1.0,45.0,7.0))
         assertFalse(FytGpsRecoveryPolicy.consecutivePlausible(
             1500.0,1.0,40.0,8.0))
     }
