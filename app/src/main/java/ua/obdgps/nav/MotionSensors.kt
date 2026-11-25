@@ -466,23 +466,34 @@ class MotionSensors(
             }
             Sensor.TYPE_GYROSCOPE,Sensor.TYPE_GYROSCOPE_UNCALIBRATED -> {
                 val norm=sqrt(gravity.sumOf{it.toDouble()*it})
-                val raw=if(gravityReady && norm>=7.0) {
-                    // Android gravity/accelerometer gives physical yaw axis.
-                    (0..2).sumOf{i->event.values[i].toDouble()*gravity[i]}/norm
-                }else if(BuildConfig.FYT7870_HEAD_UNIT) {
-                    // Mounted FYT hardware may expose only a gyroscope.
-                    // In that case use a user-selectable yaw axis; Y+ is
-                    // the default for an upright landscape display.
-                    FytGyroAxis.project(event.values,
-                        prefs.getString("fytGyroAxis","Y+")?:"Y+")
-                }else return
+                val selectedAxis=if(BuildConfig.FYT7870_HEAD_UNIT)
+                    prefs.getString("fytGyroAxis",null) else null
+                val raw=when {
+                    // An explicitly selected FYT axis MUST override gravity;
+                    // formerly the picker did nothing when gravity was present.
+                    BuildConfig.FYT7870_HEAD_UNIT &&
+                        selectedAxis in FytGyroAxis.choices ->
+                        FytGyroAxis.project(event.values,selectedAxis?:"Y+")
+                    gravityReady && norm>=7.0 ->
+                        (0..2).sumOf{i->event.values[i].toDouble()*gravity[i]}/norm
+                    BuildConfig.FYT7870_HEAD_UNIT ->
+                        FytGyroAxis.project(event.values,"Y+")
+                    else ->return
+                }
+                // Axis changes invalidate the bias saved for the previous axis.
+                if(!prefs.contains("yawBias") && State.gyroCalibrated){
+                    yawBias=0.0
+                    State.gyroCalibrated=false
+                }
                 if(calibrationStart!=0L) {gyroSum+=raw;gyroSamples++}
                 val dt=if(lastGyroNs>0L)(event.timestamp-lastGyroNs)*1e-9 else 0.0
                 lastGyroNs=event.timestamp
-                yawSmoothed=.82*yawSmoothed+.18*(raw-yawBias)
+                yawSmoothed=.72*yawSmoothed+.28*(raw-yawBias)
                 val rightRate=-Math.toDegrees(yawSmoothed)
                 State.yawDegPerSec=rightRate
                 State.gyroSampleMs=SystemClock.elapsedRealtime()
+                if(dt in 0.001..0.15 && rightRate.isFinite())
+                    State.gyroCumulativeYawDeg+=rightRate*dt
                 State.motionText=when {
                     State.speed == null || SystemClock.elapsedRealtime()-
                         State.speedUpdatedElapsedMs>3500L -> "Нет свежей скорости OBD"

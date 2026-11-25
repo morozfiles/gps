@@ -125,6 +125,22 @@ class GoogleDrMapActivity:Activity() {
     private var car:Marker?=null
     // Animates only the displayed Google Maps marker, never the sensor/DR pose.
     private var carAnimator:ValueAnimator?=null
+    // Independent animation clock: GPS produces ~1 Hz samples, but marker
+    // and camera must continue moving between them at display frame rate.
+    private var motionTarget:LatLng?=null
+    private var motionTargetBearing=0f
+    private var motionTargetMs=0L
+    private var motionTargetGyroYaw=0.0
+    private var motionSpeedKmh=0.0
+    private var motionForecastAllowed=false
+    private var motionFrameMs=0L
+    private var motionCameraMs=0L
+    private var motionRoute:RoutingEngine.Route?=null
+    private var motionRouteLengths=DoubleArray(0)
+    private var motionRouteBends=emptyList<RouteTurnMatcher.Bend>()
+    private var motionTargetAlong:Double?=null
+    private var motionVisualAlong:Double?=null
+    private var cameraDesired:CameraPosition?=null
     private var remainingRoute:RoutingEngine.Route?=null
     private var remainingAlongMeters=0.0
     private var accuracyCircle:Circle?=null
@@ -1539,67 +1555,192 @@ class GoogleDrMapActivity:Activity() {
         if(meters>=1000.0)String.format(Locale.getDefault(),"%.1f км",meters/1000.0)
         else meters.roundToInt().coerceAtLeast(0).toString()+" м"
 
-    /** Stop any pending drawing frames before removing or repositioning the marker. */
+    /** Stop the animation clock when leaving navigation or backgrounding. */
     private fun cancelCarAnimation(){
         carAnimator?.cancel()
         carAnimator=null
+        motionTarget=null
+        motionVisualAlong=null
+        motionRoute=null
+        motionRouteLengths=DoubleArray(0)
+        motionRouteBends=emptyList()
+        cameraDesired=null
+        motionFrameMs=0L
+        motionCameraMs=0L
     }
 
     /**
-     * Show the latest safe display pose between frequent OBD/GNSS refreshes.
-     * Frame interpolation follows the actual route around corners rather
-     * than cutting diagonally through buildings. Navigation data is untouched.
+     * Update a future display target; do NOT restart the animation clock.
+     * Restarting a 200-ms animator at each 350-ms poll caused stop-go GPS.
      */
     private fun animateCarMarker(to:LatLng,heading:Float){
         val marker=car?:return
-        val from=marker.position
-        val distance=RoutingEngine.meters(
-            RoutingEngine.Point(from.latitude,from.longitude),
-            RoutingEngine.Point(to.latitude,to.longitude))
-        val oldHeading=marker.rotation
-        val delta=((heading-oldHeading+540f)%360f)-180f
-        val r=if(active)candidates.getOrNull(chosen)else null
-        val along=if(r!=null && distance<=35.0) {
-            val fromProjection=RouteDisplayGeometry.project(r.points,
-                RoutingEngine.Point(from.latitude,from.longitude))
-            val toProjection=RouteDisplayGeometry.project(r.points,
-                RoutingEngine.Point(to.latitude,to.longitude))
-            if(fromProjection!=null && toProjection!=null &&
-                fromProjection.lateralMeters<12.0 &&
-                toProjection.lateralMeters<12.0 &&
-                toProjection.alongMeters in fromProjection.alongMeters..
-                    (fromProjection.alongMeters+40.0))
-                fromProjection.alongMeters to toProjection.alongMeters
-            else null
-        }else null
-        cancelCarAnimation()
-        if(!distance.isFinite() || distance>250.0){
-            // No fake motion through the city on GPS reacquisition/spoof jumps.
+        val now=SystemClock.elapsedRealtime()
+        if(!active){
+            if(carAnimator!=null)cancelCarAnimation()
             marker.position=to
             marker.rotation=heading
             return
         }
-        if(distance<0.08 && abs(delta)<0.7f)return
-        val animator=ValueAnimator.ofFloat(0f,1f).apply{
-            // Complete before the next 350-ms position refresh. This avoids
-            // repeated animations continually chasing an older GPS fix.
-            duration=if(distance>15.0)200L else 265L
-            interpolator=LinearInterpolator()
-            addUpdateListener { frame ->
-                if(car!==marker)return@addUpdateListener
-                val t=frame.animatedValue as Float
-                val p=if(along!=null && r!=null)
-                    RouteDisplayGeometry.atDistance(r.points,
-                        along.first+(along.second-along.first)*t)
-                else RoutingEngine.Point(
-                    from.latitude+(to.latitude-from.latitude)*t,
-                    from.longitude+(to.longitude-from.longitude)*t)
-                marker.position=LatLng(p.lat,p.lon)
-                marker.rotation=((oldHeading+delta*t)%360f+360f)%360f
+        val r=candidates.getOrNull(chosen)
+        if(r!==motionRoute){
+            motionRoute=r
+            motionRouteLengths=if(r!=null)RouteTurnMatcher.cumulative(r.points)
+                else DoubleArray(0)
+            motionRouteBends=if(r!=null)
+                RouteTurnMatcher.findBends(r.points,motionRouteLengths)
+                else emptyList()
+            motionVisualAlong=null
+        }
+        val projection=if(r!=null)
+            RouteDisplayGeometry.project(r.points,RoutingEngine.Point(
+                to.latitude,to.longitude)) else null
+        motionTargetAlong=projection?.takeIf{it.lateralMeters<=13.0}
+            ?.alongMeters
+        if(motionTargetAlong==null)motionVisualAlong=null
+        if(motionVisualAlong==null && motionTargetAlong!=null && r!=null){
+            val current=RouteDisplayGeometry.project(r.points,RoutingEngine.Point(
+                marker.position.latitude,marker.position.longitude))
+            motionVisualAlong=current?.takeIf{it.lateralMeters<=13.0}
+                ?.alongMeters
+        }
+        motionTarget=to
+        motionTargetBearing=heading
+        motionTargetMs=now
+        motionTargetGyroYaw=State.gyroCumulativeYawDeg
+        motionSpeedKmh=latestSpeedKmh?.takeIf{it.isFinite() && it in 2.0..160.0}
+            ?:0.0
+        val nav=State.navFix
+        val freshGps=nav!=null && nav.source=="GPS" &&
+            now-nav.elapsedMs in 0L..1700L &&
+            nav.accuracy in 0f..45f && !State.dr &&
+            !AirAlerts.autoNavigationAlertActive()
+        val freshObd=State.speedUpdatedElapsedMs>0L &&
+            now-State.speedUpdatedElapsedMs in 0L..3000L
+        motionForecastAllowed=motionSpeedKmh>2.0 &&
+            (freshGps || (State.dr && freshObd))
+        if(carAnimator==null){
+            motionFrameMs=now
+            motionCameraMs=0L
+            carAnimator=ValueAnimator.ofFloat(0f,1f).apply{
+                duration=1200L
+                repeatCount=ValueAnimator.INFINITE
+                interpolator=LinearInterpolator()
+                addUpdateListener { drawCarMotionFrame() }
+                start()
             }
         }
-        carAnimator=animator
-        animator.start()
+    }
+
+    /** Draw frames continuously, with 0.48-s capped OBD/GPS extrapolation. */
+    private fun drawCarMotionFrame(){
+        val marker=car?:return
+        val target=motionTarget?:return
+        val now=SystemClock.elapsedRealtime()
+        val dt=((now-motionFrameMs).coerceIn(0L,100L))/1000.0
+        if(dt<0.008)return
+        motionFrameMs=now
+        val ageSeconds=((now-motionTargetMs)/1000.0).coerceIn(0.0,0.48)
+        val extra=if(motionForecastAllowed)
+            motionSpeedKmh/3.6*ageSeconds else 0.0
+        val route=motionRoute
+        val anchorAlong=motionTargetAlong
+        var predictedAlong=if(route!=null && anchorAlong!=null)
+            (anchorAlong+extra).coerceAtMost(motionRouteLengths.lastOrNull()
+                ?:anchorAlong)
+            else null
+        if(predictedAlong!=null){
+            // Don't visually enter a bend until the car really turns.
+            val impending=motionRouteBends.firstOrNull{
+                it.meters in anchorAlong!!..(predictedAlong+1.0) &&
+                    abs(it.signedAngleDeg)>=35.0
+            }
+            if(impending!=null){
+                val gyroRate=State.yawDegPerSec.takeIf{
+                    State.gyroCalibrated &&
+                        now-State.gyroSampleMs in 0L..850L && it.isFinite()
+                }?:0.0
+                val observed=motionTargetBearing.toDouble()
+                val atVertex=impending.vertex
+                val next=route!!.points.getOrNull(atVertex+1)
+                val cur=route.points.getOrNull(atVertex)
+                val outgoing=if(cur!=null && next!=null)
+                    routeBearing(cur,next) else observed
+                val headingReady=abs(ContinuousMarkerMath.angleDelta(
+                    observed,outgoing))<=38.0
+                val gyroReady=abs(gyroRate)>11.0 &&
+                    sign(gyroRate)==sign(impending.signedAngleDeg)
+                if(!headingReady && !gyroReady)
+                    predictedAlong=min(predictedAlong,impending.meters-0.7)
+            }
+        }
+        val desired=if(predictedAlong!=null && route!=null)
+            RouteTurnMatcher.positionAt(route.points,motionRouteLengths,
+                predictedAlong)
+        else ContinuousMarkerMath.forward(
+            RoutingEngine.Point(target.latitude,target.longitude),
+            motionTargetBearing.toDouble(),motionSpeedKmh,
+            if(motionForecastAllowed)ageSeconds else 0.0)
+        val current=RoutingEngine.Point(marker.position.latitude,
+            marker.position.longitude)
+        val apart=RoutingEngine.meters(current,desired)
+        val alpha=ContinuousMarkerMath.followFactor(dt)
+        val blended=when{
+            !apart.isFinite() || apart>230.0 -> desired
+            route!=null && predictedAlong!=null && motionVisualAlong!=null &&
+                abs(predictedAlong-motionVisualAlong!!)<65.0 -> {
+                val next=motionVisualAlong!!+
+                    (predictedAlong-motionVisualAlong!!)*alpha
+                motionVisualAlong=next
+                RouteTurnMatcher.positionAt(route.points,motionRouteLengths,next)
+            }
+            else -> RoutingEngine.Point(
+                current.lat+(desired.lat-current.lat)*alpha,
+                current.lon+(desired.lon-current.lon)*alpha)
+        }
+        marker.position=LatLng(blended.lat,blended.lon)
+        if(apart>230.0)motionVisualAlong=predictedAlong
+        val deltaGyro=if(State.gyroCalibrated &&
+            now-State.gyroSampleMs in 0L..850L)
+            (State.gyroCumulativeYawDeg-motionTargetGyroYaw)
+                .coerceIn(-20.0,20.0) else 0.0
+        val heading=(motionTargetBearing.toDouble()+deltaGyro+360.0)%360.0
+        marker.rotation=ContinuousMarkerMath.smoothAngle(
+            marker.rotation.toDouble(),heading,alpha).toFloat()
+
+        // The route camera follows the SAME live marker. Update at a modest
+        // 14 Hz to avoid exhausting FYT's map renderer with tile redraws.
+        if(active && followCar && cameraDesired!=null &&
+            now-motionCameraMs>=70L){
+            motionCameraMs=now
+            val google=map
+            val wanted=cameraDesired
+            if(google!=null && wanted!=null){
+                val currentCamera=google.cameraPosition
+                val center=if(route!=null && predictedAlong!=null)
+                    RouteTurnMatcher.positionAt(route.points,motionRouteLengths,
+                        predictedAlong+NavigationCameraMath.lookAheadMeters(
+                            latestSpeedKmh))
+                else RoutingEngine.Point(wanted.target.latitude,
+                    wanted.target.longitude)
+                val camAlpha=0.45
+                val camera=CameraPosition.Builder()
+                    .target(LatLng(
+                        currentCamera.target.latitude+
+                            (center.lat-currentCamera.target.latitude)*camAlpha,
+                        currentCamera.target.longitude+
+                            (center.lon-currentCamera.target.longitude)*camAlpha))
+                    .bearing(ContinuousMarkerMath.smoothAngle(
+                        currentCamera.bearing.toDouble(),wanted.bearing.toDouble(),
+                        camAlpha).toFloat())
+                    .zoom((currentCamera.zoom+
+                        (wanted.zoom-currentCamera.zoom)*camAlpha).toFloat())
+                    .tilt((currentCamera.tilt+
+                        (wanted.tilt-currentCamera.tilt)*camAlpha).toFloat())
+                    .build()
+                google.moveCamera(CameraUpdateFactory.newCameraPosition(camera))
+            }
+        }
     }
 
     /** The blue outline follows the white vehicle arrow: no circular badge. */
@@ -1655,7 +1796,14 @@ class GoogleDrMapActivity:Activity() {
             calibrated -> "Гироскоп ✓"
             else -> "Гироскоп ✕"
         }
-        gyroStatusButton.text=label
+        val recentGyro=State.gyroSampleMs>0L &&
+            SystemClock.elapsedRealtime()-State.gyroSampleMs in 0L..1000L
+        val rate=State.yawDegPerSec
+        gyroStatusButton.text=if(calibrated && recentGyro && rate.isFinite() &&
+            abs(rate)>=5.0)
+            "Гиро ✓ "+(if(rate>0)"↪" else "↩")+" "+
+                String.format(Locale.US,"%.0f°/с",abs(rate))
+            else label
         gyroStatusButton.contentDescription=when {
             !fytCapabilities.gyro -> "Гироскоп не найден"
             running -> "Калибровка гироскопа выполняется"
@@ -1691,6 +1839,9 @@ class GoogleDrMapActivity:Activity() {
             .setTitle("Гироскоп FYT 7870")
             .setMessage(message)
             .setNegativeButton("Закрыть",null)
+        if(present)dialog.setNeutralButton("Ось / знак") { _,_->
+            showFytGyroAxisPicker()
+        }
         if(present && !running)dialog.setPositiveButton(
             if(calibrated)"Калибровать заново" else "Калибровать 5 с") { _,_->
             try{
@@ -1703,6 +1854,37 @@ class GoogleDrMapActivity:Activity() {
             }
         }
         dialog.show()
+    }
+
+    private fun showFytGyroAxisPicker(){
+        if((latestSpeedKmh?:0.0)>1.5) {
+            showError("Менять ось гироскопа можно только на стоянке")
+            return
+        }
+        val axes=FytGyroAxis.choices
+        val labels=arrayOf("Y+ · вертикальная","Y− · обратная вертикальная",
+            "X+ · горизонтальная","X− · обратная горизонтальная",
+            "Z+ · перпендикулярная","Z− · обратная перпендикулярная")
+        val current=motionCalibrationPrefs.getString("fytGyroAxis","Y+")?:"Y+"
+        AlertDialog.Builder(this)
+            .setTitle("Гироскоп · направление поворота")
+            .setMessage("На стоянке выбери ось датчика. При левом повороте "+
+                "индикатор должен показывать ↩, при правом — ↪. "+
+                "После выбора нужна повторная калибровка на стоянке.")
+            .setSingleChoiceItems(labels,axes.indexOf(current).coerceAtLeast(0)){
+                dialog,index->
+                motionCalibrationPrefs.edit()
+                    .putString("fytGyroAxis",axes[index])
+                    .remove("yawBias").apply()
+                State.gyroCalibrated=false
+                State.calibrationText="После смены оси требуется калибровка"
+                refreshGyroStatus()
+                dialog.dismiss()
+                Toast.makeText(this,"Ось "+axes[index]+
+                    " сохранена. Откалибруй гироскоп 5 секунд.",
+                    Toast.LENGTH_LONG).show()
+            }
+            .setNegativeButton("Отмена",null).show()
     }
 
     private fun speak(text:String){
@@ -1795,7 +1977,11 @@ class GoogleDrMapActivity:Activity() {
         val camera=CameraPosition.Builder().target(LatLng(center.lat,center.lon))
             .bearing(cameraHeading!!.toFloat()).zoom(cameraZoom!!)
             .tilt(navigationTilt(speedKmh)).build()
-        m.animateCamera(CameraUpdateFactory.newCameraPosition(camera),285,null)
+        // Let the continuous animation clock follow this camera goal.
+        // Restarting animateCamera every poll caused a stop-go map motion.
+        cameraDesired=camera
+        if(carAnimator==null)
+            m.animateCamera(CameraUpdateFactory.newCameraPosition(camera),350,null)
     }
 
     /** No rerouting from spoofed, network-only or DR-estimated positions. */
@@ -2036,6 +2222,9 @@ class GoogleDrMapActivity:Activity() {
                 if(visible!=null){
                     val progress=route.progress(RoutingEngine.Point(visible.lat,visible.lon))
                     showTurnAndTrip(route,progress,latestSpeedKmh,gnssTrusted,now)
+                    if(!gnssTrusted && BuildConfig.FYT7870_HEAD_UNIT)
+                        hardwareStatus.text=hardwareStatus.text.toString()+
+                            " · "+tracker.turnStatus
                     markerVisible?.let { shown ->
                         updateRemainingRoute(route,shown)
                         // Camera must follow the very same display pose as
@@ -2156,13 +2345,23 @@ internal class RouteOdometer {
     private var lastTime=0L
     private var lastFixTime=0L
     private var yaw=0.0
+    private var gyroYawTotalLast=Double.NaN
+    private var yawLastActiveMs=0L
+    private var bends=emptyList<RouteTurnMatcher.Bend>()
+    private var correctionRemainingMeters=0.0
     private var lastTurnMatched=-1
     private var lastTurnMatchMs=0L
+    var turnStatus="Гироскоп: ожидание"
+        private set
     val progressMeters:Double get()=distance
     fun reset(){
         route=null;lengths=DoubleArray(0);distance=0.0
         lastTime=0L;lastFixTime=0L;yaw=0.0
+        gyroYawTotalLast=Double.NaN
+        yawLastActiveMs=0L;bends=emptyList()
+        correctionRemainingMeters=0.0
         lastTurnMatched=-1;lastTurnMatchMs=0L
+        turnStatus="Гироскоп: ожидание"
     }
     fun bind(r:RoutingEngine.Route,initial:State.NavFix?,
              restoredProgressMeters:Double?=null){
@@ -2170,6 +2369,8 @@ internal class RouteOdometer {
         lengths=DoubleArray(r.points.size)
         for(i in 1 until r.points.size)lengths[i]=lengths[i-1]+
             RoutingEngine.meters(r.points[i-1],r.points[i])
+        bends=RouteTurnMatcher.findBends(r.points,lengths)
+        gyroYawTotalLast=State.gyroCumulativeYawDeg
         distance=(restoredProgressMeters?.takeIf{it.isFinite()}
             ?:initial?.let{project(it.lat,it.lon,true)?.first}
             ?:0.0).coerceIn(0.0,lengths.last())
@@ -2184,6 +2385,9 @@ internal class RouteOdometer {
         val match=project(fix.lat,fix.lon,true)?:return
         if(match.second>max(40.0,fix.accuracy*1.6))return
         distance=match.first.coerceIn(0.0,lengths.lastOrNull()?:0.0)
+        correctionRemainingMeters=0.0
+        yaw=0.0
+        gyroYawTotalLast=State.gyroCumulativeYawDeg
         lastFixTime=max(lastFixTime,fix.elapsedMs)
     }
 
@@ -2194,31 +2398,59 @@ internal class RouteOdometer {
         val dt=((now-lastTime)/1000.0).coerceIn(0.0,2.0)
         lastTime=now
         if(obd!=null)distance=(distance+obd/3.6*dt).coerceAtMost(lengths.last())
-        if(obd!=null && obd>5 && yawDegreesPerSecond.isFinite())
-            yaw=(yaw+yawDegreesPerSecond*dt).coerceIn(-140.0,140.0)
-        else yaw*=0.7
-        // Turn only to a nearby maneuver, with a strict bounded adjustment.
-        if(abs(yaw)>27 && obd!=null && obd>4.0 &&
-            now-lastTurnMatchMs>=3500L) {
-            val step=r.maneuvers.firstOrNull{
-                val idx=it.shapeIndex.coerceIn(1,r.points.lastIndex-1)
-                val before=bearing(r.points[idx-1],r.points[idx])
-                val after=bearing(r.points[idx],r.points[idx+1])
-                val delta=((after-before+540.0)%360.0)-180.0
-                abs(delta)>25 && sign(delta)==sign(yaw) &&
-                    it.shapeIndex!=lastTurnMatched &&
-                    lengths[idx] in (distance-25.0)..(distance+55.0)
-            }
-            if(step!=null){
-                val idx=step.shapeIndex.coerceIn(0,r.points.lastIndex)
-                val delta=(lengths[idx]-distance).coerceIn(-5.0,10.0)
-                // A turn is evidence, not an absolute position.
-                // Apply a bounded smooth correction; never teleport.
-                distance=(distance+delta*0.70).coerceIn(0.0,lengths.last())
-                lastTurnMatched=step.shapeIndex
+        val calibrated=State.gyroCalibrated &&
+            now-State.gyroSampleMs in 0L..850L
+        val yawTotal=State.gyroCumulativeYawDeg
+        val stepYaw=if(gyroYawTotalLast.isFinite() && yawTotal.isFinite())
+            (yawTotal-gyroYawTotalLast).coerceIn(-65.0,65.0) else 0.0
+        gyroYawTotalLast=yawTotal
+        val rate=if(calibrated && yawDegreesPerSecond.isFinite())
+            yawDegreesPerSecond else 0.0
+        if(obd!=null && obd>4.0 && calibrated && abs(rate)>=5.0) {
+            // Capture all physical gyro samples since the last UI refresh;
+            // polling only the instantaneous rate missed short turns.
+            yaw=(yaw+stepYaw).coerceIn(-160.0,160.0)
+            yawLastActiveMs=now
+        }else if(now-yawLastActiveMs>700L) {
+            yaw*=0.62
+            if(abs(yaw)<3.0)yaw=0.0
+        }
+        turnStatus=when {
+            !State.sensorGyroAvailable -> "гироскоп недоступен"
+            !State.gyroCalibrated -> "гироскоп ✕ калибровка"
+            !calibrated -> "гироскоп: нет свежих данных"
+            obd==null -> "гироскоп ✓, OBD нет скорости"
+            else -> "гироскоп "+(if(rate>5.0)"↪" else if(rate < -5.0)"↩" else "↑")+
+                " "+String.format(java.util.Locale.US,"%.0f°/с",rate)
+        }
+        // Match an ACTUAL bend in the route geometry, independent of Google
+        // maneuver indexes. The OBD odometer may be off by 50-100 meters.
+        if(abs(yaw)>=12.0 && abs(rate)>=6.0 && calibrated &&
+            obd!=null && obd>4.0 && now-lastTurnMatchMs>=2500L) {
+            val match=RouteTurnMatcher.choose(bends,distance,yaw,lastTurnMatched)
+            if(match!=null){
+                correctionRemainingMeters=(match.meters-distance)
+                    .coerceIn(-55.0,100.0)
+                lastTurnMatched=match.vertex
                 lastTurnMatchMs=now
+                turnStatus="↪ поворот найден · коррекция "+
+                    String.format(java.util.Locale.US,"%+.0f м",
+                        correctionRemainingMeters)
                 yaw=0.0
             }
+        }
+        if(abs(correctionRemainingMeters)>0.25) {
+            val correction=RouteTurnMatcher.correctionStep(
+                correctionRemainingMeters,dt)
+            // Avoid visibly driving backward when correction is negative.
+            val forward=(obd?:0.0)/3.6*dt
+            val step=max(correction,-forward-0.5)
+            distance=(distance+step).coerceIn(0.0,lengths.last())
+            correctionRemainingMeters-=step
+            if(abs(correctionRemainingMeters)<0.3)correctionRemainingMeters=0.0
+            turnStatus="Притяжение к повороту · осталось "+
+                String.format(java.util.Locale.US,"%.0f м",
+                    abs(correctionRemainingMeters))
         }
         // Use the most recent *independently validated* GPS samples,
         // including during OBD dead reckoning. The DR position must NOT

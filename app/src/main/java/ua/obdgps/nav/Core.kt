@@ -224,6 +224,8 @@ object State {
     var compassAlignmentText = "Курс автомобиля: не согласован"
     var calibrationText = "Нужна калибровка"
     var yawDegPerSec = 0.0
+    /** Continuous physical yaw integration from actual gyroscope events. */
+    @Volatile var gyroCumulativeYawDeg=0.0
     // Live readings and verified calibration checkpoints published by MotionSensors.
     // They are distinct: sensor availability does NOT imply calibration success.
     var sensorGyroAvailable=false
