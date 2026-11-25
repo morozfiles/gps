@@ -53,6 +53,50 @@ internal object RouteDisplayGeometry {
         return points.last()
     }
 
+    /**
+     * Bounded visual-only prediction along an accepted route. A stale GPS fix
+     * must not visually turn the car at an intersection before its observed
+     * heading actually points into the new street.
+     */
+    fun predictAhead(points:List<RoutingEngine.Point>,
+                     position:RoutingEngine.Point,
+                     measuredHeading:Double?,
+                     meters:Double,
+                     calibratedYawDegPerSec:Double?=null):RoutingEngine.Point? {
+        if(points.size<2 || !meters.isFinite() || meters<0.0)return null
+        val projected=project(points,position)?:return null
+        if(projected.lateralMeters>35.0)return null
+        var stopAt=projected.alongMeters+meters.coerceAtMost(22.0)
+        var traveled=0.0
+        for(i in 1 until points.lastIndex) {
+            traveled+=RoutingEngine.meters(points[i-1],points[i])
+            if(traveled < projected.alongMeters-1.0 ||
+               traveled>stopAt+0.001)continue
+            val incoming=bearing(points[i-1],points[i])
+            val outgoing=bearing(points[i],points[i+1])
+            val delta=((outgoing-incoming+540.0)%360.0)-180.0
+            if(abs(delta)<35.0)continue
+            val observed=measuredHeading?.takeIf{it.isFinite()}
+            val headingToNew=observed?.let {
+                abs(((outgoing-it+540.0)%360.0)-180.0)
+            }
+            val gyroTurn=calibratedYawDegPerSec?.takeIf{it.isFinite()}?.let{
+                abs(it)>11.0 && sign(it)==sign(delta)
+            }==true
+            // A confirmed turn from real GPS course or a calibrated, fresh
+            // gyro can release the corner guard; estimated course cannot.
+            if((headingToNew==null || headingToNew>38.0) && !gyroTurn) {
+                stopAt=min(stopAt,max(projected.alongMeters,traveled-1.0))
+                break
+            }
+        }
+        return atDistance(points,stopAt)
+    }
+
+    private fun bearing(a:RoutingEngine.Point,b:RoutingEngine.Point):Double =
+        (Math.toDegrees(atan2((b.lon-a.lon)*cos(Math.toRadians(a.lat)),
+            b.lat-a.lat))+360.0)%360.0
+
     fun remaining(points:List<RoutingEngine.Point>,meters:Double):
             List<RoutingEngine.Point> {
         if(points.size<2)return points

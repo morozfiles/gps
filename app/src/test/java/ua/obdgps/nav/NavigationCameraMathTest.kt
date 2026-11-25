@@ -13,7 +13,9 @@ class NavigationCameraMathTest {
 
     @Test fun fyT60KmhKeepsStreetsCloseAndMoreTilted() {
         assertEquals(17.4f,NavigationCameraMath.zoom(60.0,null),0.02f)
-        assertEquals(60.0f,NavigationCameraMath.tilt(60.0),0.1f)
+        assertEquals(66.0f,NavigationCameraMath.tilt(60.0),0.1f)
+        assertTrue(NavigationCameraMath.lookAheadMeters(60.0)>85.0)
+        assertTrue(NavigationCameraMath.tilt(180.0)<=67.0f)
         assertTrue(NavigationCameraMath.zoom(100.0,null)>=16.85f)
         assertTrue(NavigationCameraMath.zoom(180.0,null)>=16.5f)
         assertTrue(NavigationCameraMath.tilt(100.0)>=60.0f)

@@ -1546,9 +1546,9 @@ class GoogleDrMapActivity:Activity() {
     }
 
     /**
-     * Interpolate the map marker continuously between 1-second GPS/OBD
-     * updates. Route progress, sensor readings and the trusted fix remain
-     * unchanged. Large discontinuities are snapped, not animated as driving.
+     * Show the latest safe display pose between frequent OBD/GNSS refreshes.
+     * Frame interpolation follows the actual route around corners rather
+     * than cutting diagonally through buildings. Navigation data is untouched.
      */
     private fun animateCarMarker(to:LatLng,heading:Float){
         val marker=car?:return
@@ -1558,6 +1558,20 @@ class GoogleDrMapActivity:Activity() {
             RoutingEngine.Point(to.latitude,to.longitude))
         val oldHeading=marker.rotation
         val delta=((heading-oldHeading+540f)%360f)-180f
+        val r=if(active)candidates.getOrNull(chosen)else null
+        val along=if(r!=null && distance<=35.0) {
+            val fromProjection=RouteDisplayGeometry.project(r.points,
+                RoutingEngine.Point(from.latitude,from.longitude))
+            val toProjection=RouteDisplayGeometry.project(r.points,
+                RoutingEngine.Point(to.latitude,to.longitude))
+            if(fromProjection!=null && toProjection!=null &&
+                fromProjection.lateralMeters<12.0 &&
+                toProjection.lateralMeters<12.0 &&
+                toProjection.alongMeters in fromProjection.alongMeters..
+                    (fromProjection.alongMeters+40.0))
+                fromProjection.alongMeters to toProjection.alongMeters
+            else null
+        }else null
         cancelCarAnimation()
         if(!distance.isFinite() || distance>250.0){
             // No fake motion through the city on GPS reacquisition/spoof jumps.
@@ -1567,14 +1581,20 @@ class GoogleDrMapActivity:Activity() {
         }
         if(distance<0.08 && abs(delta)<0.7f)return
         val animator=ValueAnimator.ofFloat(0f,1f).apply{
-            duration=490L
+            // Complete before the next 350-ms position refresh. This avoids
+            // repeated animations continually chasing an older GPS fix.
+            duration=if(distance>15.0)200L else 265L
             interpolator=LinearInterpolator()
             addUpdateListener { frame ->
                 if(car!==marker)return@addUpdateListener
                 val t=frame.animatedValue as Float
-                marker.position=LatLng(
+                val p=if(along!=null && r!=null)
+                    RouteDisplayGeometry.atDistance(r.points,
+                        along.first+(along.second-along.first)*t)
+                else RoutingEngine.Point(
                     from.latitude+(to.latitude-from.latitude)*t,
                     from.longitude+(to.longitude-from.longitude)*t)
+                marker.position=LatLng(p.lat,p.lon)
                 marker.rotation=((oldHeading+delta*t)%360f+360f)%360f
             }
         }
@@ -1764,7 +1784,7 @@ class GoogleDrMapActivity:Activity() {
         // Camera bearing is smoothed through 0/360 degrees. Keep the last
         // heading at a standstill to avoid compass jitter rotating the map.
         cameraHeading=NavigationCameraMath.smoothBearing(cameraHeading,
-            if((speedKmh?:0.0)>=3.0)course else null,27.0)
+            if((speedKmh?:0.0)>=3.0)course else null,43.0)
             ?:NavigationCameraMath.normalizeBearing(course?:0.0)
         val targetZoom=NavigationCameraMath.zoom(speedKmh,progress.nextTurnMeters)
         cameraZoom=if(cameraZoom==null)targetZoom else
@@ -1775,7 +1795,7 @@ class GoogleDrMapActivity:Activity() {
         val camera=CameraPosition.Builder().target(LatLng(center.lat,center.lon))
             .bearing(cameraHeading!!.toFloat()).zoom(cameraZoom!!)
             .tilt(navigationTilt(speedKmh)).build()
-        m.animateCamera(CameraUpdateFactory.newCameraPosition(camera),520,null)
+        m.animateCamera(CameraUpdateFactory.newCameraPosition(camera),285,null)
     }
 
     /** No rerouting from spoofed, network-only or DR-estimated positions. */
@@ -1853,7 +1873,9 @@ class GoogleDrMapActivity:Activity() {
         return fix.copy(
             lat=fix.lat+(nearestLat-fix.lat)*strength,
             lon=fix.lon+(nearestLon-fix.lon)*strength,
-            bearing=if((latestSpeedKmh?:0.0)>6.0)routeBearing(a,b) else fix.bearing
+            // Prefer observed GPS course over the route tangent. Otherwise
+            // the car arrow could rotate before the real intersection.
+            bearing=fix.bearing?.takeIf{it.isFinite()} ?: routeBearing(a,b)
         )
     }
 
@@ -1889,20 +1911,25 @@ class GoogleDrMapActivity:Activity() {
      * No predicted coordinates are ever written back into the navigation state.
      */
     private fun responsiveMarkerFix(fix:State.NavFix,route:RoutingEngine.Route,
-                                    now:Long,gpsTrusted:Boolean):State.NavFix {
+                                    now:Long,gpsTrusted:Boolean,
+                                    observedHeading:Double?):State.NavFix {
         if(!gpsTrusted || fix.source!="GPS" || fix.accuracy>35f)return fix
         val speed=latestSpeedKmh?.takeIf{it.isFinite() && it in 5.0..135.0}
             ?:return fix
         val age=now-fix.elapsedMs
-        if(age !in 0L..1800L)return fix
-        val advance=(speed/3.6*(age/1000.0).coerceAtMost(0.7))
-            .coerceIn(0.0,13.0)
+        if(age !in 0L..2500L)return fix
+        // Time-based compensation, not a permanent 10m offset. 0.18 sec
+        // covers display latency; do not project more than 1.15 sec/20m.
+        val horizon=(age/1000.0+0.18).coerceAtMost(1.15)
+        val advance=(speed/3.6*horizon).coerceIn(0.0,20.0)
         if(advance<0.7)return fix
-        val projection=RouteDisplayGeometry.project(
-            route.points,RoutingEngine.Point(fix.lat,fix.lon))?:return fix
-        if(projection.lateralMeters>35.0)return fix
-        val forecast=RouteDisplayGeometry.atDistance(
-            route.points,projection.alongMeters+advance)
+        val yaw=State.yawDegPerSec.takeIf{
+            State.gyroCalibrated &&
+                now-State.gyroSampleMs in 0L..900L && it.isFinite()
+        }
+        val forecast=RouteDisplayGeometry.predictAhead(
+            route.points,RoutingEngine.Point(fix.lat,fix.lon),
+            observedHeading,advance,yaw)?:return fix
         return fix.copy(lat=forecast.lat,lon=forecast.lon)
     }
 
@@ -1989,6 +2016,7 @@ class GoogleDrMapActivity:Activity() {
                 val gnssTrusted=raw!=null && raw.source=="GPS" &&
                     !State.dr && !AirAlerts.autoNavigationAlertActive() &&
                     raw.accuracy in 0f..50f &&
+                    now-raw.elapsedMs in 0L..3000L &&
                     (gpsSpeed?:0.0)<=180.0 &&
                     // A manual route must not snap to a confident-looking
                     // spoofed fix far away from the selected road geometry.
@@ -2002,13 +2030,20 @@ class GoogleDrMapActivity:Activity() {
                     snapAcceptedGps(raw,route) else projected?:raw
                 estimated=!gnssTrusted
                 markerVisible=visible?.let{
-                    responsiveMarkerFix(it,route,now,gnssTrusted)
+                    responsiveMarkerFix(it,route,now,gnssTrusted,
+                        if(gnssTrusted)raw?.bearing else null)
                 }
                 if(visible!=null){
                     val progress=route.progress(RoutingEngine.Point(visible.lat,visible.lon))
                     showTurnAndTrip(route,progress,latestSpeedKmh,gnssTrusted,now)
-                    markerVisible?.let{updateRemainingRoute(route,it)}
-                    if(followCar)moveGuidanceCamera(visible,route,progress,latestSpeedKmh)
+                    markerVisible?.let { shown ->
+                        updateRemainingRoute(route,shown)
+                        // Camera must follow the very same display pose as
+                        // the car icon, not an older unsmoothed GPS sample.
+                        if(followCar)moveGuidanceCamera(shown,route,
+                            route.progress(RoutingEngine.Point(shown.lat,shown.lon)),
+                            latestSpeedKmh)
+                    }
                 }else{
                     status.text="Положение неизвестно: GPS и OBD недоступны"
                     direction.text="Проверь GPS, сеть и Bluetooth-адаптер"
@@ -2043,7 +2078,7 @@ class GoogleDrMapActivity:Activity() {
                         routeBearing(it[idx],it[idx+1])
                     }
                 displayHeading=NavigationCameraMath.smoothBearing(displayHeading,
-                    if((latestSpeedKmh?:0.0)>=2.0)heading else null,40.0)
+                    if((latestSpeedKmh?:0.0)>=2.0)heading else null,65.0)
                     ?:NavigationCameraMath.normalizeBearing(heading?:0.0)
                 if(car==null){
                     car=map?.addMarker(MarkerOptions().position(p)
@@ -2065,7 +2100,7 @@ class GoogleDrMapActivity:Activity() {
                 }
             }
             updateFytNotices()
-            handler.postDelayed(this,600L)
+            handler.postDelayed(this,350L)
         }
     }
     override fun onResume(){

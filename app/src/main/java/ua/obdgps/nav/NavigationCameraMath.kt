@@ -37,19 +37,20 @@ internal object NavigationCameraMath {
 
     fun tilt(speedKmh:Double?):Float {
         val speed=(speedKmh?:0.0).takeIf{it.isFinite()}?.coerceIn(0.0,180.0)?:0.0
-        // More road perspective, reaching 60 degrees at 60 km/h.
-        // Google Maps may limit the actual angle for a given zoom level.
+        // FYT windshield-like view: much stronger perspective while driving.
+        // Maps SDK caps the effective tilt according to zoom and renderer.
         val angle=when {
-            speed<8.0 -> 35.0+speed/8.0*10.0
-            speed<60.0 -> 45.0+(speed-8.0)/52.0*15.0
-            else -> 60.0+(speed-60.0)/120.0*5.0
+            speed<8.0 -> 42.0+speed/8.0*9.0
+            speed<60.0 -> 51.0+(speed-8.0)/52.0*15.0
+            else -> 66.0+(speed-60.0)/120.0*1.0
         }
-        return angle.coerceIn(35.0,65.0).toFloat()
+        return angle.coerceIn(42.0,67.0).toFloat()
     }
 
     fun lookAheadMeters(speedKmh:Double?):Double {
         val speed=(speedKmh?:0.0).takeIf{it.isFinite()}?.coerceIn(0.0,180.0)?:0.0
-        return (28.0+speed/3.6*2.6).coerceIn(28.0,158.0)
+        // With the steeper camera angle, bias the view farther down the road.
+        return (28.0+speed/3.6*3.65).coerceIn(28.0,196.0)
     }
 
     /** Find a point forward on the *selected* route, never on arbitrary roads. */

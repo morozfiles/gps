@@ -47,8 +47,8 @@ android {
             "FYT 7870 Google Nav 2" else "FYT 7870 Google Nav"
         minSdk = 31
         targetSdk = 35
-        versionCode = 70
-        versionName = "0.13.18-fyt-gyro-obd-reconnect-arrow"
+        versionCode = 71
+        versionName = "0.13.19-fyt-responsive-turns-steeper-camera"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         // Dedicated FYT keys take precedence. Phone keys serve only as a build
         // fallback and MUST be separately allowlisted for this package/signature.
