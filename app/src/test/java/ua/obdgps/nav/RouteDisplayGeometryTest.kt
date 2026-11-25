@@ -41,10 +41,10 @@ class RouteDisplayGeometryTest {
             route,beforeTurn,0.0,19.0)!!
         assertTrue(gpsTurn.lat>corner.lat)
         val gyroTurn=RouteDisplayGeometry.predictAhead(
-            route,beforeTurn,90.0,19.0,25.0)!!
+            route,beforeTurn,90.0,19.0,-25.0)!!
         assertTrue(gyroTurn.lat>corner.lat)
         val wrongYaw=RouteDisplayGeometry.predictAhead(
-            route,beforeTurn,90.0,19.0,-25.0)!!
+            route,beforeTurn,90.0,19.0,25.0)!!
         assertEquals(corner.lat,wrongYaw.lat,0.0000001)
     }
 
