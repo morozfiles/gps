@@ -1590,7 +1590,8 @@ class GoogleDrMapActivity:Activity() {
             return
         }
         val r=candidates.getOrNull(chosen)
-        if(r!==motionRoute){
+        val routeChanged=r!==motionRoute
+        if(routeChanged){
             motionRoute=r
             motionRouteLengths=if(r!=null)RouteTurnMatcher.cumulative(r.points)
                 else DoubleArray(0)
@@ -1611,10 +1612,22 @@ class GoogleDrMapActivity:Activity() {
             motionVisualAlong=current?.takeIf{it.lateralMeters<=13.0}
                 ?.alongMeters
         }
+        // The UI polls ~350 ms while GNSS may publish ~1 Hz. The same fix
+        // must not restart dead-reckoned visual motion every poll: that
+        // used to make the icon creep forward, then jump backward.
+        val previousTarget=motionTarget
+        val actualNewFix=routeChanged || previousTarget==null ||
+            RoutingEngine.meters(
+                RoutingEngine.Point(previousTarget.latitude,
+                    previousTarget.longitude),
+                RoutingEngine.Point(to.latitude,to.longitude))>0.75
+        val headingChanged=abs(ContinuousMarkerMath.angleDelta(
+            motionTargetBearing.toDouble(),heading.toDouble()))>3.0
         motionTarget=to
         motionTargetBearing=heading
-        motionTargetMs=now
-        motionTargetGyroYaw=State.gyroCumulativeYawDeg
+        if(actualNewFix)motionTargetMs=now
+        if(actualNewFix || headingChanged)
+            motionTargetGyroYaw=State.gyroCumulativeYawDeg
         motionSpeedKmh=latestSpeedKmh?.takeIf{it.isFinite() && it in 2.0..160.0}
             ?:0.0
         val nav=State.navFix
@@ -1629,7 +1642,7 @@ class GoogleDrMapActivity:Activity() {
             (freshGps || (State.dr && freshObd))
         if(carAnimator==null){
             motionFrameMs=now
-            motionCameraMs=0L
+            motionCameraMs=now-SmoothCameraMath.FRAME_INTERVAL_MS
             carAnimator=ValueAnimator.ofFloat(0f,1f).apply{
                 duration=1200L
                 repeatCount=ValueAnimator.INFINITE
@@ -1706,67 +1719,100 @@ class GoogleDrMapActivity:Activity() {
                 current.lat+(desired.lat-current.lat)*alpha,
                 current.lon+(desired.lon-current.lon)*alpha)
         }
-        marker.position=LatLng(blended.lat,blended.lon)
+        // Avoid 60 redundant marker transactions per second at rest.
+        if(RoutingEngine.meters(current,blended)>0.035)
+            marker.position=LatLng(blended.lat,blended.lon)
         if(apart>230.0)motionVisualAlong=predictedAlong
         val deltaGyro=if(State.gyroCalibrated &&
             now-State.gyroSampleMs in 0L..850L)
             (State.gyroCumulativeYawDeg-motionTargetGyroYaw)
                 .coerceIn(-20.0,20.0) else 0.0
         val heading=(motionTargetBearing.toDouble()+deltaGyro+360.0)%360.0
-        marker.rotation=ContinuousMarkerMath.smoothAngle(
-            marker.rotation.toDouble(),heading,alpha).toFloat()
+        // Smooth angular velocity per rendered frame, not one coarse
+        // heading jump per location packet. Prevent compass zigzags.
+        val newArrowAngle=SmoothCameraMath.bearing(
+            marker.rotation.toDouble(),heading,dt,0.14,240.0)
+        if(abs(ContinuousMarkerMath.angleDelta(
+                marker.rotation.toDouble(),newArrowAngle))>0.04)
+            marker.rotation=newArrowAngle.toFloat()
 
-        // The route camera follows the SAME live marker. Update at a modest
-        // 14 Hz to avoid exhausting FYT's map renderer with tile redraws.
+        // Keep the map on the frame clock as well. The former 70 ms
+        // cadence (~14 FPS) made 3D map rotation visibly step on FYT.
         if(active && followCar && cameraDesired!=null &&
-            now-motionCameraMs>=70L){
+            now-motionCameraMs>=SmoothCameraMath.FRAME_INTERVAL_MS){
+            val cameraDt=((now-motionCameraMs).coerceIn(1L,100L))/1000.0
             motionCameraMs=now
             val google=map
             val wanted=cameraDesired
             if(google!=null && wanted!=null){
                 val currentCamera=google.cameraPosition
-                val camAlpha=0.45
-                val center=if(BuildConfig.FYT7870_HEAD_UNIT &&
+                val camAlpha=SmoothCameraMath.alpha(cameraDt,0.17)
+                val pinned=BuildConfig.FYT7870_HEAD_UNIT &&
                     widescreen && mapView.height>0 &&
-                    fytNoticeBanner?.visibility==View.VISIBLE) {
-                    // Screen-space pinning rather than a fixed meter offset:
-                    // different zoom/tilt/screens should still place the car
-                    // BELOW map center but ABOVE the notification banner.
+                    fytNoticeBanner?.visibility==View.VISIBLE
+                val center=if(pinned) {
+                    // Keep the vehicle near the lower third of the map, clear
+                    // of FYT notifications. A small pixel deadband prevents
+                    // tiny projection/tilt round-off from shaking the map.
                     val noticeTop=(fytNoticeBanner?.top ?: mapView.height)-
                         mapView.top
                     val y=GuidanceCameraAnchor.markerY(mapView.height,
                         noticeTop,dp(66))
-                    val screenAt=google.projection.fromScreenLocation(
-                        android.graphics.Point(mapView.width/2,y))
-                    GuidanceCameraAnchor.shiftedTarget(
+                    val projection=google.projection
+                    val actualPixel=projection.toScreenLocation(marker.position)
+                    if(abs(actualPixel.x-mapView.width/2)<=2 &&
+                        abs(actualPixel.y-y)<=2)
                         RoutingEngine.Point(currentCamera.target.latitude,
-                            currentCamera.target.longitude),
-                        blended,RoutingEngine.Point(
-                            screenAt.latitude,screenAt.longitude))
+                            currentCamera.target.longitude)
+                    else {
+                        val screenAt=projection.fromScreenLocation(
+                            android.graphics.Point(mapView.width/2,y))
+                        GuidanceCameraAnchor.shiftedTarget(
+                            RoutingEngine.Point(currentCamera.target.latitude,
+                                currentCamera.target.longitude),
+                            blended,RoutingEngine.Point(
+                                screenAt.latitude,screenAt.longitude),camAlpha)
+                    }
                 }else if(route!=null && predictedAlong!=null)
                     RouteTurnMatcher.positionAt(route.points,motionRouteLengths,
                         predictedAlong+NavigationCameraMath.lookAheadMeters(
                             latestSpeedKmh))
                 else RoutingEngine.Point(wanted.target.latitude,
                     wanted.target.longitude)
-                val adjustedCenter=if(BuildConfig.FYT7870_HEAD_UNIT &&
-                    widescreen && fytNoticeBanner?.visibility==View.VISIBLE)
-                    center else RoutingEngine.Point(
-                        currentCamera.target.latitude+
-                            (center.lat-currentCamera.target.latitude)*camAlpha,
-                        currentCamera.target.longitude+
-                            (center.lon-currentCamera.target.longitude)*camAlpha)
+                val adjustedCenter=if(pinned)center else RoutingEngine.Point(
+                    SmoothCameraMath.value(currentCamera.target.latitude,
+                        center.lat,cameraDt,0.18),
+                    SmoothCameraMath.value(currentCamera.target.longitude,
+                        center.lon,cameraDt,0.18))
+                // The car arrow integrates the latest gyro/GPS turn every
+                // animation frame; rotating toward that angle eliminates
+                // the second, coarse 350-ms heading stream.
+                val cameraBearing=if((latestSpeedKmh?:0.0)>=2.5)
+                    marker.rotation.toDouble()
+                    else currentCamera.bearing.toDouble()
+                val newBearing=SmoothCameraMath.bearing(
+                    currentCamera.bearing.toDouble(),cameraBearing,
+                    cameraDt,0.18,205.0)
+                val newZoom=SmoothCameraMath.value(
+                    currentCamera.zoom.toDouble(),wanted.zoom.toDouble(),
+                    cameraDt,0.36).toFloat()
+                val newTilt=SmoothCameraMath.value(
+                    currentCamera.tilt.toDouble(),wanted.tilt.toDouble(),
+                    cameraDt,0.44).toFloat()
                 val camera=CameraPosition.Builder()
                     .target(LatLng(adjustedCenter.lat,adjustedCenter.lon))
-                    .bearing(ContinuousMarkerMath.smoothAngle(
-                        currentCamera.bearing.toDouble(),wanted.bearing.toDouble(),
-                        camAlpha).toFloat())
-                    .zoom((currentCamera.zoom+
-                        (wanted.zoom-currentCamera.zoom)*camAlpha).toFloat())
-                    .tilt((currentCamera.tilt+
-                        (wanted.tilt-currentCamera.tilt)*camAlpha).toFloat())
-                    .build()
-                google.moveCamera(CameraUpdateFactory.newCameraPosition(camera))
+                    .bearing(newBearing.toFloat())
+                    .zoom(newZoom).tilt(newTilt).build()
+                // Do not force map renderer work if pose is unchanged.
+                val moved=RoutingEngine.meters(
+                    RoutingEngine.Point(currentCamera.target.latitude,
+                        currentCamera.target.longitude),adjustedCenter)
+                if(SmoothCameraMath.hasVisibleChange(moved,
+                    ContinuousMarkerMath.angleDelta(
+                        currentCamera.bearing.toDouble(),newBearing),
+                    newZoom-currentCamera.zoom.toDouble(),
+                    newTilt-currentCamera.tilt.toDouble()))
+                    google.moveCamera(CameraUpdateFactory.newCameraPosition(camera))
             }
         }
     }
@@ -2005,11 +2051,10 @@ class GoogleDrMapActivity:Activity() {
         val camera=CameraPosition.Builder().target(LatLng(center.lat,center.lon))
             .bearing(cameraHeading!!.toFloat()).zoom(cameraZoom!!)
             .tilt(navigationTilt(speedKmh)).build()
-        // Let the continuous animation clock follow this camera goal.
-        // Restarting animateCamera every poll caused a stop-go map motion.
+        // Only set a target here. The map itself is moved by the permanent
+        // per-frame animation clock; never launch a second Google camera
+        // animation in parallel with it.
         cameraDesired=camera
-        if(carAnimator==null)
-            m.animateCamera(CameraUpdateFactory.newCameraPosition(camera),350,null)
     }
 
     /** No rerouting from spoofed, network-only or DR-estimated positions. */
