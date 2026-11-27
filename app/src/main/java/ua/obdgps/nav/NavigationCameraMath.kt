@@ -22,15 +22,15 @@ internal object NavigationCameraMath {
         // FYT screen: stay close to the road. At 60 km/h use zoom 17.4
         // (previously 16.2), and never zoom out to a region-wide view.
         val normal=when {
-            speed<8.0 -> 18.3
-            speed<30.0 -> 18.3-(speed-8.0)/22.0*0.55
+            speed<8.0 -> 17.85
+            speed<30.0 -> 17.85-(speed-8.0)/22.0*0.10
             speed<60.0 -> 17.75-(speed-30.0)/30.0*0.35
             speed<100.0 -> 17.4-(speed-60.0)/40.0*0.5
             else -> 16.9-(speed-100.0)/80.0*0.35
         }
         val turnBoost=if(turnMeters!=null && turnMeters.isFinite() &&
             turnMeters in 0.0..250.0 && speed>=10.0) {
-            0.55*(1.0-turnMeters/250.0)
+            0.55*(1.0-turnMeters/250.0)*((speed-10.0)/25.0).coerceIn(0.0,1.0)
         }else 0.0
         return (normal+turnBoost).coerceIn(16.55,18.8).toFloat()
     }

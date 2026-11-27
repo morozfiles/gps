@@ -63,9 +63,6 @@ class GoogleDrMapActivity:Activity() {
     private val buildings3dPrefs by lazy {
         getSharedPreferences("fyt_map_3d_buildings",MODE_PRIVATE)
     }
-    private val motionCalibrationPrefs by lazy {
-        getSharedPreferences("motion",MODE_PRIVATE)
-    }
     private val fytCapabilities by lazy { FytHeadUnitProfile.read(this) }
     private val widescreen:Boolean get() =
         BuildConfig.FYT7870_HEAD_UNIT &&
@@ -153,11 +150,11 @@ class GoogleDrMapActivity:Activity() {
     private var voiceEnabled=false
     private lateinit var soundButton:Button
     private lateinit var buildings3dButton:Button
-    private lateinit var gyroStatusButton:Button
     // 3D building geometry is independently switchable from the camera pitch.
     private var buildings3dEnabled=true
     private var inspectingBuildings3d=false
     private var announcedKey=""
+    private var arrivalSinceMs=0L
     private var offRouteSinceMs=0L
     private var lastRerouteAt=0L
     private var reroutePending=false
@@ -278,6 +275,7 @@ class GoogleDrMapActivity:Activity() {
             background=rounded(glass,28)
             elevation=dp(7).toFloat()
             setPadding(dp(9),dp(2),dp(8),dp(2))
+            setOnClickListener { showSearchDropdown() }
         }
         searchField=EditText(this).apply {
             hint="Поиск адреса или места"
@@ -289,23 +287,24 @@ class GoogleDrMapActivity:Activity() {
             imeOptions=EditorInfo.IME_ACTION_SEARCH
             setPadding(dp(8),0,dp(8),0)
             setOnClickListener { showSearchDropdown() }
+            setOnFocusChangeListener { _,focused ->
+                if(focused)post { if(hasFocus())showSearchDropdown() }
+            }
             setOnEditorActionListener { _,id,_ ->
                 if(id==EditorInfo.IME_ACTION_SEARCH){search();true}else false
             }
         }
         searchBar.addView(searchField,LinearLayout.LayoutParams(0,dp(54),1f))
-        val savedPlacesIcon=button("⌄",glassButton,lightText){showSearchDropdown()}
-        savedPlacesIcon.textSize=22f
-        savedPlacesIcon.contentDescription="Дом и последние поиски"
-        searchBar.addView(savedPlacesIcon,LinearLayout.LayoutParams(dp(39),dp(46)))
         val microphone=button("🎙",glassButton,lightText){startVoiceSearch()}
         microphone.textSize=22f
         microphone.contentDescription="Голосовой поиск адреса"
-        searchBar.addView(microphone,LinearLayout.LayoutParams(dp(42),dp(46)))
+        searchBar.addView(microphone,LinearLayout.LayoutParams(dp(46),dp(46)).apply {
+            marginStart=dp(8);marginEnd=dp(10)
+        })
         val searchIcon=button("⌕",glassButton,lightText){search()}
         searchIcon.textSize=25f
         searchIcon.contentDescription="Найти адрес"
-        searchBar.addView(searchIcon,LinearLayout.LayoutParams(dp(42),dp(46)))
+        searchBar.addView(searchIcon,LinearLayout.LayoutParams(dp(46),dp(46)))
         maneuverGlyph=TextView(this).apply {
             text="↑";textSize=36f;setTextColor(Color.WHITE)
             gravity=Gravity.CENTER
@@ -379,21 +378,21 @@ class GoogleDrMapActivity:Activity() {
         // This chip remains visible before and during guidance. It shows
         // actual GPS speed only when GNSS is accepted; otherwise fresh OBD.
         speedNumber=TextView(this).apply {
-            text="—";textSize=31f
+            text="—";textSize=37f
             setTypeface(null,Typeface.BOLD)
             setTextColor(lightText)
             gravity=Gravity.CENTER
             includeFontPadding=false
         }
         speedSourceLabel=TextView(this).apply {
-            text="НЕТ ДАННЫХ";textSize=10f
+            text="НЕТ ДАННЫХ";textSize=12f
             setTypeface(null,Typeface.BOLD)
             setTextColor(mutedText)
             gravity=Gravity.CENTER
             includeFontPadding=false
         }
         val speedUnit=TextView(this).apply {
-            text="км/ч";textSize=11f;setTextColor(mutedText)
+            text="км/ч";textSize=12f;setTextColor(mutedText)
             gravity=Gravity.CENTER
             includeFontPadding=false
         }
@@ -426,23 +425,10 @@ class GoogleDrMapActivity:Activity() {
             addView(speedUnit)
             addView(speedSourceLabel)
         }
-        val speedParams=LinearLayout.LayoutParams(dp(77),dp(66)).apply {
+        val speedParams=LinearLayout.LayoutParams(dp(91),dp(86)).apply {
             topMargin=dp(11)
         }
         rightControls.addView(speedBadge,speedParams)
-        // Visible both before navigation and while driving on FYT.
-        gyroStatusButton=button("Гироскоп ✕",glassButton,lightText) {
-            showGyroCalibrationStatus()
-        }.apply {
-            textSize=12f
-            minHeight=0
-            setPadding(dp(7),0,dp(7),0)
-        }
-        rightControls.addView(gyroStatusButton,
-            LinearLayout.LayoutParams(dp(116),dp(38)).apply{
-                topMargin=dp(9)
-            })
-        refreshGyroStatus()
         val rightParams=FrameLayout.LayoutParams(-2,-2,Gravity.RIGHT or Gravity.TOP).apply {
             setMargins(0,dp(if(widescreen)93 else 145),dp(14),0)
         }
@@ -809,7 +795,7 @@ class GoogleDrMapActivity:Activity() {
     /** Floating menu stays inside the Google Maps search bar, not a new map. */
     private fun showSearchDropdown() {
         if(active || !::searchBar.isInitialized || isFinishing || isDestroyed)return
-        searchPopup?.dismiss()
+        if(searchPopup?.isShowing==true)return
         if(searchBar.width<=0)return
         val panel=LinearLayout(this).apply {
             orientation=LinearLayout.VERTICAL
@@ -886,10 +872,15 @@ class GoogleDrMapActivity:Activity() {
                 search()
             }
         }
-        val popup=PopupWindow(panel,searchBar.width,
-            WindowManager.LayoutParams.WRAP_CONTENT,true).apply {
+        val scroll=android.widget.ScrollView(this).apply {
+            isFillViewport=false
+            addView(panel)
+        }
+        val popup=PopupWindow(scroll,searchBar.width,
+            WindowManager.LayoutParams.WRAP_CONTENT,false).apply {
             isOutsideTouchable=true
-            inputMethodMode=PopupWindow.INPUT_METHOD_NOT_NEEDED
+            inputMethodMode=PopupWindow.INPUT_METHOD_NEEDED
+            softInputMode=WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
             elevation=dp(10).toFloat()
             setBackgroundDrawable(rounded(glass,18))
         }
@@ -1233,7 +1224,7 @@ class GoogleDrMapActivity:Activity() {
             polylines.add(google.addPolyline(PolylineOptions()
                 .addAll(r.points.map{LatLng(it.lat,it.lon)})
                 .color(if(primary)blue else Color.rgb(151,157,164))
-                .width(if(primary)dp(8).toFloat() else dp(5).toFloat())
+                .width(if(primary)dp(10).toFloat() else dp(6).toFloat())
                 .zIndex(if(primary)2f else 1f)
                 .clickable(!active)))
         }
@@ -1420,6 +1411,7 @@ class GoogleDrMapActivity:Activity() {
         startButton.visibility=if(!active && candidates.isNotEmpty())View.VISIBLE else View.GONE
         stopButton.visibility=if(active)View.VISIBLE else View.GONE
         routesRow.visibility=if(!active && candidates.isNotEmpty())View.VISIBLE else View.GONE
+        if(active)searchPopup?.dismiss()
         searchBar.visibility=if(active)View.GONE else View.VISIBLE
         maneuverCard.visibility=if(active)View.VISIBLE else View.GONE
         tripRow.visibility=if(active)View.VISIBLE else View.GONE
@@ -1498,6 +1490,7 @@ class GoogleDrMapActivity:Activity() {
     private fun startGuidance(){
         val route=candidates.getOrNull(chosen)?:run{showError("Сначала выбери маршрут");return}
         active=true
+        arrivalSinceMs=0L
         ++routePreviewRequest
         drawRoutes() // Drop alternative lines when guidance begins.
         // Manual routing should not initialize OBD progress from a spoofed fix.
@@ -1532,6 +1525,7 @@ class GoogleDrMapActivity:Activity() {
     private fun stopGuidance(){
         // "Завершить" must cancel the entire plan, not simply pause guidance.
         active=false
+        arrivalSinceMs=0L
         tracker.reset()
         State.activeRouting=false
         State.routeDrSeed=null
@@ -1757,7 +1751,7 @@ class GoogleDrMapActivity:Activity() {
                     val noticeTop=(fytNoticeBanner?.top ?: mapView.height)-
                         mapView.top
                     val y=GuidanceCameraAnchor.markerY(mapView.height,
-                        noticeTop,dp(66))
+                        noticeTop,dp(50))
                     val projection=google.projection
                     val actualPixel=projection.toScreenLocation(marker.position)
                     if(abs(actualPixel.x-mapView.width/2)<=2 &&
@@ -1817,148 +1811,60 @@ class GoogleDrMapActivity:Activity() {
         }
     }
 
-    /** The blue outline follows the white vehicle arrow: no circular badge. */
+    /** Fixed blue circular badge with a white, heading-aligned arrow. */
     private fun arrowIcon():com.google.android.gms.maps.model.BitmapDescriptor {
-        val size=dp(88)
+        val size=dp(80)
         val bitmap=Bitmap.createBitmap(size,size,Bitmap.Config.ARGB_8888)
         val canvas=Canvas(bitmap)
-        val paint=Paint(Paint.ANTI_ALIAS_FLAG).apply{
-            style=Paint.Style.FILL
-        }
+        val paint=Paint(Paint.ANTI_ALIAS_FLAG).apply{style=Paint.Style.FILL}
         val cx=size/2f
-        val outer=Path().apply {
-            moveTo(cx,dp(7).toFloat())
-            lineTo(cx+dp(32),dp(77).toFloat())
-            lineTo(cx,dp(64).toFloat())
-            lineTo(cx-dp(32),dp(77).toFloat())
-            close()
-        }
-        // Drop shadow follows the same pointed silhouette, not a circle.
-        canvas.save()
-        canvas.translate(0f,dp(3).toFloat())
-        paint.color=Color.argb(76,0,0,0)
-        canvas.drawPath(outer,paint)
-        canvas.restore()
+        val radius=dp(36).toFloat()
+        paint.color=Color.argb(85,0,0,0)
+        canvas.drawCircle(cx,cx+dp(2),radius,paint)
         paint.color=Color.rgb(17,113,235)
-        canvas.drawPath(outer,paint)
-        val inner=Path().apply {
-            moveTo(cx,dp(19).toFloat())
-            lineTo(cx+dp(20),dp(64).toFloat())
-            lineTo(cx,dp(55).toFloat())
-            lineTo(cx-dp(20),dp(64).toFloat())
+        canvas.drawCircle(cx,cx,radius,paint)
+        paint.color=Color.WHITE
+        val arrow=Path().apply {
+            moveTo(cx,cx-dp(25))
+            lineTo(cx+dp(21),cx+dp(20))
+            lineTo(cx,cx+dp(11))
+            lineTo(cx-dp(21),cx+dp(20))
             close()
         }
-        paint.color=Color.WHITE
-        canvas.drawPath(inner,paint)
+        canvas.drawPath(arrow,paint)
         return BitmapDescriptorFactory.fromBitmap(bitmap)
     }
 
-    private fun gyroCalibrationConfirmed():Boolean {
-        if(!fytCapabilities.gyro)return false
-        val saved=motionCalibrationPrefs.contains("yawBias") &&
-            motionCalibrationPrefs.getFloat("yawBias",0f).isFinite()
-        return saved || State.gyroCalibrated
+    /** Only close after a fresh, sustained endpoint observation. The DR
+     * estimate must have fresh OBD data; cached/approximate positions alone
+     * cannot finish a journey. Use actual along-route distance, including
+     * the fractional final segment, instead of the coarse turn progress. */
+    private fun shouldFinishRoute(route:RoutingEngine.Route,raw:State.NavFix?,
+                                  projected:State.NavFix?,gnssTrusted:Boolean,
+                                  obd:Double?,now:Long):Boolean {
+        val remaining=tracker.remainingMeters
+        val endpoint=route.points.lastOrNull()?:return false
+        val near=if(gnssTrusted && raw!=null){
+            val point=RoutingEngine.Point(raw.lat,raw.lon)
+            remaining<=35.0 && RoutingEngine.meters(point,endpoint)<=40.0 &&
+                RoutingEngine.meters(point,route.destination)<=60.0
+        }else{
+            projected!=null && obd!=null && remaining<=15.0 &&
+                RoutingEngine.meters(RoutingEngine.Point(projected.lat,projected.lon),
+                    endpoint)<=20.0
+        }
+        if(!near){arrivalSinceMs=0L;return false}
+        if(arrivalSinceMs==0L)arrivalSinceMs=now
+        return now-arrivalSinceMs>=if(gnssTrusted)1000L else 2000L
     }
 
-    private fun refreshGyroStatus() {
-        if(!::gyroStatusButton.isInitialized)return
-        val running=State.stationaryCalibrationRunning
-        val calibrated=gyroCalibrationConfirmed()
-        val label=when {
-            !fytCapabilities.gyro -> "Гироскоп —"
-            running -> "Гироскоп …"
-            calibrated -> "Гироскоп ✓"
-            else -> "Гироскоп ✕"
-        }
-        val recentGyro=State.gyroSampleMs>0L &&
-            SystemClock.elapsedRealtime()-State.gyroSampleMs in 0L..1000L
-        val rate=State.yawDegPerSec
-        gyroStatusButton.text=if(calibrated && recentGyro && rate.isFinite() &&
-            abs(rate)>=5.0)
-            "Гиро ✓ "+(if(rate>0)"↪" else "↩")+" "+
-                String.format(Locale.US,"%.0f°/с",abs(rate))
-            else label
-        gyroStatusButton.contentDescription=when {
-            !fytCapabilities.gyro -> "Гироскоп не найден"
-            running -> "Калибровка гироскопа выполняется"
-            calibrated -> "Гироскоп откалиброван, настройка сохранена"
-            else -> "Гироскоп не откалиброван, нажми для калибровки"
-        }
-        val line=when {
-            !fytCapabilities.gyro -> Color.rgb(122,135,151)
-            running -> Color.rgb(245,187,78)
-            calibrated -> Color.rgb(78,206,137)
-            else -> Color.rgb(239,125,126)
-        }
-        (gyroStatusButton.background as? GradientDrawable)?.setStroke(dp(2),line)
-    }
-
-    private fun showGyroCalibrationStatus() {
-        val present=fytCapabilities.gyro
-        val calibrated=gyroCalibrationConfirmed()
-        val running=State.stationaryCalibrationRunning
-        val message=when {
-            !present -> "Android не обнаружил гироскоп на этой магнитоле."
-            running -> "Калибровка выполняется. Автомобиль должен стоять "+
-                "неподвижно 5 секунд.\n\n"+State.calibrationText
-            calibrated -> "✓ Поправка гироскопа успешно сохранена. "+
-                "Повторять калибровку необязательно.\n\n"+
-                State.calibrationText
-            else -> "✕ Успешной сохранённой калибровки нет. "+
-                "Для калибровки поставь автомобиль на стоянку и не двигай "+
-                "его 5 секунд. Нужно минимум 40 измерений гироскопа.\n\n"+
-                State.calibrationText
-        }
-        val dialog=AlertDialog.Builder(this)
-            .setTitle("Гироскоп FYT 7870")
-            .setMessage(message)
-            .setNegativeButton("Закрыть",null)
-        if(present)dialog.setNeutralButton("Ось / знак") { _,_->
-            showFytGyroAxisPicker()
-        }
-        if(present && !running)dialog.setPositiveButton(
-            if(calibrated)"Калибровать заново" else "Калибровать 5 с") { _,_->
-            try{
-                startForegroundService(Intent(this,NavService::class.java)
-                    .setAction(NavService.CALIBRATE_FYT_GYRO))
-                Toast.makeText(this,"Не двигай автомобиль 5 секунд",
-                    Toast.LENGTH_LONG).show()
-            }catch(e:Exception){
-                showError("Калибровка: "+(e.localizedMessage?:"ошибка запуска"))
-            }
-        }
-        dialog.show()
-    }
-
-    private fun showFytGyroAxisPicker(){
-        if((latestSpeedKmh?:0.0)>1.5) {
-            showError("Менять ось гироскопа можно только на стоянке")
-            return
-        }
-        val axes=FytGyroAxis.choices
-        val labels=arrayOf("Y+ · вертикальная","Y− · обратная вертикальная",
-            "X+ · горизонтальная","X− · обратная горизонтальная",
-            "Z+ · перпендикулярная","Z− · обратная перпендикулярная")
-        val current=motionCalibrationPrefs.getString("fytGyroAxis","Y+")?:"Y+"
-        AlertDialog.Builder(this)
-            .setTitle("Гироскоп · направление поворота")
-            .setMessage("На стоянке выбери ось датчика. При левом повороте "+
-                "индикатор должен показывать ↩, при правом — ↪. "+
-                "После выбора нужна повторная калибровка на стоянке.")
-            .setSingleChoiceItems(labels,axes.indexOf(current).coerceAtLeast(0)){
-                dialog,index->
-                motionCalibrationPrefs.edit()
-                    .putString("fytGyroAxis",axes[index])
-                    .remove("yawBias").apply()
-                State.gyroCalibrated=false
-                State.calibrationText="После смены оси требуется калибровка"
-                refreshGyroStatus()
-                dialog.dismiss()
-                Toast.makeText(this,"Ось "+axes[index]+
-                    " сохранена. Откалибруй гироскоп 5 секунд.",
-                    Toast.LENGTH_LONG).show()
-            }
-            .setNegativeButton("Отмена",null).show()
+    private fun finishAtDestination(estimated:Boolean){
+        stopGuidance()
+        val message=if(estimated)"Маршрут завершён · прибытие по расчёту OBD"
+            else "Вы прибыли в пункт назначения"
+        status.text=message
+        Toast.makeText(this,message,Toast.LENGTH_LONG).show()
+        speak(message)
     }
 
     private fun speak(text:String){
@@ -1983,17 +1889,6 @@ class GoogleDrMapActivity:Activity() {
         status.text=receiver+" · "+minutes+" мин до прибытия"
         val next=progress.nextTurn
         maneuverCard.visibility=View.VISIBLE
-        if(progress.arrived){
-            maneuverGlyph.text="✓"
-            maneuverTitle.text="Вы прибыли в пункт назначения"
-            maneuverDistance.text=""
-            direction.text="Маршрут завершён"
-            if(announcedKey!="arrival"){
-                announcedKey="arrival"
-                speak("Вы прибыли в пункт назначения")
-            }
-            return
-        }
         if(next!=null){
             maneuverGlyph.text=when(next.type){
                 1->"↰"
@@ -2234,12 +2129,8 @@ class GoogleDrMapActivity:Activity() {
             if(::hardwareStatus.isInitialized && BuildConfig.FYT7870_HEAD_UNIT) {
                 val speedFresh=State.speed!=null &&
                     now-State.speedUpdatedElapsedMs in 0L..3500L
-                refreshGyroStatus()
                 hardwareStatus.text=fytCapabilities.summary+" · OBD "+
                     (if(speedFresh)"✓" else "нет свежей скорости")+
-                    (if(!fytCapabilities.gyro)
-                        " · повороты оценочно (нет гироскопа)"
-                        else " · калибровка "+(if(gyroCalibrationConfirmed())"✓" else "✕"))+
                     (if(BuildConfig.FYT_GOOGLE_KEY_FALLBACK)
                         " · Google API: проверь доступ FYT" else "")
             }
@@ -2288,6 +2179,15 @@ class GoogleDrMapActivity:Activity() {
                     (manualOrigin==null || route.progress(
                         RoutingEngine.Point(raw.lat,raw.lon)).lateralMeters<=150.0)
                 if(gnssTrusted && raw!=null)tracker.alignWithValidatedGps(raw)
+                if(shouldFinishRoute(route,raw,projected,gnssTrusted,obd,now)){
+                    latestDisplayed=if(gnssTrusted)raw else projected
+                    latestDisplayed?.let{fix->
+                        car?.position=LatLng(fix.lat,fix.lon)
+                    }
+                    finishAtDestination(!gnssTrusted)
+                    handler.postDelayed(this,350L)
+                    return
+                }
                 // NavService has already validated accepted GNSS samples.
                 // Do not block real navigation when OBD is disconnected:
                 // the inertial cursor cannot advance without live OBD.
@@ -2301,7 +2201,7 @@ class GoogleDrMapActivity:Activity() {
                 if(visible!=null){
                     val progress=route.progress(RoutingEngine.Point(visible.lat,visible.lon))
                     showTurnAndTrip(route,progress,latestSpeedKmh,gnssTrusted,now)
-                    if(!gnssTrusted && BuildConfig.FYT7870_HEAD_UNIT)
+                    if(!gnssTrusted && tracker.turnStatus.startsWith("Притяжение"))
                         hardwareStatus.text=hardwareStatus.text.toString()+
                             " · "+tracker.turnStatus
                     markerVisible?.let { shown ->
@@ -2433,6 +2333,7 @@ internal class RouteOdometer {
     var turnStatus="Гироскоп: ожидание"
         private set
     val progressMeters:Double get()=distance
+    val remainingMeters:Double get()=( (lengths.lastOrNull()?:0.0)-distance).coerceAtLeast(0.0)
     fun reset(){
         route=null;lengths=DoubleArray(0);distance=0.0
         lastTime=0L;lastFixTime=0L;yaw=0.0

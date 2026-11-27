@@ -9,10 +9,10 @@ import kotlin.math.*
 internal object GuidanceCameraAnchor {
     fun markerY(viewHeightPx:Int,noticeTopPx:Int,clearancePx:Int):Int {
         if(viewHeightPx<=0)return 0
-        val preferred=viewHeightPx*0.69
+        val preferred=viewHeightPx*0.74
         val safeLimit=(noticeTopPx-clearancePx).toDouble()
         return min(preferred,safeLimit)
-            .coerceIn(viewHeightPx*0.44,viewHeightPx*0.74).roundToInt()
+            .coerceIn(viewHeightPx*0.44,viewHeightPx*0.78).roundToInt()
     }
 
     /** Geographic delta of the camera target toward a fixed marker pixel. */

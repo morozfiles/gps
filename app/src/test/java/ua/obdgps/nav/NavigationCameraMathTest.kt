@@ -23,6 +23,11 @@ class NavigationCameraMathTest {
             NavigationCameraMath.zoom(60.0,null))
     }
 
+    @Test fun lowSpeedShowsWiderRoadOverview() {
+        assertEquals(17.85f,NavigationCameraMath.zoom(0.0,null),0.02f)
+        assertTrue(NavigationCameraMath.zoom(15.0,35.0)<18.1f)
+    }
+
     @Test fun approachingTurnBringsCameraCloser() {
         assertTrue(NavigationCameraMath.zoom(55.0,30.0) >
             NavigationCameraMath.zoom(55.0,1000.0))

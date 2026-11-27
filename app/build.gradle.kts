@@ -47,8 +47,8 @@ android {
             "FYT 7870 Google Nav 2" else "FYT 7870 Google Nav"
         minSdk = 31
         targetSdk = 35
-        versionCode = 75
-        versionName = "0.13.23-fyt-smooth-30fps-camera"
+        versionCode = 76
+        versionName = "0.13.24-fyt-arrival-map-search"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         // Dedicated FYT keys take precedence. Phone keys serve only as a build
         // fallback and MUST be separately allowlisted for this package/signature.

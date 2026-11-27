@@ -273,6 +273,8 @@ class MainActivity : Activity() {
                 "OBD: ${"%.1f".format(Locale.getDefault(),State.obdFactor*100)}% от ЭБУ\n"+
                 "Статус: ${State.message}\n"+
                 if(State.dr) "Путь: ${State.position}\nРост погрешности: ~${State.driftMeters.toInt()} м" else ""
+            if(BuildConfig.FYT7870_HEAD_UNIT)
+                status.append("\nГироскоп: "+fytGyroStatusLabel())
             updateSensorCards()
             compassDialogStatus?.text=State.compassAccuracyText+"\n"+
                 State.compassCalibrationText+"\n"+State.compassAlignmentText
@@ -749,6 +751,17 @@ class MainActivity : Activity() {
             ).setPositiveButton("Понятно",null).show()
     }
 
+    private fun fytGyroStatusLabel():String {
+        val prefs=getSharedPreferences("motion",MODE_PRIVATE)
+        val saved=prefs.contains("yawBias") && prefs.getFloat("yawBias",0f).isFinite()
+        return when {
+            !FytHeadUnitProfile.read(this).gyro -> "не обнаружен"
+            State.stationaryCalibrationRunning -> "калибровка выполняется"
+            State.gyroCalibrated || saved -> "✓ откалиброван"
+            else -> "✕ требуется калибровка"
+        }
+    }
+
     private fun showFytGyroCalibration(){
         if(!FytHeadUnitProfile.read(this).gyro){
             AlertDialog.Builder(this).setTitle("Гироскоп FYT")
@@ -888,7 +901,7 @@ class MainActivity : Activity() {
         }
 
         section("ДАТЧИКИ")
-        item("Калибровка гироскопа FYT · 5 секунд") {
+        item("Гироскоп · "+fytGyroStatusLabel()) {
             showFytGyroCalibration()
         }
         item("Ось гироскопа FYT · ориентация монтажа") {
@@ -902,7 +915,7 @@ class MainActivity : Activity() {
                 .setMessage(State.sensorAvailability+"\n"+
                     "Движение: "+State.motionText+"\n"+
                     "Yaw: "+String.format(Locale.getDefault(),"%.1f°/с",State.yawDegPerSec)+"\n"+
-                    "Гироскоп: "+(if(State.gyroCalibrated)"откалиброван" else "требует калибровки")+"\n"+
+                    "Гироскоп: "+fytGyroStatusLabel()+"\n"+
                     State.calibrationText)
                 .setPositiveButton("Закрыть",null).show()
         }

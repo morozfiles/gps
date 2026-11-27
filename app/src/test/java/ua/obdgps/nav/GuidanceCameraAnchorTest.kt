@@ -14,6 +14,10 @@ class GuidanceCameraAnchorTest {
         assertEquals(480,y)
     }
 
+    @Test fun arrowUsesExtraSpaceWhenNoticeBannerAllows(){
+        assertEquals(888,GuidanceCameraAnchor.markerY(1200,1000,50))
+    }
+
     @Test fun shorterScreenKeepsVehicleAboveNoticeBanner(){
         val y=GuidanceCameraAnchor.markerY(600,425,62)
         assertEquals(363,y)
