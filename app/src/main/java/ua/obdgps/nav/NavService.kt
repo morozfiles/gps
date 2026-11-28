@@ -310,6 +310,15 @@ class NavService: Service(), LocationListener {
         }
     }
 
+    override fun onProviderDisabled(provider:String){
+        if(provider==LocationManager.GPS_PROVIDER && BuildConfig.FYT7870_HEAD_UNIT){
+            State.gpsSpeedKmh=null
+            State.gpsSpeedUpdatedElapsedMs=0L
+            updateNavigation(SystemClock.elapsedRealtime())
+            publishActualNavigationPosition(SystemClock.elapsedRealtime())
+        }
+    }
+
     override fun onStartCommand(i: Intent?,flags:Int,startId:Int): Int {
         when(i?.action) {
             SCAN -> scan()
@@ -1233,7 +1242,8 @@ class NavService: Service(), LocationListener {
             }
             State.navFix=State.NavFix(latitude,longitude,
                 if(currentGps.hasBearing())currentGps.bearing.toDouble() else null,
-                currentGps.accuracy,"GPS",now)
+                currentGps.accuracy,"GPS",
+                if(BuildConfig.FYT7870_HEAD_UNIT)gpsTime else now)
             State.sourceDescription=(if(BuildConfig.FYT7870_HEAD_UNIT)
                 State.fytGpsActiveSource else "GPS")+
                 (if(adjusted)" + Wi-Fi/сеть" else "")+
@@ -1303,7 +1313,16 @@ class NavService: Service(), LocationListener {
             freshObd=freshObd,obdKmh=obdKmh,
             badGps=recentInvalidGps
         )
-        if(eligible){
+        // FYT must not wait through the phone's GPS-loss debounce.
+        val fastFytFallback=BuildConfig.FYT7870_HEAD_UNIT && !State.dr &&
+            (autoEnabled || State.activeRouting) && freshObd &&
+            FytGpsFailover.shouldUseObd(
+                State.gpsSpeedKmh?.takeIf{
+                    now-State.gpsSpeedUpdatedElapsedMs in 0L..FytGpsFailover.GPS_TIMEOUT_MS
+                },obdKmh,if(gpsQuarantined || gps==null)Long.MAX_VALUE else now-gpsTime)
+        if(fastFytFallback){
+            startDr(force=false)
+        }else if(eligible){
             if(gpsInvalidSince==0L)gpsInvalidSince=now
             if(now-gpsInvalidSince>=MobileDrAutoStart.debounceMs(
                     recentTeleport))startDr(force=false)
@@ -1609,6 +1628,21 @@ class NavService: Service(), LocationListener {
 
         // Speed disagreement during OBD-confirmed motion is an important
         // signal of spoofing/jamming (but not proof by itself).
+        val fytMissingSpeed=BuildConfig.FYT7870_HEAD_UNIT && freshObd &&
+            FytGpsFailover.speedMissingWhileMoving(kmh,obd)
+        if(fytMissingSpeed){
+            if(!State.dr && (autoEnabled || State.activeRouting))startDr(force=false)
+            // A missing speed on a position-only GM906BT packet can still
+            // supply validated soft position corrections, never primary GPS.
+            if(kmh!=null || !external){
+                State.gpsText="GPS: скорость 0/неизвестна, OBD движется"
+                gpsRecoveryCount=0
+                gpsRecoveryLast=0L
+                gpsRecoverySince=0L
+                if(gpsQuarantined)resetQuarantineEvidence(State.gpsText)
+                return
+            }
+        }
         if(freshObd && obd>=7) {
             // Some external NMEA mock providers omit the Android speed field.
             // Permit position-only GM906BT fixes if Vgate reports movement.
@@ -1771,7 +1805,7 @@ class NavService: Service(), LocationListener {
                 gpsRecoveryCount>=gpsReturnFixes &&
                 gpsRecoverySince>0L &&
                 now-gpsRecoverySince>=gpsReturnStableMs &&
-                !gpsQuarantined){
+                !gpsQuarantined && !fytMissingSpeed){
                 val source=if(BuildConfig.FYT7870_HEAD_UNIT)
                     (if(external)"GM906BT" else "внутренний GPS")
                     else "GPS"

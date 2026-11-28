@@ -96,6 +96,7 @@ class GoogleDrMapActivity:Activity() {
     private lateinit var routeOptions:LinearLayout
     private lateinit var routesRow:HorizontalScrollView
     private lateinit var originButton:Button
+    private lateinit var destinationButton:Button
     private lateinit var routeButton:Button
     private lateinit var startButton:Button
     private lateinit var stopButton:Button
@@ -114,6 +115,7 @@ class GoogleDrMapActivity:Activity() {
     private var destination:RoutingEngine.Point?=null
     private var manualOrigin:RoutingEngine.Point?=null
     private var pickingOrigin=false
+    private var pickingDestination=false
     private var originMarker:Marker?=null
     private var routeRequestId=0
     private var candidates=emptyList<RoutingEngine.Route>()
@@ -255,6 +257,8 @@ class GoogleDrMapActivity:Activity() {
         }
 
         val root=FrameLayout(this)
+        root.isFocusableInTouchMode=true
+        root.requestFocus()
         root.setBackgroundColor(tint)
         // Android 15+ edge-to-edge is enforced. The map begins BELOW the
         // status bar (battery/notifications) and ends above gesture navigation.
@@ -501,13 +505,17 @@ class GoogleDrMapActivity:Activity() {
         val actions=LinearLayout(this).apply{orientation=LinearLayout.HORIZONTAL}
         regularActions=actions
         originButton=button("Точка старта",glassButton){onOriginButton()}
+        destinationButton=button("Точка финиша",glassButton){enterDestinationMode()}
         routeButton=button("Маршрут",blue){plan()}
         startButton=button("Поехали",blue){startGuidance()}
         stopButton=button("Завершить",glassButton,lightText){stopGuidance()}
-        if(widescreen)actions.addView(originButton,
-            LinearLayout.LayoutParams(0,dp(49),1f).apply{rightMargin=dp(7)})
-        else bottom.addView(originButton,LinearLayout.LayoutParams(-1,dp(49))
-            .apply{bottomMargin=dp(7)})
+        val pointActions=LinearLayout(this).apply {
+            orientation=LinearLayout.HORIZONTAL
+            addView(originButton,LinearLayout.LayoutParams(0,dp(49),1f).apply{rightMargin=dp(7)})
+            addView(destinationButton,LinearLayout.LayoutParams(0,dp(49),1f))
+        }
+        originButton.tag=pointActions
+        bottom.addView(pointActions,LinearLayout.LayoutParams(-1,dp(49)).apply{bottomMargin=dp(7)})
         actions.addView(routeButton,LinearLayout.LayoutParams(0,dp(49),1f))
         val action2=LinearLayout.LayoutParams(0,dp(49),1f).apply{leftMargin=dp(8)}
         actions.addView(startButton,action2)
@@ -596,12 +604,22 @@ class GoogleDrMapActivity:Activity() {
             google.setOnMapClickListener {
                 selectMapPoint(it.latitude,it.longitude,"Точка на карте")
             }
+            google.setOnMapLongClickListener {
+                selectMapPoint(it.latitude,it.longitude,"Точка на карте")
+            }
             google.setOnPoiClickListener { poi ->
                 selectMapPoint(poi.latLng.latitude,poi.latLng.longitude,poi.name)
             }
+            google.setOnMarkerClickListener { marker ->
+                if(!active && (pickingOrigin || pickingDestination)){
+                    selectMapPoint(marker.position.latitude,marker.position.longitude,
+                        marker.title?:"Точка на карте")
+                    true
+                }else false
+            }
             google.setOnPolylineClickListener { poly ->
                 val index=polylines.indexOf(poly)
-                if(index>=0 && !active)chooseRoute(index)
+                if(index>=0 && !active && !pickingOrigin && !pickingDestination)chooseRoute(index)
             }
             google.setOnCameraMoveStartedListener { reason ->
                 if(reason==GoogleMap.OnCameraMoveStartedListener.REASON_GESTURE)
@@ -738,7 +756,8 @@ class GoogleDrMapActivity:Activity() {
     }
 
     private fun onApproximateStartupFix(fix:State.NavFix) {
-        if(!::status.isInitialized || active || isFinishing || isDestroyed)return
+        if(!::status.isInitialized || active || pickingOrigin || pickingDestination ||
+            manualOrigin!=null || destination!=null || isFinishing || isDestroyed)return
         val now=SystemClock.elapsedRealtime()
         val current=bestPositionForMap(now)?:fix
         if(current.source.startsWith("Примерно")) {
@@ -1044,9 +1063,36 @@ class GoogleDrMapActivity:Activity() {
         State.gpsFilterRoutePoints=emptyList()
         clearRoutes()
     }
+    private fun closeSearchForMap(){
+        searchPopup?.dismiss()
+        searchPopup=null
+        if(::searchField.isInitialized){
+            val keyboard=getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager
+            keyboard.hideSoftInputFromWindow(searchField.windowToken,0)
+            searchField.clearFocus()
+        }
+    }
+
+    private fun enterDestinationMode(){
+        if(active)return
+        ++searchRequest
+        pickingOrigin=false
+        pickingDestination=true
+        followCar=false
+        closeSearchForMap()
+        map?.stopAnimation()
+        status.text="Укажи конечную точку на карте"
+        direction.text="Нажми на нужное место или найди адрес. GPS не требуется."
+        updateButtons()
+    }
+
     private fun enterOriginMode(){
         if(active)return
+        ++searchRequest
+        pickingDestination=false
         pickingOrigin=true
+        followCar=false
+        closeSearchForMap()
         status.text="Укажи точку старта на карте"
         direction.text="Нажми на карте нужное место или найди адрес в строке поиска."
         updateButtons()
@@ -1090,6 +1136,7 @@ class GoogleDrMapActivity:Activity() {
             }.setNegativeButton("Отмена",null).show()
     }
     private fun selectMapPoint(lat:Double,lon:Double,label:String){
+        closeSearchForMap()
         if(pickingOrigin)selectOrigin(lat,lon)
         else selectDestination(lat,lon,label)
     }
@@ -1100,6 +1147,7 @@ class GoogleDrMapActivity:Activity() {
         ++searchRequest
         manualOrigin=point
         pickingOrigin=false
+        pickingDestination=true
         saveManualOrigin(point)
         updateOriginMarker()
         invalidateRoutes()
@@ -1118,18 +1166,25 @@ class GoogleDrMapActivity:Activity() {
             car?.position=p
             car?.title="Положение задано вручную · не GPS"
         }
-        followCar=true
+        followCar=false
         initialPositionCentered=true
         initialPositionAccuracy=25f
         map?.animateCamera(CameraUpdateFactory.newLatLngZoom(p,17.0f),750,null)
         status.text="Моё положение задано вручную"
-        direction.text="Автомобиль и голубой маркер — здесь. Выбери цель и построй маршрут."
+        direction.text="Теперь укажи конечную точку на карте или через поиск. GPS не нужен."
         updateButtons()
     }
 
     private fun selectDestination(lat:Double,lon:Double,label:String) {
+        val point=RoutingEngine.Point(lat,lon)
+        if(!RoutingEngine.valid(point)){showError("Некорректная конечная точка");return}
         if(active)stopGuidance()
-        destination=RoutingEngine.Point(lat,lon)
+        ++searchRequest
+        pickingOrigin=false
+        pickingDestination=false
+        followCar=false
+        closeSearchForMap()
+        destination=point
         goal?.remove()
         goal=map?.addMarker(MarkerOptions().position(LatLng(lat,lon)).title(label))
         map?.animateCamera(CameraUpdateFactory.newLatLngZoom(LatLng(lat,lon),15f))
@@ -1407,6 +1462,11 @@ class GoogleDrMapActivity:Activity() {
             else -> "Точка старта"
         }
         originButton.background=rounded(if(pickingOrigin)blue else glassButton,22)
+        (originButton.tag as? View)?.visibility=if(active)View.GONE else View.VISIBLE
+        destinationButton.visibility=if(active)View.GONE else View.VISIBLE
+        destinationButton.text=if(pickingDestination)"Укажи финиш" else "Точка финиша"
+        destinationButton.background=rounded(if(pickingDestination)blue else glassButton,22)
+        regularActions.visibility=if(active || destination==null)View.GONE else View.VISIBLE
         routeButton.visibility=if(active || destination==null)View.GONE else View.VISIBLE
         startButton.visibility=if(!active && candidates.isNotEmpty())View.VISIBLE else View.GONE
         stopButton.visibility=if(active)View.VISIBLE else View.GONE
@@ -1424,7 +1484,7 @@ class GoogleDrMapActivity:Activity() {
             fytNoticeBanner?.visibility=if(active)View.VISIBLE else View.GONE
             fytGuidanceRow?.visibility=if(active)View.VISIBLE else View.GONE
             updateFytNotices()
-            regularActions.visibility=if(active)View.GONE else View.VISIBLE
+            regularActions.visibility=if(active || destination==null)View.GONE else View.VISIBLE
             bottomPanel.setPadding(dp(14),dp(if(active)6 else 9),
                 dp(14),dp(if(active)6 else 10))
             val params=bottomPanel.layoutParams as? FrameLayout.LayoutParams
@@ -1490,6 +1550,8 @@ class GoogleDrMapActivity:Activity() {
     private fun startGuidance(){
         val route=candidates.getOrNull(chosen)?:run{showError("Сначала выбери маршрут");return}
         active=true
+        pickingOrigin=false
+        pickingDestination=false
         arrivalSinceMs=0L
         ++routePreviewRequest
         drawRoutes() // Drop alternative lines when guidance begins.
@@ -1543,6 +1605,7 @@ class GoogleDrMapActivity:Activity() {
         goal?.remove()
         goal=null
         pickingOrigin=false
+        pickingDestination=false
         followCar=true
         initialPositionCentered=false
         initialPositionAccuracy=Float.POSITIVE_INFINITY
@@ -2090,8 +2153,14 @@ class GoogleDrMapActivity:Activity() {
 
     private fun freshTrustedGps():Boolean{
         val f=State.navFix?:return false
+        val now=SystemClock.elapsedRealtime()
+        val obd=State.obdSpeedKmh()?.takeIf{now-State.speedUpdatedElapsedMs in 0L..3500L}
+        val gpsSpeed=State.gpsSpeedKmh?.takeIf{
+            now-State.gpsSpeedUpdatedElapsedMs in 0L..FytGpsFailover.GPS_TIMEOUT_MS
+        }
         return f.source=="GPS" && f.accuracy in 0f..30f &&
-            SystemClock.elapsedRealtime()-f.elapsedMs in 0L..5000L &&
+            now-f.elapsedMs in 0L..FytGpsFailover.GPS_TIMEOUT_MS &&
+            !FytGpsFailover.shouldUseObd(gpsSpeed,obd,now-f.elapsedMs) &&
             (State.gpsSpeedKmh?:0.0)<=180.0 &&
             (BuildConfig.FYT7870_HEAD_UNIT ||
                 !AirAlerts.autoNavigationAlertActive())
@@ -2136,15 +2205,17 @@ class GoogleDrMapActivity:Activity() {
             }
             val gpsSpeed=State.gpsSpeedKmh?.takeIf {
                 State.gpsSpeedUpdatedElapsedMs>0L &&
-                now-State.gpsSpeedUpdatedElapsedMs in 0L..6000L &&
+                now-State.gpsSpeedUpdatedElapsedMs in 0L..FytGpsFailover.GPS_TIMEOUT_MS &&
                 it.isFinite() && it in 0.0..180.0
             }
-            val gpsTrustedForSpeed=raw!=null && raw.source=="GPS" &&
+            val fastFallback=FytGpsFailover.shouldUseObd(gpsSpeed,obd,
+                raw?.takeIf{it.source=="GPS"}?.let{now-it.elapsedMs}?:Long.MAX_VALUE)
+            val gpsTrustedForSpeed=!fastFallback && raw!=null && raw.source=="GPS" &&
                 !State.dr &&
                 (BuildConfig.FYT7870_HEAD_UNIT ||
                     !AirAlerts.autoNavigationAlertActive()) &&
                 raw.accuracy in 0f..30f &&
-                now-raw.elapsedMs in 0L..5000L && gpsSpeed!=null
+                now-raw.elapsedMs in 0L..FytGpsFailover.GPS_TIMEOUT_MS && gpsSpeed!=null
             val selectedSpeed=NavigationSpeedSelector.choose(
                 State.dr,gpsTrustedForSpeed,gpsSpeed,obd)
             latestSpeedKmh=selectedSpeed.kmh
@@ -2165,14 +2236,15 @@ class GoogleDrMapActivity:Activity() {
             var estimated=visible?.source?.startsWith("Примерно")==true
             if(active && route!=null){
                 refreshRestoredTurns(raw,now)
-                val projected=tracker.update(now,obd,raw,State.networkFix,
+                val projected=tracker.update(now,obd,
+                    raw?.takeUnless{fastFallback && it.source=="GPS"},State.networkFix,
                     State.yawDegPerSec)
-                val gnssTrusted=raw!=null && raw.source=="GPS" &&
+                val gnssTrusted=!fastFallback && raw!=null && raw.source=="GPS" &&
                     !State.dr &&
                     (BuildConfig.FYT7870_HEAD_UNIT ||
                         !AirAlerts.autoNavigationAlertActive()) &&
                     raw.accuracy in 0f..50f &&
-                    now-raw.elapsedMs in 0L..3000L &&
+                    now-raw.elapsedMs in 0L..FytGpsFailover.GPS_TIMEOUT_MS &&
                     (gpsSpeed?:0.0)<=180.0 &&
                     // A manual route must not snap to a confident-looking
                     // spoofed fix far away from the selected road geometry.
@@ -2223,7 +2295,8 @@ class GoogleDrMapActivity:Activity() {
             }
             latestDisplayed=visible
             updateAccuracyCircle(visible)
-            if(!active && visible!=null && destination==null &&
+            if(!active && !pickingOrigin && !pickingDestination &&
+                visible!=null && destination==null &&
                 visible.source!="Ручная точка старта"){
                 if(visible.source.startsWith("Примерно")){
                     status.text="Приблизительное положение · ±"+
