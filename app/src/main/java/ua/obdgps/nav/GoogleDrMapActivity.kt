@@ -646,7 +646,7 @@ class GoogleDrMapActivity:Activity() {
                 if(snapshot.active && cached!=null){
                     val fix=State.NavFix(cached.lat,cached.lon,snapshot.bearing,
                         150f,"Сохранённая позиция",0L)
-                    val prog=snapshot.route.progress(cached)
+                    val prog=snapshot.route.progressAt(tracker.progressMeters)
                     moveGuidanceCamera(fix,snapshot.route,prog,null)
                 }else if(snapshot.active)focusGuidanceStart(snapshot.route)
                 else orientRoutePreview(snapshot.route)
@@ -1291,17 +1291,10 @@ class GoogleDrMapActivity:Activity() {
             remainingRoute=route
             remainingAlongMeters=0.0
         }
-        val projection=RouteDisplayGeometry.project(
-            route.points,RoutingEngine.Point(fix.lat,fix.lon))?:return
-        if(projection.lateralMeters>60.0)return
-        // A confirmed gyro turn can legitimately correct the OBD odometer
-        // BACKWARD to a previously passed bend. Restore that piece of the
-        // remaining blue route; never rewind from a noisy accepted GPS fix.
-        val correctingBackward=fix.source.startsWith("OBD") &&
-            projection.alongMeters<remainingAlongMeters &&
-            remainingAlongMeters-projection.alongMeters<=125.0
-        val along=if(correctingBackward)projection.alongMeters
-            else max(remainingAlongMeters,projection.alongMeters)
+        // Draw from the shared ordered cursor, never globally re-project it.
+        if(fix.source=="GPS" &&
+            (tracker.match(fix)?.lateralMeters?:Double.POSITIVE_INFINITY)>60.0)return
+        val along=tracker.progressMeters
         if(abs(along-remainingAlongMeters)<1.5)return
         remainingAlongMeters=along
         val forward=RouteDisplayGeometry.remaining(route.points,along)
@@ -1434,7 +1427,7 @@ class GoogleDrMapActivity:Activity() {
                 }
         val anchor=current?.let{RoutingEngine.Point(it.lat,it.lon)}
             ?:route.points.first()
-        val progress=route.progress(anchor)
+        val progress=route.progressAt(tracker.progressMeters)
         val segment=progress.nearestShapeIndex.coerceIn(0,route.points.size-2)
         val heading=routeBearing(route.points[segment],route.points[segment+1])
         cameraHeading=heading
@@ -1531,7 +1524,7 @@ class GoogleDrMapActivity:Activity() {
         State.gpsFilterRoutePoints=if(active)restoredRoute.points else emptyList()
         val first=restoredRoute.points.first()
         val restoredPoint=last?.let{RoutingEngine.Point(it.lat,it.lon)}?:first
-        val segment=restoredRoute.progress(restoredPoint).nearestShapeIndex
+        val segment=restoredRoute.progressAt(tracker.progressMeters).nearestShapeIndex
             .coerceIn(0,restoredRoute.points.size-2)
         val bearing=routeBearing(restoredRoute.points[segment],
             restoredRoute.points[segment+1])
@@ -1658,16 +1651,17 @@ class GoogleDrMapActivity:Activity() {
             motionVisualAlong=null
         }
         val projection=if(r!=null)
-            RouteDisplayGeometry.project(r.points,RoutingEngine.Point(
-                to.latitude,to.longitude)) else null
-        motionTargetAlong=projection?.takeIf{it.lateralMeters<=13.0}
-            ?.alongMeters
+            RouteDisplayGeometry.projectNear(r.points,RoutingEngine.Point(
+                to.latitude,to.longitude),tracker.progressMeters,25.0,25.0,
+                heading.toDouble(),motionRouteLengths) else null
+        motionTargetAlong=projection?.takeIf{it.lateralMeters<=13.0}?.alongMeters
         if(motionTargetAlong==null)motionVisualAlong=null
         if(motionVisualAlong==null && motionTargetAlong!=null && r!=null){
-            val current=RouteDisplayGeometry.project(r.points,RoutingEngine.Point(
-                marker.position.latitude,marker.position.longitude))
+            val current=RouteDisplayGeometry.projectNear(r.points,RoutingEngine.Point(
+                marker.position.latitude,marker.position.longitude),
+                motionTargetAlong!!,35.0,25.0,null,motionRouteLengths)
             motionVisualAlong=current?.takeIf{it.lateralMeters<=13.0}
-                ?.alongMeters
+                ?.alongMeters?:motionTargetAlong
         }
         // The UI polls ~350 ms while GNSS may publish ~1 Hz. The same fix
         // must not restart dead-reckoned visual motion every poll: that
@@ -2003,9 +1997,8 @@ class GoogleDrMapActivity:Activity() {
         val targetZoom=NavigationCameraMath.zoom(speedKmh,progress.nextTurnMeters)
         cameraZoom=if(cameraZoom==null)targetZoom else
             (cameraZoom!!+(targetZoom-cameraZoom!!)*0.34f)
-        val center=NavigationCameraMath.routeLookAhead(route.points,
-            progress.nearestShapeIndex,RoutingEngine.Point(fix.lat,fix.lon),
-            NavigationCameraMath.lookAheadMeters(speedKmh))
+        val center=RouteDisplayGeometry.atDistance(route.points,
+            tracker.progressMeters+NavigationCameraMath.lookAheadMeters(speedKmh))
         val camera=CameraPosition.Builder().target(LatLng(center.lat,center.lon))
             .bearing(cameraHeading!!.toFloat()).zoom(cameraZoom!!)
             .tilt(navigationTilt(speedKmh)).build()
@@ -2025,7 +2018,7 @@ class GoogleDrMapActivity:Activity() {
         // Avoid false rerouting on a low-quality but still accepted fix.
         // A confirmed wrong turn should be visible after multiple samples.
         if(raw.accuracy>25f){offRouteSinceMs=0L;return}
-        val lateral=route.progress(RoutingEngine.Point(raw.lat,raw.lon)).lateralMeters
+        val lateral=tracker.match(raw)?.lateralMeters?:Double.POSITIVE_INFINITY
         if(lateral<max(65.0,raw.accuracy*2.0+25.0)){
             offRouteSinceMs=0L
             return
@@ -2068,24 +2061,15 @@ class GoogleDrMapActivity:Activity() {
      */
     private fun snapAcceptedGps(fix:State.NavFix,
                                 route:RoutingEngine.Route):State.NavFix {
-        val progress=route.progress(RoutingEngine.Point(fix.lat,fix.lon))
-        if(progress.lateralMeters>35.0)return fix
-        val idx=progress.nearestShapeIndex.coerceIn(0,route.points.lastIndex-1)
+        val match=tracker.match(fix)?:return fix
+        if(match.lateralMeters>35.0)return fix
+        val idx=route.progressAt(tracker.progressMeters).nearestShapeIndex
+            .coerceIn(0,route.points.lastIndex-1)
         val a=route.points[idx]
         val b=route.points[idx+1]
-        val metersLat=111195.0
-        val metersLon=metersLat*cos(Math.toRadians(fix.lat))
-        val ax=(a.lon-fix.lon)*metersLon
-        val ay=(a.lat-fix.lat)*metersLat
-        val bx=(b.lon-fix.lon)*metersLon
-        val by=(b.lat-fix.lat)*metersLat
-        val dx=bx-ax
-        val dy=by-ay
-        val length=dx*dx+dy*dy
-        val ratio=if(length<0.001)0.0
-            else (-ax*dx-ay*dy).div(length).coerceIn(0.0,1.0)
-        val nearestLat=a.lat+(b.lat-a.lat)*ratio
-        val nearestLon=a.lon+(b.lon-a.lon)*ratio
+        val nearest=RouteDisplayGeometry.atDistance(route.points,tracker.progressMeters)
+        val nearestLat=nearest.lat
+        val nearestLon=nearest.lon
         val strength=(0.82-fix.accuracy/150.0).coerceIn(0.35,0.72)
         return fix.copy(
             lat=fix.lat+(nearestLat-fix.lat)*strength,
@@ -2147,7 +2131,7 @@ class GoogleDrMapActivity:Activity() {
         }
         val forecast=RouteDisplayGeometry.predictAhead(
             route.points,RoutingEngine.Point(fix.lat,fix.lon),
-            observedHeading,advance,yaw)?:return fix
+            observedHeading,advance,yaw,tracker.progressMeters)?:return fix
         return fix.copy(lat=forecast.lat,lon=forecast.lon)
     }
 
@@ -2170,7 +2154,7 @@ class GoogleDrMapActivity:Activity() {
         val fix=manualPreviewFix()?:latestDisplayed?:State.navFix?:State.approximateFix
         val route=candidates.getOrNull(chosen)
         if(active && fix!=null && route!=null) {
-            val progress=route.progress(RoutingEngine.Point(fix.lat,fix.lon))
+            val progress=route.progressAt(tracker.progressMeters)
             moveGuidanceCamera(fix,route,progress,latestSpeedKmh)
             return
         }
@@ -2238,7 +2222,7 @@ class GoogleDrMapActivity:Activity() {
                 refreshRestoredTurns(raw,now)
                 val projected=tracker.update(now,obd,
                     raw?.takeUnless{fastFallback && it.source=="GPS"},State.networkFix,
-                    State.yawDegPerSec)
+                    State.yawDegPerSec,gpsSpeed.takeIf{gpsTrustedForSpeed})
                 val gnssTrusted=!fastFallback && raw!=null && raw.source=="GPS" &&
                     !State.dr &&
                     (BuildConfig.FYT7870_HEAD_UNIT ||
@@ -2250,7 +2234,7 @@ class GoogleDrMapActivity:Activity() {
                     // spoofed fix far away from the selected road geometry.
                     (manualOrigin==null || route.progress(
                         RoutingEngine.Point(raw.lat,raw.lon)).lateralMeters<=150.0)
-                if(gnssTrusted && raw!=null)tracker.alignWithValidatedGps(raw)
+                if(gnssTrusted && raw!=null)tracker.alignWithValidatedGps(raw,gpsSpeed)
                 if(shouldFinishRoute(route,raw,projected,gnssTrusted,obd,now)){
                     latestDisplayed=if(gnssTrusted)raw else projected
                     latestDisplayed?.let{fix->
@@ -2271,7 +2255,7 @@ class GoogleDrMapActivity:Activity() {
                         if(gnssTrusted)raw?.bearing else null)
                 }
                 if(visible!=null){
-                    val progress=route.progress(RoutingEngine.Point(visible.lat,visible.lon))
+                    val progress=route.progressAt(tracker.progressMeters)
                     showTurnAndTrip(route,progress,latestSpeedKmh,gnssTrusted,now)
                     if(!gnssTrusted && tracker.turnStatus.startsWith("Притяжение"))
                         hardwareStatus.text=hardwareStatus.text.toString()+
@@ -2281,7 +2265,7 @@ class GoogleDrMapActivity:Activity() {
                         // Camera must follow the very same display pose as
                         // the car icon, not an older unsmoothed GPS sample.
                         if(followCar)moveGuidanceCamera(shown,route,
-                            route.progress(RoutingEngine.Point(shown.lat,shown.lon)),
+                            route.progressAt(tracker.progressMeters),
                             latestSpeedKmh)
                     }
                 }else{
@@ -2314,7 +2298,7 @@ class GoogleDrMapActivity:Activity() {
                 val p=LatLng(shown.lat,shown.lon)
                 val heading=shown.bearing?.takeIf{it.isFinite()}
                     ?:route?.points?.takeIf{it.size>1}?.let{
-                        val idx=route.progress(RoutingEngine.Point(shown.lat,shown.lon))
+                        val idx=route.progressAt(tracker.progressMeters)
                             .nearestShapeIndex.coerceIn(0,it.size-2)
                         routeBearing(it[idx],it[idx+1])
                     }
@@ -2396,6 +2380,7 @@ internal class RouteOdometer {
     private var distance=0.0
     private var lastTime=0L
     private var lastFixTime=0L
+    private var lastAlignedGpsTime=0L
     private var yaw=0.0
     private var gyroYawTotalLast=Double.NaN
     private var yawLastActiveMs=0L
@@ -2409,7 +2394,7 @@ internal class RouteOdometer {
     val remainingMeters:Double get()=( (lengths.lastOrNull()?:0.0)-distance).coerceAtLeast(0.0)
     fun reset(){
         route=null;lengths=DoubleArray(0);distance=0.0
-        lastTime=0L;lastFixTime=0L;yaw=0.0
+        lastTime=0L;lastFixTime=0L;lastAlignedGpsTime=0L;yaw=0.0
         gyroYawTotalLast=Double.NaN
         yawLastActiveMs=0L;bends=emptyList()
         correctionRemainingMeters=0.0
@@ -2425,7 +2410,7 @@ internal class RouteOdometer {
         bends=RouteTurnMatcher.findBends(r.points,lengths)
         gyroYawTotalLast=State.gyroCumulativeYawDeg
         distance=(restoredProgressMeters?.takeIf{it.isFinite()}
-            ?:initial?.let{project(it.lat,it.lon,true)?.first}
+            ?:initial?.let{project(it.lat,it.lon)?.first}
             ?:0.0).coerceIn(0.0,lengths.last())
         lastTime=SystemClock.elapsedRealtime()
     }
@@ -2433,11 +2418,21 @@ internal class RouteOdometer {
      * satellite navigation is working. Otherwise an OBD-less journey would
      * leave the DR fallback cursor far behind the actual car position.
      */
-    fun alignWithValidatedGps(fix:State.NavFix) {
-        if(fix.source!="GPS" || fix.accuracy !in 0f..50f)return
-        val match=project(fix.lat,fix.lon,true)?:return
-        if(match.second>max(40.0,fix.accuracy*1.6))return
-        distance=match.first.coerceIn(0.0,lengths.lastOrNull()?:0.0)
+    fun match(fix:State.NavFix,heading:Double?=null):RouteDisplayGeometry.Projection? {
+        val r=route?:return null
+        return RouteDisplayGeometry.projectNear(r.points,
+            RoutingEngine.Point(fix.lat,fix.lon),distance,35.0,35.0,heading,lengths)
+    }
+
+    fun alignWithValidatedGps(fix:State.NavFix,gpsKmh:Double?=null) {
+        if(fix.source!="GPS" || fix.accuracy !in 0f..50f ||
+            fix.elapsedMs<=lastAlignedGpsTime)return
+        lastAlignedGpsTime=fix.elapsedMs
+        val match=match(fix,fix.bearing.takeIf{(gpsKmh?:0.0)>=5.0})?:return
+        if(match.lateralMeters>max(40.0,fix.accuracy*1.6))return
+        // One GPS sample can correct a small error, not skip a ramp or loop.
+        distance=(distance+(match.alongMeters-distance).coerceIn(-15.0,15.0))
+            .coerceIn(0.0,lengths.lastOrNull()?:0.0)
         correctionRemainingMeters=0.0
         yaw=0.0
         gyroYawTotalLast=State.gyroCumulativeYawDeg
@@ -2445,12 +2440,14 @@ internal class RouteOdometer {
     }
 
     fun update(now:Long,obd:Double?,fix:State.NavFix?,
-               network:State.NavFix?,yawDegreesPerSecond:Double):State.NavFix? {
+               network:State.NavFix?,yawDegreesPerSecond:Double,
+               gpsKmh:Double?=null):State.NavFix? {
         val r=route?:return null
         if(lengths.size<2)return null
         val dt=((now-lastTime)/1000.0).coerceIn(0.0,2.0)
         lastTime=now
-        if(obd!=null)distance=(distance+obd/3.6*dt).coerceAtMost(lengths.last())
+        val motionSpeed=obd?:gpsKmh
+        if(motionSpeed!=null)distance=(distance+motionSpeed/3.6*dt).coerceAtMost(lengths.last())
         val calibrated=State.gyroCalibrated &&
             now-State.gyroSampleMs in 0L..850L
         val yawTotal=State.gyroCumulativeYawDeg
@@ -2541,24 +2538,11 @@ internal class RouteOdometer {
             a.lon+(b.lon-a.lon)*fraction,bearing(a,b),100f,
             "OBD · расчёт по маршруту",now)
     }
-    private fun project(lat:Double,lon:Double,
-                        entireRoute:Boolean=false):Pair<Double,Double>? {
+    private fun project(lat:Double,lon:Double):Pair<Double,Double>? {
         val r=route?:return null
-        var min=Double.POSITIVE_INFINITY;var along=0.0
-        for(i in 0 until r.points.lastIndex){
-            // Avoid snapping across a later loop of the same route.
-            if(!entireRoute &&
-                (lengths[i+1]<distance-300.0 || lengths[i]>distance+300.0))continue
-            val a=r.points[i];val b=r.points[i+1]
-            val scale=111195.0;val cosLat=cos(Math.toRadians(lat))
-            val ax=(a.lon-lon)*cosLat*scale;val ay=(a.lat-lat)*scale
-            val bx=(b.lon-lon)*cosLat*scale;val by=(b.lat-lat)*scale
-            val vx=bx-ax;val vy=by-ay;val len=vx*vx+vy*vy
-            val t=if(len<0.1)0.0 else (-(ax*vx+ay*vy)/len).coerceIn(0.0,1.0)
-            val lateral=hypot(ax+vx*t,ay+vy*t)
-            if(lateral<min){min=lateral;along=lengths[i]+(lengths[i+1]-lengths[i])*t}
-        }
-        return if(min.isFinite())along to min else null
+        val p=RouteDisplayGeometry.projectNear(r.points,
+            RoutingEngine.Point(lat,lon),distance,90.0,90.0,null,lengths)?:return null
+        return p.alongMeters to p.lateralMeters
     }
     private fun bearing(a:RoutingEngine.Point,b:RoutingEngine.Point):Double =
         (Math.toDegrees(atan2((b.lon-a.lon)*cos(Math.toRadians(a.lat)),

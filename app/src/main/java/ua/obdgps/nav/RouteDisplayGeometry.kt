@@ -34,6 +34,55 @@ internal object RouteDisplayGeometry {
         return Projection(along,nearest)
     }
 
+    /** Match only reachable along-route segments; continuity resolves crossings. */
+    fun projectNear(points:List<RoutingEngine.Point>,position:RoutingEngine.Point,
+                    referenceMeters:Double,backwardMeters:Double=35.0,
+                    forwardMeters:Double=35.0,heading:Double?=null,
+                    cumulative:DoubleArray=RouteTurnMatcher.cumulative(points)):Projection? {
+        if(points.size<2 || cumulative.size!=points.size || !referenceMeters.isFinite())return null
+        val ref=referenceMeters.coerceIn(0.0,cumulative.last())
+        val from=(ref-backwardMeters.coerceAtLeast(0.0)).coerceAtLeast(0.0)
+        val to=(ref+forwardMeters.coerceAtLeast(0.0)).coerceAtMost(cumulative.last())
+        val latScale=111195.0
+        val lonScale=latScale*cos(Math.toRadians(position.lat))
+        val course=heading?.takeIf{it.isFinite()}
+        var best:Projection?=null
+        var bestCost=Double.POSITIVE_INFINITY
+        var lo=0;var hi=points.lastIndex
+        while(lo+1<hi){
+            val mid=(lo+hi)/2
+            if(cumulative[mid]<from)lo=mid else hi=mid
+        }
+        for(i in lo until points.lastIndex){
+            val start=cumulative[i];val end=cumulative[i+1]
+            if(start>to)break
+            val length=end-start
+            if(end<from || length<0.001)continue
+            val a=points[i];val b=points[i+1]
+            val dx=(b.lon-a.lon)*lonScale
+            val dy=(b.lat-a.lat)*latScale
+            val px=(position.lon-a.lon)*lonScale
+            val py=(position.lat-a.lat)*latScale
+            val norm=dx*dx+dy*dy
+            if(norm<0.000001)continue
+            val minT=((from-start)/length).coerceIn(0.0,1.0)
+            val maxT=((to-start)/length).coerceIn(0.0,1.0)
+            val t=((px*dx+py*dy)/norm).coerceIn(minT,maxT)
+            val lateral=hypot(px-dx*t,py-dy*t)
+            val along=start+length*t
+            val headingPenalty=course?.let{
+                val difference=abs(((bearing(a,b)-it+540.0)%360.0)-180.0)
+                ((difference-35.0).coerceAtLeast(0.0)/145.0)*18.0
+            }?:0.0
+            val cost=lateral+abs(along-ref)*0.55+headingPenalty
+            if(cost<bestCost){
+                bestCost=cost
+                best=Projection(along,lateral)
+            }
+        }
+        return best
+    }
+
     fun atDistance(points:List<RoutingEngine.Point>,meters:Double):
             RoutingEngine.Point {
         require(points.isNotEmpty())
@@ -62,9 +111,12 @@ internal object RouteDisplayGeometry {
                      position:RoutingEngine.Point,
                      measuredHeading:Double?,
                      meters:Double,
-                     calibratedYawDegPerSec:Double?=null):RoutingEngine.Point? {
+                     calibratedYawDegPerSec:Double?=null,
+                     referenceMeters:Double?=null):RoutingEngine.Point? {
         if(points.size<2 || !meters.isFinite() || meters<0.0)return null
-        val projected=project(points,position)?:return null
+        val projected=(if(referenceMeters!=null)
+            projectNear(points,position,referenceMeters,25.0,25.0,measuredHeading)
+            else project(points,position))?:return null
         if(projected.lateralMeters>35.0)return null
         var stopAt=projected.alongMeters+meters.coerceAtMost(22.0)
         var traveled=0.0

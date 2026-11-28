@@ -53,6 +53,39 @@ class RouteDisplayGeometryTest {
         assertNull(RouteDisplayGeometry.predictAhead(route,far,0.0,20.0))
     }
 
+    @Test fun flyoverCrossingKeepsUntravelledRampUntilSecondPass() {
+        val start=RoutingEngine.Point(50.0,29.999)
+        val crossing=RoutingEngine.Point(50.0,30.0)
+        val ramp=listOf(start,crossing,RoutingEngine.Point(50.0,30.001),
+            RoutingEngine.Point(49.999,30.001),RoutingEngine.Point(49.999,30.0),
+            crossing,RoutingEngine.Point(50.001,30.0))
+        val lengths=RouteTurnMatcher.cumulative(ramp)
+        val noisy=RoutingEngine.Point(50.00002,30.0)
+        assertTrue(RouteDisplayGeometry.project(ramp,noisy)!!.alongMeters>lengths[4])
+        val first=RouteDisplayGeometry.projectNear(ramp,noisy,lengths[1],35.0,35.0,90.0,lengths)!!
+        assertEquals(lengths[1],first.alongMeters,4.0)
+        val remaining=RouteDisplayGeometry.remaining(ramp,first.alongMeters)
+        assertTrue(remaining.contains(ramp[3]))
+        assertTrue(remaining.contains(ramp[4]))
+        val second=RouteDisplayGeometry.projectNear(ramp,crossing,lengths[5],35.0,35.0,0.0,lengths)!!
+        assertEquals(lengths[5],second.alongMeters,4.0)
+        val planned=RoutingEngine.Route(ramp,emptyList(),lengths.last()/1000,120,ramp.last())
+        assertTrue(planned.progressAt(first.alongMeters).remainingMeters>350.0)
+        assertTrue(planned.progressAt(second.alongMeters).remainingMeters<120.0)
+    }
+
+    @Test fun shortLoopAtSameCoordinatePrefersExistingProgress() {
+        val a=RoutingEngine.Point(50.0,30.0)
+        val points=listOf(a,RoutingEngine.Point(50.0,30.00008),
+            RoutingEngine.Point(50.00006,30.00008),a,
+            RoutingEngine.Point(50.0,30.00015))
+        val lengths=RouteTurnMatcher.cumulative(points)
+        val first=RouteDisplayGeometry.projectNear(points,a,0.0,35.0,35.0,90.0,lengths)!!
+        assertEquals(0.0,first.alongMeters,0.01)
+        val later=RouteDisplayGeometry.projectNear(points,a,lengths[3],35.0,35.0,90.0,lengths)!!
+        assertEquals(lengths[3],later.alongMeters,0.01)
+    }
+
     @Test fun remainingAtFinishStaysAtDestination() {
         val remaining=RouteDisplayGeometry.remaining(route,100000.0)
         assertEquals(destination,remaining.first())

@@ -33,6 +33,29 @@ open class RoutingEngine {
             for(i in points.size-2 downTo 0)
                 suffix[i]=suffix[i+1]+meters(points[i],points[i+1])
         }
+        /** Progress by travelled route distance, not by globally nearest coordinates. */
+        fun progressAt(alongMeters:Double,lateralMeters:Double=0.0):Progress {
+            if(points.size<2)return Progress(0,lateralMeters,0.0,0,null,0.0,true)
+            val total=suffix[0]
+            val along=alongMeters.coerceIn(0.0,total)
+            val remaining=total-along
+            var lo=0;var hi=points.lastIndex
+            while(lo+1<hi){
+                val mid=(lo+hi)/2
+                if(total-suffix[mid]<=along)lo=mid else hi=mid
+            }
+            val next=maneuvers.firstOrNull{
+                it.shapeIndex in 0..points.lastIndex &&
+                    total-suffix[it.shapeIndex]>along+2.0
+            }
+            val nextMeters=next?.let{
+                (remaining-suffix[it.shapeIndex]).coerceAtLeast(0.0)
+            }?:remaining
+            val secondsLeft=if(total>0.0)(seconds*remaining/total).toInt() else 0
+            return Progress(lo,lateralMeters,remaining,secondsLeft,next,nextMeters,
+                remaining<40.0 && lateralMeters<60.0)
+        }
+
         fun progress(position:Point):Progress {
             var minDist=Double.POSITIVE_INFINITY
             var nearest=0
