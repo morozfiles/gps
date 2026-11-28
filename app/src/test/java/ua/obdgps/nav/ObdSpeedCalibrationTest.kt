@@ -4,10 +4,10 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class ObdSpeedCalibrationTest {
-    @Test fun defaultIs98PercentOfRawElmSpeed() {
-        assertEquals(0.98,ObdSpeedCalibration.DEFAULT_FACTOR,0.000001)
-        assertEquals(98.0,ObdSpeedCalibration.correctedKmh(100)!!,0.00001)
-        assertEquals(49.0,ObdSpeedCalibration.correctedKmh(50)!!,0.00001)
+    @Test fun defaultIs100PercentOfRawElmSpeed() {
+        assertEquals(1.0,ObdSpeedCalibration.DEFAULT_FACTOR,0.000001)
+        assertEquals(100.0,ObdSpeedCalibration.correctedKmh(100)!!,0.00001)
+        assertEquals(50.0,ObdSpeedCalibration.correctedKmh(50)!!,0.00001)
     }
     @Test fun savedUserSettingIsHonoredInsteadOfNewDefault() {
         assertEquals(97.0,ObdSpeedCalibration.correctedKmh(100,0.97)!!,0.00001)
@@ -17,6 +17,6 @@ class ObdSpeedCalibrationTest {
     @Test fun correctedSpeedFeedsDistanceInKilometers() {
         val kmh=ObdSpeedCalibration.correctedKmh(100)!!
         val elapsedSeconds=360.0
-        assertEquals(9800.0,kmh/3.6*elapsedSeconds,0.01)
+        assertEquals(10000.0,kmh/3.6*elapsedSeconds,0.01)
     }
 }
